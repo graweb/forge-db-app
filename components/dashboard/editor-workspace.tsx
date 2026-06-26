@@ -1,7 +1,7 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { useRef, useState } from "react"
+import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { Brackets, Filter, Play, Settings2, Sparkles, X } from "lucide-react"
 import type * as Monaco from "monaco-editor"
@@ -27,6 +27,13 @@ type DashboardEditorWorkspaceProps = {
   connection: SavedConnection
 }
 
+export type DashboardEditorWorkspaceHandle = {
+  insertText: (text: string) => void
+  previewTable: (tablePath: string) => Promise<void>
+  executeTable: (tablePath: string) => Promise<void>
+  runTableQuery: (tablePath: string) => Promise<void>
+}
+
 type QueryTabStatus = "success" | "error"
 
 type QueryExecutionTab = {
@@ -47,7 +54,15 @@ function getDefaultQuery(databaseType: SavedConnection["databaseType"]) {
   return `SELECT 1 AS id, 'example' AS name, CURRENT_TIMESTAMP AS created_at;`
 }
 
-export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspaceProps) {
+type ExecuteSqlOptions = {
+  title?: string
+  insertIntoEditor?: boolean
+}
+
+export const DashboardEditorWorkspace = forwardRef<
+  DashboardEditorWorkspaceHandle,
+  DashboardEditorWorkspaceProps
+>(function DashboardEditorWorkspace({ connection }, ref) {
   const [sqlText, setSqlText] = useState(() => getDefaultQuery(connection.databaseType))
   const [queryTabs, setQueryTabs] = useState<QueryExecutionTab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
@@ -59,6 +74,134 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
   const [lastDurationMs, setLastDurationMs] = useState<number | null>(null)
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const highlightDecorationIdsRef = useRef<string[]>([])
+
+  const executeSqlText = useCallback(async (sql: string, options?: ExecuteSqlOptions) => {
+    const statement = sql.trim()
+
+    if (!statement) {
+      setSummaryTone("error")
+      setExecutionSummary("Digite uma consulta SQL antes de executar.")
+      return
+    }
+
+    if (options?.insertIntoEditor) {
+      const editor = editorRef.current
+      if (editor) {
+        editor.setValue(statement)
+        setSqlText(statement)
+      }
+    }
+
+    setExecuting(true)
+    setLastDurationMs(null)
+    setSummaryTone("neutral")
+    setExecutionSummary("Executando consulta...")
+
+    const startedAt = performance.now()
+
+    try {
+      const statementStartedAt = performance.now()
+      const response = await fetch(`/api/connections/${connection.id}/query`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ sql: statement }),
+      })
+
+      const payload: {
+        success: boolean
+        message: string
+        details?: string
+        columns?: string[]
+        rows?: Array<Record<string, string | number | boolean | null>>
+        rowCount?: number
+        affectedRows?: number
+      } = await response.json()
+
+      const durationMs = Math.round(performance.now() - statementStartedAt)
+      const nextTab: QueryExecutionTab = !response.ok || !payload.success
+        ? {
+            id: createQueryTabId(),
+            title: options?.title || getQueryTabTitle(statement, 0),
+            sql: statement,
+            status: "error",
+            message: payload.details || payload.message || "Não foi possível executar a consulta.",
+            durationMs,
+            result: null,
+          }
+        : {
+            id: createQueryTabId(),
+            title: options?.title || getQueryTabTitle(statement, 0),
+            sql: statement,
+            status: "success",
+            message: payload.message,
+            durationMs,
+            result: {
+              columns: payload.columns ?? [],
+              rows: payload.rows ?? [],
+              rowCount: payload.rowCount ?? payload.rows?.length ?? 0,
+              affectedRows: payload.affectedRows,
+              message: payload.message,
+            },
+          }
+
+      setQueryTabs((current) => {
+        const merged = upsertExecutionTabs(current, [nextTab])
+        setActiveTabId(merged.activeTabId)
+        return merged.tabs
+      })
+      setLastDurationMs(Math.round(performance.now() - startedAt))
+      setSummaryTone(nextTab.status === "error" ? "error" : "success")
+      setExecutionSummary(
+        nextTab.status === "error"
+          ? "Consulta processada com erro."
+          : "Consulta processada com sucesso."
+      )
+    } catch {
+      const durationMs = Math.round(performance.now() - startedAt)
+      setLastDurationMs(durationMs)
+      setSummaryTone("error")
+      setExecutionSummary("Falha inesperada ao executar a consulta.")
+    } finally {
+      setExecuting(false)
+    }
+  }, [connection.id])
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      insertText: (text: string) => {
+        const editor = editorRef.current
+        if (!editor) {
+          return
+        }
+
+        insertTextIntoEditor(editor, text)
+        setSqlText(editor.getValue())
+        editor.focus()
+      },
+      previewTable: async (tablePath: string) => {
+        await executeSqlText(`SELECT *\nFROM ${tablePath}\nLIMIT 100;`, {
+          title: `Preview: ${getLeafName(tablePath)}`,
+          insertIntoEditor: true,
+        })
+      },
+      executeTable: async (tablePath: string) => {
+        await executeSqlText(`SELECT *\nFROM ${tablePath};`, {
+          title: getLeafName(tablePath),
+          insertIntoEditor: true,
+        })
+      },
+      runTableQuery: async (tablePath: string) => {
+        await executeSqlText(`SELECT *\nFROM ${tablePath};`, {
+          title: getLeafName(tablePath),
+          insertIntoEditor: true,
+        })
+      },
+    }),
+    [executeSqlText]
+  )
 
   const activeTab = queryTabs.find((tab) => tab.id === activeTabId) ?? queryTabs[0] ?? null
 
@@ -459,7 +602,7 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
       </div>
     </section>
   )
-}
+})
 
 function QueryTabPanel({ tab }: { tab: QueryExecutionTab }) {
   if (tab.status === "error") {
@@ -573,6 +716,56 @@ function clearExecutedStatementHighlight(
   }
 
   decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, [])
+}
+
+function insertTextIntoEditor(editor: Monaco.editor.IStandaloneCodeEditor, text: string) {
+  const model = editor.getModel()
+  if (!model) {
+    return
+  }
+
+  const selection = editor.getSelection()
+  const position = editor.getPosition()
+
+  if (selection && !selection.isEmpty()) {
+    editor.executeEdits("tree-view-insert", [
+      {
+        range: selection,
+        text,
+        forceMoveMarkers: true,
+      },
+    ])
+    return
+  }
+
+  if (position) {
+    editor.executeEdits("tree-view-insert", [
+      {
+        range: {
+          startLineNumber: position.lineNumber,
+          startColumn: position.column,
+          endLineNumber: position.lineNumber,
+          endColumn: position.column,
+        },
+        text,
+        forceMoveMarkers: true,
+      },
+    ])
+    return
+  }
+
+  editor.executeEdits("tree-view-insert", [
+    {
+      range: model.getFullModelRange(),
+      text,
+      forceMoveMarkers: true,
+    },
+  ])
+}
+
+function getLeafName(tablePath: string) {
+  const parts = tablePath.split(".").map((part) => part.trim()).filter(Boolean)
+  return parts.at(-1) ?? tablePath
 }
 
 function upsertExecutionTabs(

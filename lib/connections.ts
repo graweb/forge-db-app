@@ -39,6 +39,28 @@ export type QueryExecutionResult = {
   message: string
 }
 
+export type DatabaseStructureGroup = {
+  label: string
+  items: string[]
+}
+
+export type DatabaseStructureSchema = {
+  name: string
+  groups: DatabaseStructureGroup[]
+}
+
+export type DatabaseStructureDatabase = {
+  name: string
+  schemas: DatabaseStructureSchema[]
+  groups: DatabaseStructureGroup[]
+}
+
+export type DatabaseStructure = {
+  databases: DatabaseStructureDatabase[]
+  schemas: DatabaseStructureSchema[]
+  groups: DatabaseStructureGroup[]
+}
+
 export type SavedConnection = ConnectionInput & {
   id: string
   createdAt: string
@@ -538,6 +560,492 @@ export async function executeQueryById(connectionId: string, sqlText: string) {
   }
 
   return executeQuery(connection, sqlText)
+}
+
+export async function getDatabaseStructure(connection: SavedConnection): Promise<DatabaseStructure> {
+  switch (connection.databaseType) {
+    case "sqlite":
+      return getSqliteStructure(connection)
+    case "mysql":
+    case "mariadb":
+      return getMySqlLikeStructure(connection)
+    case "postgresql":
+      return getPostgreSqlStructure(connection)
+    case "sqlserver":
+      return getSqlServerStructure(connection)
+    default:
+      return { databases: [], schemas: [], groups: [] }
+  }
+}
+
+async function getSqliteStructure(connection: SavedConnection): Promise<DatabaseStructure> {
+  const filePath = sanitizeText(connection.databaseFile)
+
+  if (!filePath) {
+    const groups = [
+        { label: "Tabelas", items: [] },
+        { label: "Views", items: [] },
+        { label: "Índices", items: [] },
+        { label: "Funções", items: [] },
+        { label: "Procedures", items: [] },
+      ]
+
+    return {
+      databases: [{ name: "main", schemas: [{ name: "main", groups }], groups }],
+      schemas: [{ name: "main", groups }],
+      groups,
+    }
+  }
+
+  const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
+  const db = new Database(resolvedPath)
+
+  try {
+    const rows = db
+      .prepare(
+        `
+          SELECT type, name
+          FROM sqlite_master
+          WHERE name NOT LIKE 'sqlite_%'
+          ORDER BY type, name
+        `
+      )
+      .all() as Array<{ type: string; name: string }>
+
+    const groups = [
+        { label: "Tabelas", items: rows.filter((row) => row.type === "table").map((row) => row.name) },
+        { label: "Views", items: rows.filter((row) => row.type === "view").map((row) => row.name) },
+        {
+          label: "Índices",
+          items: rows.filter((row) => row.type === "index").map((row) => row.name),
+        },
+        { label: "Funções", items: [] },
+        { label: "Procedures", items: [] },
+      ]
+
+    return {
+      databases: [
+        {
+          name: connection.databaseName.trim() || "main",
+          schemas: [{ name: connection.databaseName.trim() || "main", groups }],
+          groups,
+        },
+      ],
+      schemas: [{ name: connection.databaseName.trim() || "main", groups }],
+      groups,
+    }
+  } finally {
+    db.close()
+  }
+}
+
+async function getMySqlLikeStructure(connection: SavedConnection): Promise<DatabaseStructure> {
+  const host = sanitizeText(connection.host) || "localhost"
+  const user = sanitizeText(connection.user)
+  const password = connection.password ?? ""
+  const database = sanitizeText(connection.databaseName)
+  const port = parsePort(connection.port)
+  const useSsl = Boolean(connection.useSsl)
+  const databaseType = connection.databaseType === "mysql" ? "mysql" : "mariadb"
+
+  const clientFactory =
+    databaseType === "mysql"
+      ? () =>
+          mysql.createConnection({
+            host,
+            port: port ?? 3306,
+            user,
+            password,
+            database: database || undefined,
+            connectTimeout: 5000,
+            ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+          })
+      : () =>
+          mariadb.createConnection({
+            host,
+            port: port ?? 3306,
+            user,
+            password,
+            database: database || undefined,
+            connectTimeout: 5000,
+            ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+          })
+
+  const client = await clientFactory()
+
+  try {
+    const schemaName = database || ""
+    const tables = await runMySqlLikeMetadataQuery(
+      client,
+      databaseType,
+      `
+        SELECT TABLE_NAME AS name
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
+          AND TABLE_TYPE = 'BASE TABLE'
+        ORDER BY TABLE_NAME
+      `,
+      [schemaName]
+    )
+    const views = await runMySqlLikeMetadataQuery(
+      client,
+      databaseType,
+      `
+        SELECT TABLE_NAME AS name
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
+          AND TABLE_TYPE = 'VIEW'
+        ORDER BY TABLE_NAME
+      `,
+      [schemaName]
+    )
+    const indexes = await runMySqlLikeMetadataQuery(
+      client,
+      databaseType,
+      `
+        SELECT DISTINCT INDEX_NAME AS name
+        FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
+          AND INDEX_NAME <> 'PRIMARY'
+        ORDER BY INDEX_NAME
+      `,
+      [schemaName]
+    )
+    const procedures = await runMySqlLikeMetadataQuery(
+      client,
+      databaseType,
+      `
+        SELECT ROUTINE_NAME AS name
+        FROM INFORMATION_SCHEMA.ROUTINES
+        WHERE ROUTINE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
+          AND ROUTINE_TYPE = 'PROCEDURE'
+        ORDER BY ROUTINE_NAME
+      `,
+      [schemaName]
+    )
+    const functions = await runMySqlLikeMetadataQuery(
+      client,
+      databaseType,
+      `
+        SELECT ROUTINE_NAME AS name
+        FROM INFORMATION_SCHEMA.ROUTINES
+        WHERE ROUTINE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
+          AND ROUTINE_TYPE = 'FUNCTION'
+        ORDER BY ROUTINE_NAME
+      `,
+      [schemaName]
+    )
+
+    const groups = [
+        { label: "Tabelas", items: extractNames(tables) },
+        { label: "Views", items: extractNames(views) },
+        { label: "Índices", items: extractNames(indexes) },
+        { label: "Funções", items: extractNames(functions) },
+        { label: "Procedures", items: extractNames(procedures) },
+      ]
+
+    return {
+      databases: [
+        {
+          name: connection.databaseName.trim() || "schema",
+          schemas: [{ name: schemaName, groups }],
+          groups,
+        },
+      ],
+      schemas: [{ name: connection.databaseName.trim() || "schema", groups }],
+      groups,
+    }
+  } finally {
+    await client.end()
+  }
+}
+
+async function runMySqlLikeMetadataQuery(
+  client: {
+    query: (queryText: string, params?: unknown[]) => Promise<unknown>
+  },
+  databaseType: "mysql" | "mariadb",
+  queryText: string,
+  params: unknown[]
+) {
+  if (databaseType === "mysql") {
+    const [rows] = (await client.query(queryText, params)) as [
+      Array<Record<string, unknown>>,
+      unknown,
+    ]
+    return rows as Array<Record<string, unknown>>
+  }
+
+  const rows = (await client.query(queryText, params)) as Array<Record<string, unknown>>
+  return Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : []
+}
+
+async function getPostgreSqlStructure(connection: SavedConnection): Promise<DatabaseStructure> {
+  const host = sanitizeText(connection.host) || "localhost"
+  const user = sanitizeText(connection.user)
+  const password = connection.password ?? ""
+  const database = sanitizeText(connection.databaseName)
+  const port = parsePort(connection.port)
+  const useSsl = Boolean(connection.useSsl)
+
+  const client = new PostgresClient({
+    host,
+    port: port ?? 5432,
+    user,
+    password,
+    database: database || undefined,
+    connectionTimeoutMillis: 5000,
+    ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+  })
+
+  await client.connect()
+
+  try {
+    const schemaQuery = "SELECT current_schema() AS name"
+    const schemaResult = await client.query(schemaQuery)
+    const schemaName = String(schemaResult.rows[0]?.name ?? "public")
+
+    const tables = await client.query(
+      `
+        SELECT table_name AS name
+        FROM information_schema.tables
+        WHERE table_schema = $1
+          AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+      `,
+      [schemaName]
+    )
+    const views = await client.query(
+      `
+        SELECT table_name AS name
+        FROM information_schema.tables
+        WHERE table_schema = $1
+          AND table_type = 'VIEW'
+        ORDER BY table_name
+      `,
+      [schemaName]
+    )
+    const indexes = await client.query(
+      `
+        SELECT indexname AS name
+        FROM pg_indexes
+        WHERE schemaname = $1
+        ORDER BY indexname
+      `,
+      [schemaName]
+    )
+    const procedures = await client.query(
+      `
+        SELECT routine_name AS name
+        FROM information_schema.routines
+        WHERE routine_schema = $1
+          AND routine_type = 'PROCEDURE'
+        ORDER BY routine_name
+      `,
+      [schemaName]
+    )
+    const functions = await client.query(
+      `
+        SELECT routine_name AS name
+        FROM information_schema.routines
+        WHERE routine_schema = $1
+          AND routine_type = 'FUNCTION'
+        ORDER BY routine_name
+      `,
+      [schemaName]
+    )
+
+    const groups = [
+      { label: "Tabelas", items: extractNames(tables.rows) },
+      { label: "Views", items: extractNames(views.rows) },
+      { label: "Índices", items: extractNames(indexes.rows) },
+      { label: "Funções", items: extractNames(functions.rows) },
+      { label: "Procedures", items: extractNames(procedures.rows) },
+    ]
+
+    return {
+      databases: [
+        {
+          name: connection.databaseName.trim() || "schema",
+          schemas: [{ name: schemaName, groups }],
+          groups,
+        },
+      ],
+      schemas: [{ name: schemaName, groups }],
+      groups,
+    }
+  } finally {
+    await client.end()
+  }
+}
+
+async function getSqlServerStructure(connection: SavedConnection): Promise<DatabaseStructure> {
+  const host = sanitizeText(connection.host) || "localhost"
+  const user = sanitizeText(connection.user)
+  const password = connection.password ?? ""
+  const port = parsePort(connection.port)
+  const useSsl = Boolean(connection.useSsl)
+
+  const pool = await sql.connect({
+    user,
+    password,
+    server: host,
+    port: port ?? 1433,
+    database: sanitizeText(connection.databaseName) || undefined,
+    options: {
+      encrypt: useSsl,
+      trustServerCertificate: true,
+    },
+    connectionTimeout: 5000,
+    requestTimeout: 5000,
+  })
+
+  try {
+    const configuredDatabase = sanitizeText(connection.databaseName)
+    const databaseRows = configuredDatabase
+      ? [{ name: configuredDatabase }]
+      : (await pool.request().query(`
+          SELECT name
+          FROM sys.databases
+          WHERE state_desc = 'ONLINE'
+          ORDER BY name
+        `)).recordset as Array<{ name: string }>
+
+    const databaseNames = extractNames(databaseRows)
+    const databases = []
+
+    for (const databaseName of databaseNames) {
+      const databaseStructure = await getSqlServerDatabaseStructure(pool, databaseName)
+      databases.push(databaseStructure)
+    }
+
+    return {
+      databases,
+      schemas: databases[0]?.schemas ?? [],
+      groups: databases[0]?.groups ?? [],
+    }
+  } finally {
+    await pool.close()
+  }
+}
+
+async function getSqlServerDatabaseStructure(
+  pool: sql.ConnectionPool,
+  databaseName: string
+): Promise<DatabaseStructureDatabase> {
+  const quotedDatabase = quoteSqlServerIdentifier(databaseName)
+
+  const schemasResult = await pool.request().query(`
+    SELECT name
+    FROM ${quotedDatabase}.sys.schemas
+    WHERE name NOT IN ('sys', 'INFORMATION_SCHEMA')
+    ORDER BY name
+  `)
+
+  const tables = await pool.request().query(`
+    SELECT
+      s.name AS schema_name,
+      t.name AS name
+    FROM ${quotedDatabase}.sys.tables t
+    INNER JOIN ${quotedDatabase}.sys.schemas s ON t.schema_id = s.schema_id
+    ORDER BY s.name, t.name
+  `)
+  const views = await pool.request().query(`
+    SELECT
+      s.name AS schema_name,
+      v.name AS name
+    FROM ${quotedDatabase}.sys.views v
+    INNER JOIN ${quotedDatabase}.sys.schemas s ON v.schema_id = s.schema_id
+    ORDER BY s.name, v.name
+  `)
+  const indexes = await pool.request().query(`
+    SELECT DISTINCT
+      s.name AS schema_name,
+      i.name AS name
+    FROM ${quotedDatabase}.sys.indexes i
+    INNER JOIN ${quotedDatabase}.sys.objects o ON i.object_id = o.object_id
+    INNER JOIN ${quotedDatabase}.sys.schemas s ON o.schema_id = s.schema_id
+    WHERE i.name IS NOT NULL
+      AND i.is_primary_key = 0
+      AND o.type IN ('U', 'V')
+    ORDER BY s.name, i.name
+  `)
+  const procedures = await pool.request().query(`
+    SELECT
+      s.name AS schema_name,
+      p.name AS name
+    FROM ${quotedDatabase}.sys.procedures p
+    INNER JOIN ${quotedDatabase}.sys.schemas s ON p.schema_id = s.schema_id
+    ORDER BY s.name, p.name
+  `)
+  const functions = await pool.request().query(`
+    SELECT
+      s.name AS schema_name,
+      o.name AS name
+    FROM ${quotedDatabase}.sys.objects o
+    INNER JOIN ${quotedDatabase}.sys.schemas s ON o.schema_id = s.schema_id
+    WHERE o.type IN ('FN', 'IF', 'TF')
+    ORDER BY s.name, o.name
+  `)
+
+  const schemaNames = uniqueStrings([
+    ...extractNames(schemasResult.recordset),
+    ...extractSchemaNames(tables.recordset),
+    ...extractSchemaNames(views.recordset),
+    ...extractSchemaNames(indexes.recordset),
+    ...extractSchemaNames(functions.recordset),
+    ...extractSchemaNames(procedures.recordset),
+  ])
+
+  const schemas = schemaNames.map((schemaName) => ({
+    name: schemaName,
+    groups: [
+      { label: "Tabelas", items: extractNamesForSchema(tables.recordset, schemaName) },
+      { label: "Views", items: extractNamesForSchema(views.recordset, schemaName) },
+      { label: "Índices", items: extractNamesForSchema(indexes.recordset, schemaName) },
+      { label: "Funções", items: extractNamesForSchema(functions.recordset, schemaName) },
+      { label: "Procedures", items: extractNamesForSchema(procedures.recordset, schemaName) },
+    ],
+  }))
+
+  return {
+    name: databaseName,
+    schemas,
+    groups: schemas[0]?.groups ?? [],
+  }
+}
+
+function quoteSqlServerIdentifier(value: string) {
+  return `[${value.replace(/\]/g, "]]")}]`
+}
+
+function extractNames(rows: Array<Record<string, unknown>>) {
+  return rows
+    .map((row) => row.name ?? row.NAME ?? row.table_name ?? row.TABLE_NAME ?? row.indexname)
+    .map((value) => (value === null || value === undefined ? "" : String(value)))
+    .filter(Boolean)
+}
+
+function extractSchemaNames(rows: Array<Record<string, unknown>>) {
+  return rows
+    .map((row) => row.schema_name ?? row.SCHEMA_NAME ?? row.table_schema ?? row.TABLE_SCHEMA)
+    .map((value) => (value === null || value === undefined ? "" : String(value)))
+    .filter(Boolean)
+}
+
+function extractNamesForSchema(rows: Array<Record<string, unknown>>, schemaName: string) {
+  return rows
+    .filter((row) => {
+      const rowSchema = row.schema_name ?? row.SCHEMA_NAME ?? row.table_schema ?? row.TABLE_SCHEMA
+      return String(rowSchema ?? "") === schemaName
+    })
+    .map((row) => row.name ?? row.NAME ?? row.table_name ?? row.TABLE_NAME ?? row.indexname)
+    .map((value) => (value === null || value === undefined ? "" : String(value)))
+    .filter(Boolean)
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)))
 }
 
 export function getConnectionById(id: string): SavedConnection | null {

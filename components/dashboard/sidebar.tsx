@@ -1,26 +1,68 @@
+"use client"
+
 import {
   Clock3,
+  CornerDownRight,
   Database,
+  FileCode2,
   FolderGit2,
   Layers3,
+  LogOut,
   MoreHorizontal,
   Plus,
+  Sigma,
   Table2,
+  Wrench,
 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import { TreeView, type TreeViewNode } from "@/components/ui/tree-view"
 import { cn } from "@/lib/utils"
 
 import { databaseIcons, getConnectionSubtitle, getDatabaseLabel } from "./shared"
-import type { ComponentType } from "react"
-import type { SavedConnection } from "@/lib/connections"
+import type {
+  DatabaseStructure,
+  DatabaseStructureDatabase,
+  SavedConnection,
+} from "@/lib/connections"
 
 type DashboardSidebarProps = {
   connection: SavedConnection
   recentConnections: SavedConnection[]
+  databaseStructure: DatabaseStructure
+  onDisconnectConnection: () => void
+  onInsertText: (text: string) => void
+  onPreviewTable: (tablePath: string) => Promise<void> | void
+  onExecuteTable: (tablePath: string) => Promise<void> | void
+  onRunTableQuery: (tablePath: string) => Promise<void> | void
 }
 
-export function DashboardSidebar({ connection, recentConnections }: DashboardSidebarProps) {
+const sectionIcons = {
+  Tabelas: Table2,
+  Views: Clock3,
+  Índices: Table2,
+  Funções: Sigma,
+  Procedures: Wrench,
+}
+
+export function DashboardSidebar({
+  connection,
+  recentConnections,
+  databaseStructure,
+  onDisconnectConnection,
+  onInsertText,
+  onPreviewTable,
+  onExecuteTable,
+  onRunTableQuery,
+}: DashboardSidebarProps) {
+  const treeNodes = buildTreeNodes(connection, databaseStructure, {
+    onDisconnectConnection,
+    onInsertText,
+    onPreviewTable,
+    onExecuteTable,
+    onRunTableQuery,
+  })
+
   return (
     <aside className="flex h-full min-h-0 flex-col overflow-hidden border-r border-white/10 bg-[#07111d]/95">
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
@@ -71,15 +113,8 @@ export function DashboardSidebar({ connection, recentConnections }: DashboardSid
             <Badge className="border-white/10 bg-white/5 text-white/65">live</Badge>
           </div>
 
-          <div className="space-y-1">
-            <TreeItem icon={Database} label={connection.connectionName} active />
-            <TreeItem icon={FolderGit2} label={getDatabaseLabel(connection.databaseType)} />
-            <TreeItem icon={Layers3} label="public" />
-            <TreeBranch icon={Table2} label="Tabelas" />
-            <TreeBranch icon={Clock3} label="Views" />
-            <TreeBranch icon={Table2} label="Índices" />
-            <TreeBranch icon={Table2} label="Funções" />
-            <TreeBranch icon={Table2} label="Procedures" />
+          <div className="rounded-2xl border border-white/8 bg-white/2 p-2">
+            <TreeView nodes={treeNodes} />
           </div>
         </section>
       </div>
@@ -87,39 +122,267 @@ export function DashboardSidebar({ connection, recentConnections }: DashboardSid
   )
 }
 
-function TreeItem({
-  icon: Icon,
-  label,
-  active = false,
+function buildTreeNodes(
+  connection: SavedConnection,
+  databaseStructure: DatabaseStructure,
+  actions: {
+    onDisconnectConnection: () => void
+    onInsertText: (text: string) => void
+    onPreviewTable: (tablePath: string) => Promise<void> | void
+    onExecuteTable: (tablePath: string) => Promise<void> | void
+    onRunTableQuery: (tablePath: string) => Promise<void> | void
+  }
+): TreeViewNode[] {
+  if (connection.databaseType === "sqlserver" && databaseStructure.databases.length > 0) {
+    return [
+      {
+        id: `connection-${connection.id}`,
+        label: connection.connectionName,
+        icon: Database,
+        defaultExpanded: true,
+        actions: (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              actions.onDisconnectConnection()
+            }}
+            className="inline-flex size-8 items-center justify-center rounded-lg border border-white/8 bg-white/4 text-white/45 transition-colors hover:bg-rose-400/10 hover:text-rose-200"
+            aria-label="Desconectar conexão"
+            title="Desconectar conexão"
+          >
+            <LogOut className="size-3.5" />
+          </button>
+        ),
+        children: [
+          {
+            id: `databases-${connection.id}`,
+            label: "Banco de dados",
+            icon: FolderGit2,
+            defaultExpanded: true,
+            children: databaseStructure.databases.map((database) =>
+              buildDatabaseNode(connection, database, actions)
+            ),
+          },
+        ],
+      },
+    ]
+  }
+
+  const databaseNodeLabel = getDatabaseNodeLabel(connection)
+  const schemaNodes = getSchemaNodes(connection, databaseStructure, actions)
+
+  return [
+    {
+      id: `connection-${connection.id}`,
+      label: connection.connectionName,
+      icon: Database,
+      defaultExpanded: true,
+      actions: (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            actions.onDisconnectConnection()
+          }}
+          className="inline-flex size-8 items-center justify-center rounded-lg border border-white/8 bg-white/4 text-white/45 transition-colors hover:bg-rose-400/10 hover:text-rose-200"
+          aria-label="Desconectar conexão"
+          title="Desconectar conexão"
+        >
+          <LogOut className="size-3.5" />
+        </button>
+      ),
+      children: [
+        {
+          id: `database-${connection.id}`,
+          label: databaseNodeLabel,
+          icon: FolderGit2,
+          defaultExpanded: true,
+          children: schemaNodes,
+        },
+      ],
+    },
+  ]
+}
+
+function buildDatabaseNode(
+  connection: SavedConnection,
+  database: DatabaseStructureDatabase,
+  actions: {
+    onDisconnectConnection: () => void
+    onInsertText: (text: string) => void
+    onPreviewTable: (tablePath: string) => Promise<void> | void
+    onExecuteTable: (tablePath: string) => Promise<void> | void
+    onRunTableQuery: (tablePath: string) => Promise<void> | void
+  }
+): TreeViewNode {
+  return {
+    id: `database-${connection.id}-${database.name}`,
+    label: database.name,
+    icon: Database,
+    defaultExpanded: true,
+    children: getSchemaNodesForDatabase(connection, database, actions),
+  }
+}
+
+function getSchemaNodes(
+  connection: SavedConnection,
+  databaseStructure: DatabaseStructure,
+  actions: {
+    onDisconnectConnection: () => void
+    onInsertText: (text: string) => void
+    onPreviewTable: (tablePath: string) => Promise<void> | void
+    onExecuteTable: (tablePath: string) => Promise<void> | void
+    onRunTableQuery: (tablePath: string) => Promise<void> | void
+  }
+): TreeViewNode[] {
+  return getSchemaNodesForDatabase(connection, {
+    name: getDatabaseNodeLabel(connection),
+    schemas: databaseStructure.schemas,
+    groups: databaseStructure.groups,
+  }, actions)
+}
+
+function getSchemaNodesForDatabase(
+  connection: SavedConnection,
+  database: DatabaseStructureDatabase,
+  actions: {
+    onDisconnectConnection: () => void
+    onInsertText: (text: string) => void
+    onPreviewTable: (tablePath: string) => Promise<void> | void
+    onExecuteTable: (tablePath: string) => Promise<void> | void
+    onRunTableQuery: (tablePath: string) => Promise<void> | void
+  }
+): TreeViewNode[] {
+  const schemas = database.schemas.length
+    ? database.schemas
+    : [{ name: getDefaultSchemaName(connection), groups: database.groups }]
+
+  return schemas.map((schema) => ({
+    id: `schema-${connection.id}-${schema.name}`,
+    label: schema.name,
+    icon: Layers3,
+    defaultExpanded: true,
+    children: schema.groups.map((group) => {
+      const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? Table2
+      const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
+      const isTableGroup = group.label === "Tabelas"
+
+      return {
+        id: `${connection.id}-${schema.name}-${group.label}`,
+        label: group.label,
+        icon: Icon,
+        badge: group.items.length,
+        defaultExpanded: true,
+        children: group.items.map((item) => {
+          const tableReference = getTableReference(connection, schema.name, item)
+
+          return {
+            id: `${connection.id}-${schema.name}-${group.label}-${item}`,
+            label: item,
+            icon: FileCode2,
+            isLeaf: true,
+            onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
+            contextActions: (
+              <TreeContextMenu
+                objectPath={tableReference}
+                onInsertText={() => actions.onInsertText(`SELECT *\nFROM ${tableReference};`)}
+                onPreviewTable={() => void actions.onPreviewTable(tableReference)}
+                onExecuteTable={() => void actions.onExecuteTable(tableReference)}
+                supportsQueryActions={supportsQueryActions}
+              />
+            ),
+          }
+        }),
+      }
+    }),
+  }))
+}
+
+function TreeContextMenu({
+  objectPath,
+  onInsertText,
+  onPreviewTable,
+  onExecuteTable,
+  supportsQueryActions,
 }: {
-  icon: ComponentType<{ className?: string }>
-  label: string
-  active?: boolean
+  objectPath: string
+  onInsertText: () => void
+  onPreviewTable: () => void
+  onExecuteTable: () => void
+  supportsQueryActions: boolean
 }) {
   return (
-    <div
-      className={cn(
-        "flex items-center gap-2 rounded-lg px-3 py-2 text-sm",
-        active ? "bg-sky-400/10 text-white" : "text-white/70"
-      )}
-    >
-      <Icon className="size-4 text-sky-300/90" />
-      <span className="truncate">{label}</span>
+    <div className="space-y-1 p-1">
+      <ContextMenuItem label={`Inserir ${objectPath}`} onClick={onInsertText} />
+      {supportsQueryActions ? (
+        <>
+          <ContextMenuItem label={`Pré-visualizar ${objectPath}`} onClick={onPreviewTable} />
+          <ContextMenuItem label={`Executar ${objectPath}`} onClick={onExecuteTable} />
+        </>
+      ) : null}
     </div>
   )
 }
 
-function TreeBranch({
-  icon: Icon,
-  label,
-}: {
-  icon: ComponentType<{ className?: string }>
-  label: string
-}) {
+function ContextMenuItem({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg px-6 py-2 text-sm text-white/62">
-      <Icon className="size-4 text-white/35" />
-      <span>{label}</span>
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white/75 transition-colors hover:bg-white/8 hover:text-white"
+    >
+      <CornerDownRight className="size-3.5 text-white/35" />
+      <span className="truncate">{label}</span>
+    </button>
   )
+}
+
+function getDatabaseNodeLabel(connection: SavedConnection) {
+  const label = getDatabaseLabel(connection.databaseType)
+
+  if (connection.databaseType === "sqlite") {
+    return label
+  }
+
+  const databaseName = connection.databaseName.trim()
+  return databaseName ? `${label}: ${databaseName}` : label
+}
+
+function getDefaultSchemaName(connection: SavedConnection) {
+  if (connection.databaseType === "sqlite") {
+    return "main"
+  }
+
+  return connection.databaseName.trim() || "schema_1"
+}
+
+function getTableReference(connection: SavedConnection, schemaName: string, tableName: string) {
+  const normalizedSchema = schemaName.trim()
+  const normalizedTable = tableName.trim()
+
+  if (!normalizedSchema || !normalizedTable) {
+    return normalizedTable || normalizedSchema
+  }
+
+  if (connection.databaseType === "sqlite" && normalizedSchema === "main") {
+    return normalizedTable
+  }
+
+  if (connection.databaseType === "postgresql" && normalizedSchema === "public") {
+    return normalizedTable
+  }
+
+  if (connection.databaseType === "sqlserver" && normalizedSchema === "dbo") {
+    return normalizedTable
+  }
+
+  if (
+    (connection.databaseType === "mysql" || connection.databaseType === "mariadb") &&
+    normalizedSchema === connection.databaseName.trim()
+  ) {
+    return normalizedTable
+  }
+
+  return `${normalizedSchema}.${normalizedTable}`
 }

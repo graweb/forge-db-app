@@ -1,10 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import type { ComponentType } from "react"
 import { useRouter } from "next/navigation"
 import {
   BrainCircuit,
+  ArrowRight,
   CheckCircle2,
   Code2,
   Database,
@@ -31,7 +32,7 @@ import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
-import type { DatabaseType } from "@/lib/connections"
+import type { DatabaseType, SavedConnection } from "@/lib/connections"
 
 type ConnectionForm = {
   connectionName: string
@@ -46,10 +47,29 @@ type ConnectionForm = {
 
 type TestResult =
   | {
+      status: "error"
+      message: string
+      details: string
+      durationMs: number
+    }
+  | {
       status: "success"
       message: string
       details: string
       durationMs: number
+    }
+
+type ConnectionsResult =
+  | {
+      status: "loading"
+    }
+  | {
+      status: "loaded"
+      connections: SavedConnection[]
+    }
+  | {
+      status: "error"
+      message: string
     }
   | {
       status: "error"
@@ -136,6 +156,55 @@ export default function Home() {
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<TestResult | null>(null)
   const [form, setForm] = useState<ConnectionForm>(initialForm)
+  const [connectionsState, setConnectionsState] = useState<ConnectionsResult>({
+    status: "loading",
+  })
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadConnections = async () => {
+      try {
+        const response = await fetch("/api/connections")
+        const payload: {
+          success: boolean
+          connections?: SavedConnection[]
+          message?: string
+          details?: string
+        } = await response.json()
+
+        if (cancelled) {
+          return
+        }
+
+        if (!response.ok || !payload.success) {
+          setConnectionsState({
+            status: "error",
+            message: payload.details || payload.message || "Não foi possível carregar as conexões.",
+          })
+          return
+        }
+
+        setConnectionsState({
+          status: "loaded",
+          connections: payload.connections ?? [],
+        })
+      } catch {
+        if (!cancelled) {
+          setConnectionsState({
+            status: "error",
+            message: "Não foi possível carregar as conexões salvas.",
+          })
+        }
+      }
+    }
+
+    void loadConnections()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const updateForm = (field: keyof ConnectionForm, value: string) => {
     setForm((current) => ({ ...current, [field]: value }))
@@ -258,6 +327,8 @@ export default function Home() {
   const isSqlite = databaseType === "sqlite"
   const selectedDatabaseLabel =
     databaseOptions.find((option) => option.id === databaseType)?.label ?? "Banco"
+  const savedConnections =
+    connectionsState.status === "loaded" ? connectionsState.connections : []
 
   return (
     <main className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top,rgba(72,116,255,0.16),transparent_30%),radial-gradient(circle_at_85%_0%,rgba(32,80,180,0.22),transparent_28%),linear-gradient(180deg,#050816_0%,#07111f_52%,#03060b_100%)] text-white">
@@ -509,6 +580,62 @@ export default function Home() {
               <CardTitle className="text-xl text-white">Recursos</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5 rounded-[1.1rem] border border-white/8 bg-[#090e1b]/70 pt-5">
+              <div className="rounded-2xl border border-white/10 bg-white/4 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-white">Conexões salvas</div>
+                    <div className="text-xs text-white/45">
+                      {connectionsState.status === "loaded"
+                        ? `${savedConnections.length} conexão(ões) no SQLite local`
+                        : connectionsState.status === "loading"
+                          ? "Carregando conexões..."
+                          : connectionsState.message}
+                    </div>
+                  </div>
+                  <Database className="size-4 text-white/35" />
+                </div>
+
+                <div className="space-y-2">
+                  {connectionsState.status === "loaded" ? (
+                    savedConnections.length ? (
+                      savedConnections.map((connection) => (
+                        <button
+                          key={connection.id}
+                          type="button"
+                          onClick={() => router.push(`/dashboard/${connection.id}`)}
+                          className="group flex w-full items-center gap-3 rounded-xl border border-white/8 bg-white/4 px-3 py-2.5 text-left transition-colors hover:border-sky-400/25 hover:bg-sky-400/10"
+                        >
+                          <div className="flex size-9 items-center justify-center rounded-lg border border-white/10 bg-white/6 text-white/75">
+                            <Database className="size-4" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm text-white">
+                              {connection.connectionName}
+                            </div>
+                            <div className="truncate text-xs text-white/45">
+                              {connection.databaseType === "sqlite"
+                                ? connection.databaseFile || "SQLite local"
+                                : `${connection.user}@${connection.host}:${connection.port}`}
+                            </div>
+                          </div>
+                          <ArrowRight className="size-4 text-white/30 transition-transform group-hover:translate-x-0.5 group-hover:text-white/70" />
+                        </button>
+                      ))
+                    ) : (
+                      <div className="rounded-xl border border-dashed border-white/10 bg-black/10 px-3 py-4 text-sm text-white/45">
+                        Nenhuma conexão salva ainda. Crie a primeira conexão abaixo.
+                      </div>
+                    )
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-white/10 bg-black/10 px-3 py-4 text-sm text-white/45">
+                      {connectionsState.status === "loading"
+                        ? "Carregando conexões salvas..."
+                        : connectionsState.message}
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="space-y-4">
                 {highlights.map((item) => {
                   const Icon = item.icon

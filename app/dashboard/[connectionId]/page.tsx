@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation"
 
 import { DashboardShell } from "@/components/dashboard/shell"
-import { getConnectionById, listConnections } from "@/lib/connections"
+import { getConnectionById, getDatabaseStructure, listConnections } from "@/lib/connections"
 
 export const runtime = "nodejs"
 
@@ -18,6 +18,13 @@ export default async function DashboardPage({
   }
 
   const recentConnections = listConnections(8)
+  const databaseStructure = await getDatabaseStructure(connection)
 
-  return <DashboardShell connection={connection} recentConnections={recentConnections} />
+  return (
+    <DashboardShell
+      connection={connection}
+      recentConnections={recentConnections}
+      databaseStructure={databaseStructure}
+    />
+  )
 }

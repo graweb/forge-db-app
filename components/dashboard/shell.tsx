@@ -1,20 +1,31 @@
 "use client"
 
-import { useState } from "react"
+import { useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 
-import type { SavedConnection } from "@/lib/connections"
+import type { DatabaseStructure, SavedConnection } from "@/lib/connections"
 
-import { DashboardEditorWorkspace } from "./editor-workspace"
+import {
+  DashboardEditorWorkspace,
+  type DashboardEditorWorkspaceHandle,
+} from "./editor-workspace"
 import { DashboardSidebar } from "./sidebar"
 import { DashboardStatusbar } from "./statusbar"
 
 type DashboardShellProps = {
   connection: SavedConnection
   recentConnections: SavedConnection[]
+  databaseStructure: DatabaseStructure
 }
 
-export function DashboardShell({ connection, recentConnections }: DashboardShellProps) {
+export function DashboardShell({
+  connection,
+  recentConnections,
+  databaseStructure,
+}: DashboardShellProps) {
   const [activePane, setActivePane] = useState<"connections" | "editor">("editor")
+  const editorWorkspaceRef = useRef<DashboardEditorWorkspaceHandle | null>(null)
+  const router = useRouter()
 
   return (
     <main className="h-dvh overflow-hidden bg-[linear-gradient(180deg,#060a11_0%,#080e17_100%)] text-white">
@@ -48,14 +59,37 @@ export function DashboardShell({ connection, recentConnections }: DashboardShell
               activePane === "connections" ? "flex-1" : "hidden lg:block"
             }`}
           >
-            <DashboardSidebar connection={connection} recentConnections={recentConnections} />
+            <DashboardSidebar
+              connection={connection}
+              recentConnections={recentConnections}
+              databaseStructure={databaseStructure}
+              onDisconnectConnection={() => {
+                router.replace("/")
+              }}
+              onInsertText={(text) => {
+                editorWorkspaceRef.current?.insertText(text)
+                setActivePane("editor")
+              }}
+              onPreviewTable={(tablePath) => {
+                setActivePane("editor")
+                return editorWorkspaceRef.current?.previewTable(tablePath)
+              }}
+              onExecuteTable={(tablePath) => {
+                setActivePane("editor")
+                return editorWorkspaceRef.current?.executeTable(tablePath)
+              }}
+              onRunTableQuery={(tablePath) => {
+                setActivePane("editor")
+                return editorWorkspaceRef.current?.runTableQuery(tablePath)
+              }}
+            />
           </div>
           <div
             className={`min-h-0 flex-1 overflow-hidden ${
               activePane === "editor" ? "flex" : "hidden lg:flex"
             }`}
           >
-            <DashboardEditorWorkspace connection={connection} />
+            <DashboardEditorWorkspace ref={editorWorkspaceRef} connection={connection} />
           </div>
         </div>
 
