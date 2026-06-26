@@ -359,9 +359,9 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
               </div>
             </div>
 
-            <div className="min-h-0 overflow-auto p-4">
+            <div className="min-h-0 overflow-hidden p-4">
               {activeTab === "resultado" ? (
-                <div className="space-y-3">
+                <div className="flex h-full min-h-0 flex-col">
                   <QueryResults
                     key={queryResult ? resultNonce : "empty-result"}
                     result={queryResult}

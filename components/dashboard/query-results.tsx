@@ -85,133 +85,139 @@ export function QueryResults({ result }: QueryResultsProps) {
   }
 
   return (
-    <div className="space-y-4 rounded-2xl border border-white/10 bg-[#07111d] p-4">
-      <div className="flex flex-col gap-3 border-b border-white/10 pb-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div className="text-sm font-medium text-white">Resultado da consulta</div>
-          <div className="text-xs text-white/45">
-            {sortedRows.length.toLocaleString("pt-BR")} linha(s) exibida(s) de{" "}
-            {result.rowCount.toLocaleString("pt-BR")}
-          </div>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-white/10 bg-[#07111d]">
+      <div className="min-h-0 flex-1 overflow-hidden rounded-2xl">
+        <div className="flex h-full min-h-0 flex-col bg-[#07111d]">
+          <div className="shrink-0 border-b border-white/10 bg-[#07111d]">
+            <Table className="min-w-190">
+              <TableHeader className="bg-[#07111d]">
+                <TableRow className="hover:bg-transparent">
+                  <TableHead className="w-20">#</TableHead>
+                  {columns.map((column) => {
+                    const active = sort?.column === column
 
-        <div className="flex flex-wrap items-center gap-2 text-xs text-white/55">
-          <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1">
-            Ordenação: {sort ? `${sort.column} (${sort.direction})` : "padrão"}
-          </span>
-          <label className="flex items-center gap-2">
-            <span>Linhas</span>
-            <select
-              value={pageSize}
-              onChange={(event) => {
-                setPageSize(Number(event.target.value))
-                setPage(1)
-              }}
-              className="h-9 rounded-lg border border-white/10 bg-[#050913] px-3 text-sm text-white outline-none transition-colors focus:border-sky-400/60"
-            >
-              {PAGE_SIZE_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      </div>
+                    return (
+                      <TableHead key={column} className="min-w-40">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSort((current) => {
+                              if (current?.column === column) {
+                                return {
+                                  column,
+                                  direction: current.direction === "asc" ? "desc" : "asc",
+                                }
+                              }
 
-      <div className="overflow-hidden rounded-2xl border border-white/10">
-        <Table className="min-w-190">
-          <TableHeader className="bg-white/4">
-            <TableRow className="hover:bg-transparent">
-              <TableHead className="w-20">#</TableHead>
-              {columns.map((column) => {
-                const active = sort?.column === column
-
-                return (
-                  <TableHead key={column} className="min-w-40">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSort((current) => {
-                          if (current?.column === column) {
-                            return {
-                              column,
-                              direction: current.direction === "asc" ? "desc" : "asc",
-                            }
-                          }
-
-                          return { column, direction: "asc" }
-                        })
-                      }}
-                      className="flex w-full items-center gap-2 text-left text-white/60 transition-colors hover:text-white"
-                    >
-                      <span className="truncate">{column}</span>
-                      {active ? (
-                        sort?.direction === "asc" ? (
-                          <ArrowUp className="size-4 shrink-0 text-sky-300" />
-                        ) : (
-                          <ArrowDown className="size-4 shrink-0 text-sky-300" />
-                        )
-                      ) : (
-                        <ArrowUpDown className="size-4 shrink-0 text-white/30" />
-                      )}
-                    </button>
-                  </TableHead>
-                )
-              })}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {pagedRows.map((row, index) => {
-              const absoluteIndex = (safePage - 1) * pageSize + index + 1
-
-              return (
-                <TableRow key={`${absoluteIndex}-${Object.values(row).join("-")}`}>
-                  <TableCell className="text-white/45">{absoluteIndex}</TableCell>
-                  {columns.map((column) => (
-                    <TableCell key={column}>{formatCell(row[column])}</TableCell>
-                  ))}
+                              return { column, direction: "asc" }
+                            })
+                          }}
+                          className="flex w-full items-center gap-2 text-left text-white/60 transition-colors hover:text-white"
+                        >
+                          <span className="truncate">{column}</span>
+                          {active ? (
+                            sort?.direction === "asc" ? (
+                              <ArrowUp className="size-4 shrink-0 text-sky-300" />
+                            ) : (
+                              <ArrowDown className="size-4 shrink-0 text-sky-300" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="size-4 shrink-0 text-white/30" />
+                          )}
+                        </button>
+                      </TableHead>
+                    )
+                  })}
                 </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-      </div>
-
-      <div className="flex flex-col gap-3 border-t border-white/10 pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-xs text-white/45">
-          Exibindo {(safePage - 1) * pageSize + 1}-
-          {Math.min(safePage * pageSize, sortedRows.length)} de {sortedRows.length} linha(s)
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-            disabled={safePage <= 1}
-            className="border-white/10 bg-white/4 text-white hover:bg-white/8"
-          >
-            <ChevronLeft className="size-4" />
-            Anterior
-          </Button>
-
-          <div className="rounded-lg border border-white/10 bg-white/4 px-3 py-2 text-xs text-white/55">
-            Página {safePage} de {totalPages}
+              </TableHeader>
+            </Table>
           </div>
 
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-            disabled={safePage >= totalPages}
-            className="border-white/10 bg-white/4 text-white hover:bg-white/8"
-          >
-            Próxima
-            <ChevronRight className="size-4" />
-          </Button>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <Table className="min-w-190">
+              <TableBody>
+                {pagedRows.map((row, index) => {
+                  const absoluteIndex = (safePage - 1) * pageSize + index + 1
+
+                  return (
+                    <TableRow key={`${absoluteIndex}-${Object.values(row).join("-")}`}>
+                      <TableCell className="text-white/45">{absoluteIndex}</TableCell>
+                      {columns.map((column) => (
+                        <TableCell key={column}>{formatCell(row[column])}</TableCell>
+                      ))}
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="shrink-0 border-t border-white/10 bg-[#07111d]">
+            <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-white/55">
+                <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1">
+                  {sortedRows.length.toLocaleString("pt-BR")} linha(s) exibida(s) de{" "}
+                  {result.rowCount.toLocaleString("pt-BR")}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1">
+                  Ordenação: {sort ? `${sort.column} (${sort.direction})` : "padrão"}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-xs text-white/55">
+                  <span>Linhas</span>
+                  <select
+                    value={pageSize}
+                    onChange={(event) => {
+                      setPageSize(Number(event.target.value))
+                      setPage(1)
+                    }}
+                    className="h-9 rounded-lg border border-white/10 bg-[#050913] px-3 text-sm text-white outline-none transition-colors focus:border-sky-400/60"
+                  >
+                    {PAGE_SIZE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  disabled={safePage <= 1}
+                  className="border-white/10 bg-white/4 text-white hover:bg-white/8"
+                >
+                  <ChevronLeft className="size-4" />
+                  Anterior
+                </Button>
+
+                <div className="rounded-lg border border-white/10 bg-white/4 px-3 py-2 text-xs text-white/55">
+                  Exibindo {(safePage - 1) * pageSize + 1}-
+                  {Math.min(safePage * pageSize, sortedRows.length)} de {sortedRows.length} linha(s)
+                </div>
+
+                <div className="rounded-lg border border-white/10 bg-white/4 px-3 py-2 text-xs text-white/55">
+                  Página {safePage} de {totalPages}
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                  disabled={safePage >= totalPages}
+                  className="border-white/10 bg-white/4 text-white hover:bg-white/8"
+                >
+                  Próxima
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
