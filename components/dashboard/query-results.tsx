@@ -7,7 +7,10 @@ import {
   ArrowUpDown,
   ChevronLeft,
   ChevronRight,
+  Edit,
   GripVertical,
+  Plus,
+  Trash,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -186,7 +189,17 @@ export function QueryResults({ result }: QueryResultsProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-white/10 bg-[#07111d]">
       <div className="shrink-0 border-b border-white/10 px-4 py-3">
-        <div className="text-sm font-medium text-white">Resultado da consulta</div>
+        <div className="text-sm font-medium text-white">
+          <Button variant="ghost" size="sm">
+            <Plus />
+          </Button>
+          <Button variant="ghost" size="sm">
+            <Edit />
+          </Button>
+          <Button variant="ghost" size="sm">
+            <Trash />
+          </Button>          
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
@@ -285,7 +298,9 @@ export function QueryResults({ result }: QueryResultsProps) {
         </Table>
       </div>
 
-      <div className="shrink-0 border-t border-white/10 bg-[#07111d]">
+      <span className="border-t border-white/10" />
+
+      <div className="shrink-0 bg-[#07111d] rounded-2xl">
         <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2 text-xs text-white/55">
             <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1">
