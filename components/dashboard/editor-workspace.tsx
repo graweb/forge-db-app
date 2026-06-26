@@ -51,6 +51,14 @@ type DashboardEditorWorkspaceProps = {
 
 export type DashboardEditorWorkspaceHandle = {
   insertText: (text: string) => void
+  executeSqlText: (
+    sql: string,
+    options?: {
+      title?: string
+      databaseName?: string
+      insertIntoEditor?: boolean
+    }
+  ) => Promise<void>
   previewTable: (tablePath: string) => Promise<void>
   executeTable: (tablePath: string) => Promise<void>
   runTableQuery: (tablePath: string) => Promise<void>
@@ -703,6 +711,9 @@ export const DashboardEditorWorkspace = forwardRef<
         insertTextIntoEditor(editor, text)
         setSqlText(editor.getValue())
         editor.focus()
+      },
+      executeSqlText: async (sql: string, options) => {
+        await executeSqlTextRef.current(sql, options)
       },
       previewTable: async (tablePath: string) => {
         await executeSqlTextRef.current(`SELECT *\nFROM ${tablePath}\nLIMIT 100;`, {

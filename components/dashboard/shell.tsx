@@ -14,6 +14,7 @@ import type {
 import { ConnectionModal } from "@/components/connections/connection-modal"
 import { CreateDatabaseModal } from "./create-database-modal"
 import { CreateTableModal } from "./create-table-modal"
+import { DeleteTableModal } from "./delete-table-modal"
 import { DeleteDatabaseModal } from "./delete-database-modal"
 import {
   DashboardEditorWorkspace,
@@ -33,6 +34,28 @@ type DashboardShellProps = {
 type ShellNotice = {
   title: string
   message: string
+}
+
+type TableTarget = {
+  connection: SavedConnection
+  database: DatabaseStructureDatabase
+  schemaName: string
+  tableName: string
+  comment: string
+  columns: Array<{
+    name: string
+    dataType: string
+    size: string
+    notNull: boolean
+    primaryKey: boolean
+    autoIncrement: boolean
+    defaultValue: string
+    comment: string
+  }>
+  foreignKeys: string[]
+  indexes: string[]
+  triggers: string[]
+  functions: string[]
 }
 
 export function DashboardShell({
@@ -58,6 +81,9 @@ export function DashboardShell({
     null
   )
   const [tableTargetSchema, setTableTargetSchema] = useState<string>("")
+  const [tableTarget, setTableTarget] = useState<TableTarget | null>(null)
+  const [tableModalMode, setTableModalMode] = useState<"create" | "edit">("create")
+  const [isDeleteTableModalOpen, setIsDeleteTableModalOpen] = useState(false)
   const [editingConnection, setEditingConnection] = useState<SavedConnection | null>(null)
   const [databaseTargetConnection, setDatabaseTargetConnection] = useState<SavedConnection | null>(null)
   const [databaseTarget, setDatabaseTarget] = useState<DatabaseStructureDatabase | null>(null)
@@ -162,11 +188,120 @@ export function DashboardShell({
                 setIsDatabaseModalOpen(true)
               }}
               onCreateTable={(connectionToUse, databaseToUse, schemaName) => {
+                setTableModalMode("create")
+                setTableTarget(null)
                 setTableTargetConnection(connectionToUse)
                 setTableTargetDatabase(databaseToUse)
                 setTableTargetSchema(schemaName)
                 setTableModalKey((current) => current + 1)
                 setIsTableModalOpen(true)
+              }}
+              onEditTable={async (connectionToUse, databaseToUse, schemaName, tableName) => {
+                const databaseName =
+                  connectionToUse.databaseType === "sqlserver"
+                    ? databaseToUse.name
+                    : connectionToUse.databaseName
+
+                setActivePane("editor")
+                setTableModalMode("edit")
+
+                try {
+                  const response = await fetch(
+                    `/api/connections/${connectionToUse.id}/tables/${encodeURIComponent(tableName)}?databaseName=${encodeURIComponent(
+                      databaseName
+                    )}&schemaName=${encodeURIComponent(schemaName)}`
+                  )
+
+                  const payload: {
+                    success: boolean
+                    message: string
+                    details: string
+                    databaseName?: string
+                    schemaName?: string
+                    tableName?: string
+                    comment?: string
+                    columns?: Array<{
+                      name: string
+                      dataType: string
+                      size: string
+                      notNull: boolean
+                      primaryKey: boolean
+                      autoIncrement: boolean
+                      defaultValue: string
+                      comment: string
+                    }>
+                    foreignKeys?: string[]
+                    indexes?: string[]
+                    triggers?: string[]
+                    functions?: string[]
+                  } = await response.json()
+
+                  if (!response.ok || !payload.success) {
+                    showNotice({
+                      title: "Não foi possível carregar a tabela",
+                      message: payload.details || payload.message || "Tente novamente em instantes.",
+                    })
+                    return
+                  }
+
+                  setTableTarget({
+                    connection: connectionToUse,
+                    database: databaseToUse,
+                    schemaName: payload.schemaName || schemaName,
+                    tableName: payload.tableName || tableName,
+                    comment: payload.comment ?? "",
+                    columns: payload.columns ?? [],
+                    foreignKeys: payload.foreignKeys ?? [],
+                    indexes: payload.indexes ?? [],
+                    triggers: payload.triggers ?? [],
+                    functions: payload.functions ?? [],
+                  })
+                  setTableTargetConnection(connectionToUse)
+                  setTableTargetDatabase(databaseToUse)
+                  setTableTargetSchema(payload.schemaName || schemaName)
+                  setTableModalKey((current) => current + 1)
+                  setIsTableModalOpen(true)
+                } catch {
+                  showNotice({
+                    title: "Erro ao carregar tabela",
+                    message: "Não foi possível abrir a tabela para edição.",
+                  })
+                }
+              }}
+              onDeleteTable={(connectionToUse, databaseToUse, schemaName, tableName) => {
+                setTableTarget({
+                  connection: connectionToUse,
+                  database: databaseToUse,
+                  schemaName,
+                  tableName,
+                  comment: "",
+                  columns: [],
+                  foreignKeys: [],
+                  indexes: [],
+                  triggers: [],
+                  functions: [],
+                })
+                setIsDeleteTableModalOpen(true)
+              }}
+              onSelect100Rows={(connectionToUse, databaseToUse, schemaName, tableName) => {
+                const databaseName =
+                  connectionToUse.databaseType === "sqlserver"
+                    ? databaseToUse.name
+                    : connectionToUse.databaseName
+
+                const tablePath =
+                  connectionToUse.databaseType === "sqlserver"
+                    ? `[${databaseName}].[${schemaName}].[${tableName}]`
+                    : connectionToUse.databaseType === "postgresql"
+                      ? `"${schemaName}"."${tableName}"`
+                      : tableName
+
+                setActivePane("editor")
+                editorWorkspaceRef.current?.executeSqlText(`SELECT *\nFROM ${tablePath}\nLIMIT 100;`, {
+                  title: `Selecionar 100 linhas: ${tableName}`,
+                  databaseName,
+                  insertIntoEditor: true,
+                })
               }}
               onEditDatabase={(connectionToUse, databaseToEdit) => {
                 setDatabaseModalMode("edit")
@@ -332,18 +467,31 @@ export function DashboardShell({
       />
 
       <CreateTableModal
-        key={`${tableTargetConnection?.id ?? "none"}-${tableTargetDatabase?.name ?? "none"}-${tableTargetSchema}-${tableModalKey}`}
+        key={`${tableModalMode}-${tableTargetConnection?.id ?? "none"}-${tableTargetDatabase?.name ?? "none"}-${tableTargetSchema}-${tableTarget?.tableName ?? "new"}-${tableModalKey}`}
         open={isTableModalOpen}
         connection={tableTargetConnection}
         databaseName={tableTargetDatabase?.name}
         schemaName={tableTargetSchema}
         schemaOptions={tableTargetDatabase?.schemas.map((schema) => schema.name) ?? []}
+        mode={tableModalMode}
+        table={
+          tableModalMode === "edit" && tableTarget
+            ? {
+                databaseName: tableTarget.database.name,
+                schemaName: tableTarget.schemaName,
+                tableName: tableTarget.tableName,
+                comment: tableTarget.comment,
+                columns: tableTarget.columns,
+              }
+            : null
+        }
         onOpenChange={(open) => {
           setIsTableModalOpen(open)
           if (!open) {
             setTableTargetConnection(null)
             setTableTargetDatabase(null)
             setTableTargetSchema("")
+            setTableTarget(null)
           }
         }}
         onSaved={async () => {
@@ -351,10 +499,37 @@ export function DashboardShell({
           setTableTargetConnection(null)
           setTableTargetDatabase(null)
           setTableTargetSchema("")
+          setTableTarget(null)
           router.refresh()
           showNotice({
-            title: "Tabela criada",
-            message: "A estrutura foi atualizada após a criação da tabela.",
+            title: tableModalMode === "edit" ? "Tabela atualizada" : "Tabela criada",
+            message:
+              tableModalMode === "edit"
+                ? "A estrutura foi atualizada após a edição da tabela."
+                : "A estrutura foi atualizada após a criação da tabela.",
+          })
+        }}
+      />
+
+      <DeleteTableModal
+        open={isDeleteTableModalOpen}
+        connection={tableTarget?.connection ?? null}
+        database={tableTarget?.database ?? null}
+        schemaName={tableTarget?.schemaName}
+        tableName={tableTarget?.tableName}
+        onOpenChange={(open) => {
+          setIsDeleteTableModalOpen(open)
+          if (!open) {
+            setTableTarget(null)
+          }
+        }}
+        onDeleted={async () => {
+          setIsDeleteTableModalOpen(false)
+          setTableTarget(null)
+          router.refresh()
+          showNotice({
+            title: "Tabela excluída",
+            message: "A estrutura foi atualizada após a exclusão da tabela.",
           })
         }}
       />

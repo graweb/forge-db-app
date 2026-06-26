@@ -141,6 +141,52 @@ export type CreateTableResult = {
   schemaName: string
 }
 
+export type TableColumnDefinition = {
+  name: string
+  dataType: string
+  size: string
+  notNull: boolean
+  primaryKey: boolean
+  autoIncrement: boolean
+  defaultValue: string
+  comment: string
+}
+
+export type TableDetails = {
+  databaseName: string
+  schemaName: string
+  tableName: string
+  comment: string
+  columns: TableColumnDefinition[]
+  foreignKeys: string[]
+  indexes: string[]
+  triggers: string[]
+  functions: string[]
+}
+
+export type UpdateTableInput = {
+  databaseName: string
+  schemaName: string
+  tableName: string
+  nextTableName: string
+  columns: Array<TableColumnDefinition & { sourceName?: string }>
+  comment: string
+}
+
+export type UpdateTableResult = {
+  message: string
+  details: string
+  tableName: string
+  schemaName: string
+}
+
+export type DeleteTableResult = {
+  message: string
+  details: string
+  tableName: string
+  schemaName: string
+}
+
 const access = promisify(accessCb)
 const appDataDir = path.join(process.cwd(), "data")
 const databasePath = path.join(appDataDir, "forge-db.sqlite")
@@ -776,6 +822,496 @@ export async function deleteDatabase(
 
     case "sqlite":
       throw new Error("Não é possível excluir bancos de dados SQLite por esta tela.")
+
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function getTableDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  tableName: string
+): Promise<TableDetails> {
+  const normalizedDatabase = sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim()
+  const normalizedSchema = sanitizeDatabaseIdentifier(schemaName) || getFallbackSchemaName(connection)
+  const normalizedTable = sanitizeDatabaseIdentifier(tableName)
+
+  if (!normalizedTable) {
+    throw new Error("Informe uma tabela válida.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb":
+      return getMySqlLikeTableDetails(connection, normalizedDatabase, normalizedSchema, normalizedTable)
+    case "postgresql":
+      return getPostgreSqlTableDetails(connection, normalizedDatabase, normalizedSchema, normalizedTable)
+    case "sqlserver":
+      return getSqlServerTableDetails(connection, normalizedDatabase, normalizedSchema, normalizedTable)
+    case "sqlite":
+      return getSqliteTableDetails(connection, normalizedTable)
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function updateTable(
+  connection: SavedConnection,
+  input: UpdateTableInput
+): Promise<UpdateTableResult> {
+  const normalizedDatabase = sanitizeDatabaseIdentifier(input.databaseName) || connection.databaseName.trim()
+  const normalizedSchema = sanitizeDatabaseIdentifier(input.schemaName) || getFallbackSchemaName(connection)
+  const originalTableName = sanitizeDatabaseIdentifier(input.tableName)
+  const nextTableName = sanitizeDatabaseIdentifier(input.nextTableName)
+  const normalizedColumns = input.columns
+    .map((column) => ({
+      sourceName: sanitizeDatabaseIdentifier(column.sourceName ?? column.name) || column.name,
+      name: sanitizeDatabaseIdentifier(column.name),
+      dataType: sanitizeText(column.dataType).toUpperCase(),
+      size: sanitizeText(column.size),
+      notNull: Boolean(column.notNull),
+      primaryKey: Boolean(column.primaryKey),
+      autoIncrement: Boolean(column.autoIncrement),
+      defaultValue: sanitizeText(column.defaultValue),
+      comment: sanitizeText(column.comment),
+    }))
+    .filter((column) => Boolean(column.name))
+
+  if (!originalTableName) {
+    throw new Error("Informe uma tabela válida para atualizar.")
+  }
+
+  if (!nextTableName) {
+    throw new Error("Informe um novo nome válido para a tabela.")
+  }
+
+  if (!normalizedColumns.length) {
+    throw new Error("Informe ao menos uma coluna válida para atualizar a tabela.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb": {
+      const client =
+        connection.databaseType === "mysql"
+          ? await mysql.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              database: normalizedDatabase,
+              connectTimeout: 5000,
+              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+            })
+          : await mariadb.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              database: normalizedDatabase,
+              connectTimeout: 5000,
+              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+            })
+
+      try {
+        const tempTableName = `${originalTableName}__forge_tmp_${randomUUID().replace(/-/g, "").slice(0, 10)}`
+        const qualifiedOriginal = `${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+          connection.databaseType,
+          originalTableName
+        )}`
+        const qualifiedTemp = `${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+          connection.databaseType,
+          tempTableName
+        )}`
+
+        await createSqlTableLike(
+          connection,
+          normalizedSchema,
+          tempTableName,
+          input.comment,
+          normalizedColumns,
+          connection.databaseType
+        )
+
+        const targetColumns = normalizedColumns.map((column) =>
+          quoteIdentifier(connection.databaseType, column.name)
+        )
+        const sourceColumns = normalizedColumns.map((column) =>
+          quoteIdentifier(connection.databaseType, column.sourceName || column.name)
+        )
+
+        if (targetColumns.length) {
+          await client.query(
+            `INSERT INTO ${qualifiedTemp} (${targetColumns.join(", ")}) SELECT ${sourceColumns.join(
+              ", "
+            )} FROM ${qualifiedOriginal}`
+          )
+        }
+
+        await client.query(`DROP TABLE ${qualifiedOriginal}`)
+
+        if (tempTableName !== nextTableName) {
+          await client.query(
+            `RENAME TABLE ${qualifiedTemp} TO ${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+              connection.databaseType,
+              nextTableName
+            )}`
+          )
+        } else {
+          await client.query(
+            `RENAME TABLE ${qualifiedTemp} TO ${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+              connection.databaseType,
+              originalTableName
+            )}`
+          )
+        }
+
+        return {
+          message: "Tabela atualizada com sucesso.",
+          details:
+            nextTableName === originalTableName
+              ? `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`
+              : `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`,
+          tableName: nextTableName,
+          schemaName: normalizedSchema,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "postgresql": {
+      const client = new PostgresClient({
+        host: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 5432,
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        database: normalizedDatabase || "postgres",
+        connectionTimeoutMillis: 5000,
+        ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+      })
+
+      await client.connect()
+
+      try {
+        const tempTableName = `${originalTableName}__forge_tmp_${randomUUID().replace(/-/g, "").slice(0, 10)}`
+        const qualifiedOriginal = `${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
+          "postgresql",
+          originalTableName
+        )}`
+        const qualifiedTemp = `${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
+          "postgresql",
+          tempTableName
+        )}`
+
+        await createPostgreSqlTable(connection, normalizedSchema, tempTableName, input.comment, normalizedColumns)
+
+        const targetColumns = normalizedColumns.map((column) => quoteIdentifier("postgresql", column.name))
+        const sourceColumns = normalizedColumns.map((column) =>
+          quoteIdentifier("postgresql", column.sourceName || column.name)
+        )
+
+        if (targetColumns.length) {
+          await client.query(
+            `INSERT INTO ${qualifiedTemp} (${targetColumns.join(", ")}) SELECT ${sourceColumns.join(
+              ", "
+            )} FROM ${qualifiedOriginal}`
+          )
+        }
+
+        await client.query(`DROP TABLE ${qualifiedOriginal}`)
+        await client.query(
+          `ALTER TABLE ${qualifiedTemp} RENAME TO ${quoteIdentifier("postgresql", nextTableName)}`
+        )
+
+        return {
+          message: "Tabela atualizada com sucesso.",
+          details:
+            nextTableName === originalTableName
+              ? `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`
+              : `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`,
+          tableName: nextTableName,
+          schemaName: normalizedSchema,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "sqlserver": {
+      const pool = await sql.connect({
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        server: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 1433,
+        database: normalizedDatabase || "master",
+        options: {
+          encrypt: Boolean(connection.useSsl),
+          trustServerCertificate: true,
+        },
+        connectionTimeout: 5000,
+        requestTimeout: 5000,
+      })
+
+      try {
+        const tempTableName = `${originalTableName}__forge_tmp_${randomUUID().replace(/-/g, "").slice(0, 10)}`
+        const qualifiedOriginal = `${quoteSqlServerIdentifier(normalizedSchema)}.${quoteSqlServerIdentifier(
+          originalTableName
+        )}`
+        const qualifiedTemp = `${quoteSqlServerIdentifier(normalizedSchema)}.${quoteSqlServerIdentifier(
+          tempTableName
+        )}`
+
+        await createSqlServerTable(
+          connection,
+          normalizedDatabase,
+          normalizedSchema,
+          tempTableName,
+          input.comment,
+          normalizedColumns
+        )
+
+        const targetColumns = normalizedColumns.map((column) => quoteSqlServerIdentifier(column.name))
+        const sourceColumns = normalizedColumns.map((column) =>
+          quoteSqlServerIdentifier(column.sourceName || column.name)
+        )
+
+        if (targetColumns.length) {
+          const identityInsert = normalizedColumns.some((column) => column.autoIncrement)
+
+          if (identityInsert) {
+            await pool.request().query(`SET IDENTITY_INSERT ${qualifiedTemp} ON`)
+          }
+
+          try {
+            await pool.request().query(
+              `INSERT INTO ${qualifiedTemp} (${targetColumns.join(", ")}) SELECT ${sourceColumns.join(
+                ", "
+              )} FROM ${qualifiedOriginal}`
+            )
+          } finally {
+            if (identityInsert) {
+              await pool.request().query(`SET IDENTITY_INSERT ${qualifiedTemp} OFF`)
+            }
+          }
+        }
+
+        await pool.request().query(`DROP TABLE ${qualifiedOriginal}`)
+        await pool.request().query(
+          `EXEC sp_rename ${quoteSqlLiteral(`${normalizedSchema}.${tempTableName}`)}, ${quoteSqlLiteral(
+            nextTableName
+          )}`
+        )
+
+        return {
+          message: "Tabela atualizada com sucesso.",
+          details:
+            nextTableName === originalTableName
+              ? `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`
+              : `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`,
+          tableName: nextTableName,
+          schemaName: normalizedSchema,
+        }
+      } finally {
+        await pool.close()
+      }
+    }
+
+    case "sqlite": {
+      const filePath = sanitizeText(connection.databaseFile)
+      if (!filePath) {
+        throw new Error("Informe o arquivo SQLite da conexão.")
+      }
+
+      const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
+      const db = new Database(resolvedPath)
+
+      try {
+        const tempTableName = `${originalTableName}__forge_tmp_${randomUUID().replace(/-/g, "").slice(0, 10)}`
+        const qualifiedOriginal = quoteIdentifier("sqlite", originalTableName)
+        const qualifiedTemp = quoteIdentifier("sqlite", tempTableName)
+
+        await createSqliteTable(connection, tempTableName, input.comment, normalizedColumns)
+
+        const targetColumns = normalizedColumns.map((column) => quoteIdentifier("sqlite", column.name))
+        const sourceColumns = normalizedColumns.map((column) =>
+          quoteIdentifier("sqlite", column.sourceName || column.name)
+        )
+
+        if (targetColumns.length) {
+          db.exec(
+            `INSERT INTO ${qualifiedTemp} (${targetColumns.join(", ")}) SELECT ${sourceColumns.join(
+              ", "
+            )} FROM ${qualifiedOriginal}`
+          )
+        }
+
+        db.exec(`DROP TABLE ${qualifiedOriginal}`)
+        db.exec(`ALTER TABLE ${qualifiedTemp} RENAME TO ${quoteIdentifier("sqlite", nextTableName)}`)
+
+        return {
+          message: "Tabela atualizada com sucesso.",
+          details:
+            nextTableName === originalTableName
+              ? `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`
+              : `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`,
+          tableName: nextTableName,
+          schemaName: "main",
+        }
+      } finally {
+        db.close()
+      }
+    }
+
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function deleteTable(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  tableName: string
+): Promise<DeleteTableResult> {
+  const normalizedDatabase = sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim()
+  const normalizedSchema = sanitizeDatabaseIdentifier(schemaName) || getFallbackSchemaName(connection)
+  const normalizedTable = sanitizeDatabaseIdentifier(tableName)
+
+  if (!normalizedTable) {
+    throw new Error("Informe uma tabela válida para excluir.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb": {
+      const client =
+        connection.databaseType === "mysql"
+          ? await mysql.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              database: normalizedDatabase,
+              connectTimeout: 5000,
+              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+            })
+          : await mariadb.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              database: normalizedDatabase,
+              connectTimeout: 5000,
+              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+            })
+
+      try {
+        await client.query(
+          `DROP TABLE IF EXISTS ${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+            connection.databaseType,
+            normalizedTable
+          )}`
+        )
+
+        return {
+          message: "Tabela excluída com sucesso.",
+          details: `A tabela ${normalizedTable} foi removida.`,
+          tableName: normalizedTable,
+          schemaName: normalizedSchema,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "postgresql": {
+      const client = new PostgresClient({
+        host: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 5432,
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        database: normalizedDatabase || "postgres",
+        connectionTimeoutMillis: 5000,
+        ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+      })
+
+      await client.connect()
+
+      try {
+        await client.query(
+          `DROP TABLE IF EXISTS ${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
+            "postgresql",
+            normalizedTable
+          )} CASCADE`
+        )
+
+        return {
+          message: "Tabela excluída com sucesso.",
+          details: `A tabela ${normalizedTable} foi removida.`,
+          tableName: normalizedTable,
+          schemaName: normalizedSchema,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "sqlserver": {
+      const pool = await sql.connect({
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        server: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 1433,
+        database: normalizedDatabase || "master",
+        options: {
+          encrypt: Boolean(connection.useSsl),
+          trustServerCertificate: true,
+        },
+        connectionTimeout: 5000,
+        requestTimeout: 5000,
+      })
+
+      try {
+        await pool.request().query(
+          `DROP TABLE ${quoteSqlServerIdentifier(normalizedSchema)}.${quoteSqlServerIdentifier(normalizedTable)}`
+        )
+
+        return {
+          message: "Tabela excluída com sucesso.",
+          details: `A tabela ${normalizedTable} foi removida.`,
+          tableName: normalizedTable,
+          schemaName: normalizedSchema,
+        }
+      } finally {
+        await pool.close()
+      }
+    }
+
+    case "sqlite": {
+      const filePath = sanitizeText(connection.databaseFile)
+      if (!filePath) {
+        throw new Error("Informe o arquivo SQLite da conexão.")
+      }
+
+      const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
+      const db = new Database(resolvedPath)
+
+      try {
+        db.exec(`DROP TABLE IF EXISTS ${quoteIdentifier("sqlite", normalizedTable)}`)
+
+        return {
+          message: "Tabela excluída com sucesso.",
+          details: `A tabela ${normalizedTable} foi removida.`,
+          tableName: normalizedTable,
+          schemaName: "main",
+        }
+      } finally {
+        db.close()
+      }
+    }
 
     default:
       throw new Error("Tipo de banco não suportado.")
@@ -2067,6 +2603,511 @@ async function getSqlServerDatabaseStructure(
     groups: schemas[0]?.groups ?? [],
     collation,
   }
+}
+
+async function getMySqlLikeTableDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  tableName: string
+): Promise<TableDetails> {
+  const client =
+    connection.databaseType === "mysql"
+      ? await mysql.createConnection({
+          host: sanitizeText(connection.host) || "localhost",
+          port: parsePort(connection.port) ?? 3306,
+          user: sanitizeText(connection.user),
+          password: connection.password ?? "",
+          database: databaseName,
+          connectTimeout: 5000,
+          ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+        })
+      : await mariadb.createConnection({
+          host: sanitizeText(connection.host) || "localhost",
+          port: parsePort(connection.port) ?? 3306,
+          user: sanitizeText(connection.user),
+          password: connection.password ?? "",
+          database: databaseName,
+          connectTimeout: 5000,
+          ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+        })
+
+  try {
+    const rows = await runMySqlLikeMetadataQuery(
+      client,
+      connection.databaseType,
+      `
+        SELECT
+          COLUMN_NAME AS name,
+          DATA_TYPE AS data_type,
+          CHARACTER_MAXIMUM_LENGTH AS char_length,
+          NUMERIC_PRECISION AS numeric_precision,
+          NUMERIC_SCALE AS numeric_scale,
+          IS_NULLABLE AS is_nullable,
+          COLUMN_DEFAULT AS default_value,
+          COLUMN_KEY AS column_key,
+          EXTRA AS extra,
+          COLUMN_COMMENT AS comment
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION
+      `,
+      [schemaName, tableName]
+    )
+
+    const tableRows = await runMySqlLikeMetadataQuery(
+      client,
+      connection.databaseType,
+      `
+        SELECT TABLE_COMMENT AS comment
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME = ?
+        LIMIT 1
+      `,
+      [schemaName, tableName]
+    )
+    const foreignKeys = await runMySqlLikeMetadataQuery(
+      client,
+      connection.databaseType,
+      `
+        SELECT DISTINCT
+          rc.CONSTRAINT_NAME AS name,
+          kcu.COLUMN_NAME AS column_name,
+          kcu.REFERENCED_TABLE_NAME AS referenced_table,
+          kcu.REFERENCED_COLUMN_NAME AS referenced_column
+        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+        INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+          ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+         AND rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+        WHERE kcu.TABLE_SCHEMA = ?
+          AND kcu.TABLE_NAME = ?
+          AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+        ORDER BY rc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+      `,
+      [schemaName, tableName]
+    )
+    const indexes = await runMySqlLikeMetadataQuery(
+      client,
+      connection.databaseType,
+      `
+        SELECT DISTINCT INDEX_NAME AS name
+        FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = ?
+          AND TABLE_NAME = ?
+          AND INDEX_NAME <> 'PRIMARY'
+        ORDER BY INDEX_NAME
+      `,
+      [schemaName, tableName]
+    )
+    const triggers = await runMySqlLikeMetadataQuery(
+      client,
+      connection.databaseType,
+      `
+        SELECT TRIGGER_NAME AS name
+        FROM INFORMATION_SCHEMA.TRIGGERS
+        WHERE TRIGGER_SCHEMA = ?
+          AND EVENT_OBJECT_TABLE = ?
+        ORDER BY TRIGGER_NAME
+      `,
+      [schemaName, tableName]
+    )
+    const functions = await runMySqlLikeMetadataQuery(
+      client,
+      connection.databaseType,
+      `
+        SELECT ROUTINE_NAME AS name
+        FROM INFORMATION_SCHEMA.ROUTINES
+        WHERE ROUTINE_SCHEMA = ?
+          AND ROUTINE_TYPE = 'FUNCTION'
+        ORDER BY ROUTINE_NAME
+      `,
+      [schemaName]
+    )
+
+    return {
+      databaseName,
+      schemaName,
+      tableName,
+      comment: String(tableRows[0]?.comment ?? tableRows[0]?.COMMENT ?? "").trim(),
+      columns: rows.map((row) => ({
+        name: String(row.name ?? row.COLUMN_NAME ?? "").trim(),
+        dataType: String(row.data_type ?? row.DATA_TYPE ?? "").trim().toUpperCase(),
+        size: normalizeColumnSize(row.char_length, row.numeric_precision, row.numeric_scale),
+        notNull: String(row.is_nullable ?? row.IS_NULLABLE ?? "").toUpperCase() === "NO",
+        primaryKey: String(row.column_key ?? row.COLUMN_KEY ?? "").toUpperCase() === "PRI",
+        autoIncrement: String(row.extra ?? row.EXTRA ?? "").toLowerCase().includes("auto_increment"),
+        defaultValue: String(row.default_value ?? row.COLUMN_DEFAULT ?? "").trim(),
+        comment: String(row.comment ?? row.COLUMN_COMMENT ?? "").trim(),
+      })),
+      foreignKeys: foreignKeys.map((row) => {
+        const constraintName = String(row.name ?? row.CONSTRAINT_NAME ?? "").trim()
+        const columnName = String(row.column_name ?? row.COLUMN_NAME ?? "").trim()
+        const referencedTable = String(row.referenced_table ?? row.REFERENCED_TABLE_NAME ?? "").trim()
+        const referencedColumn = String(row.referenced_column ?? row.REFERENCED_COLUMN_NAME ?? "").trim()
+        return `${constraintName}: ${columnName} -> ${referencedTable}.${referencedColumn}`
+      }),
+      indexes: extractNames(indexes),
+      triggers: extractNames(triggers),
+      functions: extractNames(functions),
+    }
+  } finally {
+    await client.end()
+  }
+}
+
+async function getPostgreSqlTableDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  tableName: string
+): Promise<TableDetails> {
+  const client = new PostgresClient({
+    host: sanitizeText(connection.host) || "localhost",
+    port: parsePort(connection.port) ?? 5432,
+    user: sanitizeText(connection.user),
+    password: connection.password ?? "",
+    database: databaseName || undefined,
+    connectionTimeoutMillis: 5000,
+    ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+  })
+
+  await client.connect()
+
+  try {
+    const columnsResult = await client.query(
+      `
+        SELECT
+          column_name AS name,
+          data_type,
+          character_maximum_length,
+          numeric_precision,
+          numeric_scale,
+          is_nullable,
+          column_default
+        FROM information_schema.columns
+        WHERE table_schema = $1
+          AND table_name = $2
+        ORDER BY ordinal_position
+      `,
+      [schemaName, tableName]
+    )
+
+    const pkResult = await client.query(
+      `
+        SELECT kcu.column_name AS name
+        FROM information_schema.table_constraints tc
+        INNER JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+         AND tc.table_name = kcu.table_name
+        WHERE tc.constraint_type = 'PRIMARY KEY'
+          AND tc.table_schema = $1
+          AND tc.table_name = $2
+      `,
+      [schemaName, tableName]
+    )
+
+    const commentResult = await client.query(
+      `
+        SELECT COALESCE(obj_description(($1 || '.' || $2)::regclass), '') AS comment
+      `,
+      [schemaName, tableName]
+    )
+    const fkResult = await client.query(
+      `
+        SELECT
+          tc.constraint_name AS name,
+          kcu.column_name AS column_name,
+          ccu.table_name AS referenced_table,
+          ccu.column_name AS referenced_column
+        FROM information_schema.table_constraints tc
+        INNER JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+         AND tc.table_name = kcu.table_name
+        INNER JOIN information_schema.constraint_column_usage ccu
+          ON tc.constraint_name = ccu.constraint_name
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+          AND tc.table_schema = $1
+          AND tc.table_name = $2
+        ORDER BY tc.constraint_name, kcu.ordinal_position
+      `,
+      [schemaName, tableName]
+    )
+    const indexResult = await client.query(
+      `
+        SELECT indexname AS name
+        FROM pg_indexes
+        WHERE schemaname = $1
+          AND tablename = $2
+          AND indexname NOT LIKE '%_pkey'
+        ORDER BY indexname
+      `,
+      [schemaName, tableName]
+    )
+    const triggerResult = await client.query(
+      `
+        SELECT trigger_name AS name
+        FROM information_schema.triggers
+        WHERE trigger_schema = $1
+          AND event_object_table = $2
+        ORDER BY trigger_name
+      `,
+      [schemaName, tableName]
+    )
+    const functionResult = await client.query(
+      `
+        SELECT routine_name AS name
+        FROM information_schema.routines
+        WHERE routine_schema = $1
+          AND routine_type = 'FUNCTION'
+        ORDER BY routine_name
+      `,
+      [schemaName]
+    )
+
+    const primaryKeys = new Set(extractNames(pkResult.rows))
+
+    return {
+      databaseName,
+      schemaName,
+      tableName,
+      comment: String(commentResult.rows[0]?.comment ?? commentResult.rows[0]?.COMMENT ?? "").trim(),
+      columns: columnsResult.rows.map((row) => ({
+        name: String(row.name ?? "").trim(),
+        dataType: String(row.data_type ?? "").trim().toUpperCase(),
+        size: normalizeColumnSize(row.character_maximum_length, row.numeric_precision, row.numeric_scale),
+        notNull: String(row.is_nullable ?? "").toUpperCase() === "NO",
+        primaryKey: primaryKeys.has(String(row.name ?? "").trim()),
+        autoIncrement: String(row.column_default ?? "").toLowerCase().includes("nextval("),
+        defaultValue: String(row.column_default ?? "").trim(),
+        comment: "",
+      })),
+      foreignKeys: fkResult.rows.map((row) => {
+        const name = String(row.name ?? "").trim()
+        const column = String(row.column_name ?? "").trim()
+        const referencedTable = String(row.referenced_table ?? "").trim()
+        const referencedColumn = String(row.referenced_column ?? "").trim()
+        return `${name}: ${column} -> ${referencedTable}.${referencedColumn}`
+      }),
+      indexes: extractNames(indexResult.rows),
+      triggers: extractNames(triggerResult.rows),
+      functions: extractNames(functionResult.rows),
+    }
+  } finally {
+    await client.end()
+  }
+}
+
+async function getSqlServerTableDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  tableName: string
+): Promise<TableDetails> {
+  const pool = await sql.connect({
+    user: sanitizeText(connection.user),
+    password: connection.password ?? "",
+    server: sanitizeText(connection.host) || "localhost",
+    port: parsePort(connection.port) ?? 1433,
+    database: databaseName || "master",
+    options: {
+      encrypt: Boolean(connection.useSsl),
+      trustServerCertificate: true,
+    },
+    connectionTimeout: 5000,
+    requestTimeout: 5000,
+  })
+
+  try {
+    const fullObjectName = `${schemaName}.${tableName}`
+    const columnsResult = await pool.request().query(`
+      SELECT
+        c.name AS name,
+        t.name AS data_type,
+        c.max_length AS max_length,
+        c.precision AS precision,
+        c.scale AS scale,
+        c.is_nullable AS is_nullable,
+        c.is_identity AS is_identity,
+        dc.definition AS default_value,
+        CAST(ep.value AS nvarchar(4000)) AS comment
+      FROM sys.columns c
+      INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+      LEFT JOIN sys.default_constraints dc ON c.default_object_id = dc.object_id
+      LEFT JOIN sys.extended_properties ep
+        ON ep.major_id = c.object_id
+       AND ep.minor_id = c.column_id
+       AND ep.name = 'MS_Description'
+      WHERE c.object_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
+      ORDER BY c.column_id
+    `)
+
+    const pkResult = await pool.request().query(`
+      SELECT c.name AS name
+      FROM sys.indexes i
+      INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+      INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+      WHERE i.is_primary_key = 1
+        AND i.object_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
+    `)
+
+    const commentResult = await pool.request().query(`
+      SELECT CAST(ep.value AS nvarchar(4000)) AS comment
+      FROM sys.extended_properties ep
+      WHERE ep.major_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
+        AND ep.minor_id = 0
+        AND ep.name = 'MS_Description'
+    `)
+    const fkResult = await pool.request().query(`
+      SELECT
+        fk.name AS name,
+        pc.name AS column_name,
+        rt.name AS referenced_table,
+        rc.name AS referenced_column
+      FROM sys.foreign_keys fk
+      INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+      INNER JOIN sys.columns pc ON fkc.parent_object_id = pc.object_id AND fkc.parent_column_id = pc.column_id
+      INNER JOIN sys.tables rtbl ON fkc.referenced_object_id = rtbl.object_id
+      INNER JOIN sys.columns rc ON fkc.referenced_object_id = rc.object_id AND fkc.referenced_column_id = rc.column_id
+      INNER JOIN sys.tables rt ON rtbl.object_id = rt.object_id
+      WHERE fk.parent_object_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
+      ORDER BY fk.name, fkc.constraint_column_id
+    `)
+    const indexResult = await pool.request().query(`
+      SELECT name
+      FROM sys.indexes
+      WHERE object_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
+        AND name IS NOT NULL
+        AND is_primary_key = 0
+      ORDER BY name
+    `)
+    const triggerResult = await pool.request().query(`
+      SELECT name
+      FROM sys.triggers
+      WHERE parent_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
+      ORDER BY name
+    `)
+    const functionResult = await pool.request().query(`
+      SELECT o.name AS name
+      FROM sys.objects o
+      INNER JOIN sys.schemas s ON o.schema_id = s.schema_id
+      WHERE s.name = ${quoteSqlLiteral(schemaName)}
+        AND o.type IN ('FN', 'IF', 'TF')
+      ORDER BY o.name
+    `)
+
+    const primaryKeys = new Set(extractNames(pkResult.recordset as Array<Record<string, unknown>>))
+
+    return {
+      databaseName,
+      schemaName,
+      tableName,
+      comment: String(commentResult.recordset[0]?.comment ?? commentResult.recordset[0]?.COMMENT ?? "").trim(),
+      columns: (columnsResult.recordset as Array<Record<string, unknown>>).map((row) => ({
+        name: String(row.name ?? "").trim(),
+        dataType: String(row.data_type ?? "").trim().toUpperCase(),
+        size: normalizeColumnSize(row.max_length, row.precision, row.scale),
+        notNull: Boolean(row.is_nullable) === false,
+        primaryKey: primaryKeys.has(String(row.name ?? "").trim()),
+        autoIncrement: Boolean(row.is_identity),
+        defaultValue: String(row.default_value ?? "").trim(),
+        comment: String(row.comment ?? "").trim(),
+      })),
+      foreignKeys: extractNames(fkResult.recordset as Array<Record<string, unknown>>).map((name) => name),
+      indexes: extractNames(indexResult.recordset as Array<Record<string, unknown>>),
+      triggers: extractNames(triggerResult.recordset as Array<Record<string, unknown>>),
+      functions: extractNames(functionResult.recordset as Array<Record<string, unknown>>),
+    }
+  } finally {
+    await pool.close()
+  }
+}
+
+async function getSqliteTableDetails(
+  connection: SavedConnection,
+  tableName: string
+): Promise<TableDetails> {
+  const filePath = sanitizeText(connection.databaseFile)
+  if (!filePath) {
+    throw new Error("Informe o arquivo SQLite da conexão.")
+  }
+
+  const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
+  const db = new Database(resolvedPath)
+
+  try {
+    const pragmaRows = db.prepare(`PRAGMA table_info(${quoteSqlLiteral(tableName)})`).all() as Array<{
+      name?: string
+      type?: string
+      notnull?: number
+      dflt_value?: string | null
+      pk?: number
+    }>
+    const foreignKeyRows = db
+      .prepare(`PRAGMA foreign_key_list(${quoteSqlLiteral(tableName)})`)
+      .all() as Array<{ id?: number; from?: string; table?: string; to?: string }>
+    const indexRows = db
+      .prepare(`PRAGMA index_list(${quoteSqlLiteral(tableName)})`)
+      .all() as Array<{ name?: string }>
+    const triggerRows = db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ${quoteSqlLiteral(tableName)} ORDER BY name`
+      )
+      .all() as Array<{ name?: string }>
+
+    return {
+      databaseName: connection.databaseFile || "main",
+      schemaName: "main",
+      tableName,
+      comment: "",
+      columns: pragmaRows.map((row) => ({
+        name: String(row.name ?? "").trim(),
+        dataType: String(row.type ?? "").trim().toUpperCase(),
+        size: "",
+        notNull: Boolean(row.notnull),
+        primaryKey: Boolean(row.pk),
+        autoIncrement: false,
+        defaultValue: String(row.dflt_value ?? "").trim(),
+        comment: "",
+      })),
+      foreignKeys: foreignKeyRows.map((row) => {
+        const from = String(row.from ?? "").trim()
+        const refTable = String(row.table ?? "").trim()
+        const to = String(row.to ?? "").trim()
+        return `${from} -> ${refTable}.${to}`
+      }),
+      indexes: extractNames(indexRows),
+      triggers: extractNames(triggerRows),
+      functions: [],
+    }
+  } finally {
+    db.close()
+  }
+}
+
+function normalizeColumnSize(
+  length?: unknown,
+  precision?: unknown,
+  scale?: unknown
+) {
+  const normalizedLength = Number(length)
+  const normalizedPrecision = Number(precision)
+  const normalizedScale = Number(scale)
+
+  if (Number.isFinite(normalizedLength) && normalizedLength > 0) {
+    return String(normalizedLength)
+  }
+
+  if (Number.isFinite(normalizedPrecision) && normalizedPrecision > 0) {
+    return Number.isFinite(normalizedScale) && normalizedScale > 0
+      ? `${normalizedPrecision},${normalizedScale}`
+      : String(normalizedPrecision)
+  }
+
+  return ""
 }
 
 function createGroup(

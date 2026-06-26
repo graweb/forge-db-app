@@ -41,6 +41,24 @@ type DashboardSidebarProps = {
     database: DatabaseStructureDatabase,
     schemaName: string
   ) => void
+  onEditTable: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    tableName: string
+  ) => void
+  onDeleteTable: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    tableName: string
+  ) => void
+  onSelect100Rows: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    tableName: string
+  ) => void
   onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDisconnectConnection: () => void
@@ -70,6 +88,9 @@ export function DashboardSidebar({
   onAddConnection,
   onCreateDatabase,
   onCreateTable,
+  onEditTable,
+  onDeleteTable,
+  onSelect100Rows,
   onEditDatabase,
   onDeleteDatabase,
   onDisconnectConnection,
@@ -86,6 +107,9 @@ export function DashboardSidebar({
     connectionAvailabilityById,
     onCreateDatabase,
     onCreateTable,
+    onEditTable,
+    onDeleteTable,
+    onSelect100Rows,
     onEditDatabase,
     onDeleteDatabase,
     onDisconnectConnection,
@@ -139,6 +163,24 @@ function buildTreeNodes(
       connection: SavedConnection,
       database: DatabaseStructureDatabase,
       schemaName: string
+    ) => void
+    onEditTable: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string,
+      tableName: string
+    ) => void
+    onDeleteTable: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string,
+      tableName: string
+    ) => void
+    onSelect100Rows: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string,
+      tableName: string
     ) => void
     onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
@@ -343,6 +385,24 @@ function buildDatabaseNode(
       database: DatabaseStructureDatabase,
       schemaName: string
     ) => void
+    onEditTable: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string,
+      tableName: string
+    ) => void
+    onDeleteTable: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string,
+      tableName: string
+    ) => void
+    onSelect100Rows: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string,
+      tableName: string
+    ) => void
     onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onRefreshDatabaseStructure: () => void
@@ -454,6 +514,9 @@ function getSchemaNodesForDatabase(
             item,
             connection.databaseType === "sqlserver" ? database.name : undefined
           )
+          const tableSchemaName =
+            connection.databaseType === "sqlite" ? "main" : schema.name
+          const tableName = item
 
           return {
             id: `${connection.id}-${schema.name}-${group.label}-${item}`,
@@ -461,7 +524,20 @@ function getSchemaNodesForDatabase(
             icon: FileCode2,
             isLeaf: true,
             onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
-            contextActions: (
+            contextActions: isTableGroup ? (
+              <TableItemContextMenu
+                onCreateTable={() => actions.onCreateTable(connection, database, schema.name)}
+                onEditTable={() =>
+                  actions.onEditTable(connection, database, tableSchemaName, tableName)
+                }
+                onDeleteTable={() =>
+                  actions.onDeleteTable(connection, database, tableSchemaName, tableName)
+                }
+                onSelect100Rows={() =>
+                  actions.onSelect100Rows(connection, database, tableSchemaName, tableName)
+                }
+              />
+            ) : (
               <TreeContextMenu
                 objectPath={tableReference}
                 onInsertText={() => actions.onInsertText(`SELECT *\nFROM ${tableReference};`)}
@@ -499,6 +575,28 @@ function TreeContextMenu({
           <ContextMenuItem onSelect={onExecuteTable}>Executar {objectPath}</ContextMenuItem>
         </>
       ) : null}
+    </div>
+  )
+}
+
+function TableItemContextMenu({
+  onCreateTable,
+  onEditTable,
+  onDeleteTable,
+  onSelect100Rows,
+}: {
+  onCreateTable: () => void
+  onEditTable: () => void
+  onDeleteTable: () => void
+  onSelect100Rows: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem onSelect={onCreateTable}>Criar tabela</ContextMenuItem>
+      <ContextMenuItem onSelect={onEditTable}>Editar tabela</ContextMenuItem>
+      <ContextMenuItem onSelect={onDeleteTable}>Excluir tabela</ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={onSelect100Rows}>Selecionar 100 linhas</ContextMenuItem>
     </div>
   )
 }
