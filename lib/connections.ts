@@ -283,40 +283,95 @@ export async function testConnection(input: ConnectionInput): Promise<TestConnec
 
 export async function saveConnection(input: ConnectionInput) {
   const result = await testConnection(input)
-  const now = new Date().toISOString()
   const id = randomUUID()
+  persistConnectionRecord(id, input, true)
+
+  return { id, ...result }
+}
+
+export async function updateConnection(id: string, input: ConnectionInput) {
+  const existingConnection = getConnectionById(id)
+
+  if (!existingConnection) {
+    throw new Error("Conexão não encontrada.")
+  }
+
+  const result = await testConnection(input)
+  persistConnectionRecord(id, input, false)
+
+  return { id, ...result }
+}
+
+function persistConnectionRecord(id: string, input: ConnectionInput, isNewRecord: boolean) {
+  const now = new Date().toISOString()
   const db = ensureAppDatabase()
 
-  const statement = db.prepare(`
-    INSERT INTO connections (
+  if (isNewRecord) {
+    const statement = db.prepare(`
+      INSERT INTO connections (
+        id,
+        connection_name,
+        database_type,
+        host,
+        port,
+        user,
+        password,
+        database_name,
+        database_file,
+        additional,
+        use_ssl,
+        created_at,
+        updated_at
+      ) VALUES (
+        @id,
+        @connection_name,
+        @database_type,
+        @host,
+        @port,
+        @user,
+        @password,
+        @database_name,
+        @database_file,
+        @additional,
+        @use_ssl,
+        @created_at,
+        @updated_at
+      )
+    `)
+
+    statement.run({
       id,
-      connection_name,
-      database_type,
-      host,
-      port,
-      user,
-      password,
-      database_name,
-      database_file,
-      additional,
-      use_ssl,
-      created_at,
-      updated_at
-    ) VALUES (
-      @id,
-      @connection_name,
-      @database_type,
-      @host,
-      @port,
-      @user,
-      @password,
-      @database_name,
-      @database_file,
-      @additional,
-      @use_ssl,
-      @created_at,
-      @updated_at
-    )
+      connection_name: sanitizeText(input.connectionName) || "Conexão",
+      database_type: input.databaseType,
+      host: sanitizeText(input.host) || "localhost",
+      port: sanitizeText(input.port),
+      user: sanitizeText(input.user),
+      password: input.password ?? "",
+      database_name: sanitizeText(input.databaseName),
+      database_file: sanitizeText(input.databaseFile),
+      additional: sanitizeText(input.additional),
+      use_ssl: input.useSsl ? 1 : 0,
+      created_at: now,
+      updated_at: now,
+    })
+    return
+  }
+
+  const statement = db.prepare(`
+    UPDATE connections
+    SET
+      connection_name = @connection_name,
+      database_type = @database_type,
+      host = @host,
+      port = @port,
+      user = @user,
+      password = @password,
+      database_name = @database_name,
+      database_file = @database_file,
+      additional = @additional,
+      use_ssl = @use_ssl,
+      updated_at = @updated_at
+    WHERE id = @id
   `)
 
   statement.run({
@@ -331,11 +386,8 @@ export async function saveConnection(input: ConnectionInput) {
     database_file: sanitizeText(input.databaseFile),
     additional: sanitizeText(input.additional),
     use_ssl: input.useSsl ? 1 : 0,
-    created_at: now,
     updated_at: now,
   })
-
-  return { id, ...result }
 }
 
 async function executeSqliteQuery(connection: SavedConnection, sqlText: string) {

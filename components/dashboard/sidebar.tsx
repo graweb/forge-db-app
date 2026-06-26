@@ -2,35 +2,35 @@
 
 import {
   Clock3,
-  CornerDownRight,
   Database,
   FileCode2,
   FolderGit2,
   Layers3,
-  LogOut,
-  MoreHorizontal,
   Plus,
   Sigma,
   Table2,
   Wrench,
 } from "lucide-react"
 
+import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import {
+  ContextMenuItem,
+  ContextMenuSeparator,
+} from "@/components/ui/context-menu"
 import { TreeView, type TreeViewNode } from "@/components/ui/tree-view"
-import { cn } from "@/lib/utils"
 
-import { databaseIcons, getConnectionSubtitle, getDatabaseLabel } from "./shared"
-import type {
-  DatabaseStructure,
-  DatabaseStructureDatabase,
-  SavedConnection,
-} from "@/lib/connections"
+import { getDatabaseLabel } from "./shared"
+import type { DatabaseStructure, DatabaseStructureDatabase, SavedConnection } from "@/lib/connections"
 
 type DashboardSidebarProps = {
-  connection: SavedConnection
-  recentConnections: SavedConnection[]
-  databaseStructure: DatabaseStructure
+  activeConnectionId: string | null
+  connections: SavedConnection[]
+  databaseStructuresById: Record<string, DatabaseStructure>
+  onAddConnection: () => void
   onDisconnectConnection: () => void
+  onSelectConnection: (connectionId: string) => void
+  onEditConnection: (connection: SavedConnection) => void
   onInsertText: (text: string) => void
   onPreviewTable: (tablePath: string) => Promise<void> | void
   onExecuteTable: (tablePath: string) => Promise<void> | void
@@ -46,17 +46,22 @@ const sectionIcons = {
 }
 
 export function DashboardSidebar({
-  connection,
-  recentConnections,
-  databaseStructure,
+  activeConnectionId,
+  connections,
+  databaseStructuresById,
+  onAddConnection,
   onDisconnectConnection,
+  onSelectConnection,
+  onEditConnection,
   onInsertText,
   onPreviewTable,
   onExecuteTable,
   onRunTableQuery,
 }: DashboardSidebarProps) {
-  const treeNodes = buildTreeNodes(connection, databaseStructure, {
+  const treeNodes = buildTreeNodes(connections, activeConnectionId, databaseStructuresById, {
     onDisconnectConnection,
+    onSelectConnection,
+    onEditConnection,
     onInsertText,
     onPreviewTable,
     onExecuteTable,
@@ -67,59 +72,17 @@ export function DashboardSidebar({
     <aside className="flex h-full min-h-0 flex-col overflow-hidden border-r border-white/10 bg-[#07111d]/95">
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
         <section className="space-y-3">
-          <div className="flex items-center justify-between text-xs uppercase tracking-[0.24em] text-white/40">
-            <span>Conexões</span>
-            <Plus className="size-4 text-white/35" />
-          </div>
-          <div className="space-y-2">
-            {recentConnections.map((item) => {
-              const Icon = databaseIcons[item.databaseType]
-              const active = item.id === connection.id
+          <Button
+            type="button"
+            size="sm"
+            onClick={onAddConnection}
+            className="w-full justify-start gap-2 border border-white/10 bg-white/4 text-white hover:bg-white/8"
+            variant="outline"
+          >
+            <Plus className="size-4" />
+            Adicionar conexão
+          </Button>
 
-              return (
-                <div
-                  key={item.id}
-                  className={cn(
-                    "flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors",
-                    active
-                      ? "border-sky-400/25 bg-sky-400/10"
-                      : "border-white/8 bg-white/2 hover:bg-white/4"
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "flex size-8 items-center justify-center rounded-lg",
-                      active ? "bg-sky-400/18 text-sky-300" : "bg-white/6 text-white/65"
-                    )}
-                  >
-                    <Icon className="size-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm text-white">{item.connectionName}</div>
-                    <div className="truncate text-xs text-white/45">
-                      {getConnectionSubtitle(item)}
-                    </div>
-                  </div>
-                  {active ? (
-                    <button
-                      type="button"
-                      onClick={() => onDisconnectConnection()}
-                      className="inline-flex size-8 items-center justify-center rounded-lg border border-white/8 bg-white/4 text-white/45 transition-colors hover:bg-rose-400/10 hover:text-rose-200"
-                      aria-label="Desconectar conexão"
-                      title="Desconectar conexão"
-                    >
-                      <LogOut className="size-3.5" />
-                    </button>
-                  ) : (
-                    <MoreHorizontal className="size-4 text-white/25" />
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </section>
-
-        <section className="space-y-3">
           <div className="flex items-center justify-between text-xs uppercase tracking-[0.24em] text-white/40">
             <span>Estrutura</span>
             <Badge className="border-white/10 bg-white/5 text-white/65">live</Badge>
@@ -135,58 +98,95 @@ export function DashboardSidebar({
 }
 
 function buildTreeNodes(
-  connection: SavedConnection,
-  databaseStructure: DatabaseStructure,
+  connections: SavedConnection[],
+  activeConnectionId: string | null,
+  databaseStructuresById: Record<string, DatabaseStructure>,
   actions: {
     onDisconnectConnection: () => void
+    onSelectConnection: (connectionId: string) => void
+    onEditConnection: (connection: SavedConnection) => void
     onInsertText: (text: string) => void
     onPreviewTable: (tablePath: string) => Promise<void> | void
     onExecuteTable: (tablePath: string) => Promise<void> | void
     onRunTableQuery: (tablePath: string) => Promise<void> | void
   }
 ): TreeViewNode[] {
-  if (connection.databaseType === "sqlserver" && databaseStructure.databases.length > 0) {
-    return [
-      {
-        id: `connection-${connection.id}`,
-        label: connection.connectionName,
-        icon: Database,
-        defaultExpanded: false,
-        children: [
-          {
-            id: `databases-${connection.id}`,
-            label: "Banco de dados",
-            icon: FolderGit2,
-            defaultExpanded: false,
-            children: databaseStructure.databases.map((database) =>
-              buildDatabaseNode(connection, database, actions)
-            ),
-          },
-        ],
-      },
-    ]
-  }
+  return connections.map((connection) => {
+    const databaseStructure = databaseStructuresById[connection.id] ?? {
+      databases: [],
+      schemas: [],
+      groups: [],
+    }
+    const connectionSubtitle = getConnectionTreeSubtitle(connection)
+    const isActive = connection.id === activeConnectionId
 
-  const databaseNodeLabel = getDatabaseNodeLabel(connection)
-  const schemaNodes = getSchemaNodes(connection, databaseStructure, actions)
+    const childNodes =
+      connection.databaseType === "sqlserver" && databaseStructure.databases.length > 0
+        ? [
+            {
+              id: `databases-${connection.id}`,
+              label: "Banco de dados",
+              icon: FolderGit2,
+              defaultExpanded: false,
+              children: databaseStructure.databases.map((database) =>
+                buildDatabaseNode(connection, database, actions)
+              ),
+            },
+          ]
+        : [
+            {
+              id: `database-${connection.id}`,
+              label: getDatabaseNodeLabel(connection),
+              icon: FolderGit2,
+              defaultExpanded: false,
+              children: getSchemaNodes(connection, databaseStructure, actions),
+            },
+          ]
 
-  return [
-    {
+    return {
       id: `connection-${connection.id}`,
       label: connection.connectionName,
+      subtitle: connectionSubtitle,
       icon: Database,
       defaultExpanded: false,
-      children: [
-        {
-          id: `database-${connection.id}`,
-          label: databaseNodeLabel,
-          icon: FolderGit2,
-          defaultExpanded: false,
-          children: schemaNodes,
-        },
-      ],
-    },
-  ]
+      selected: isActive,
+      onSelect: () => actions.onSelectConnection(connection.id),
+      contextActions: (
+        <ConnectionTreeContextMenu
+          isActive={isActive}
+          onConnect={() => actions.onSelectConnection(connection.id)}
+          onDisconnect={actions.onDisconnectConnection}
+          onEdit={() => actions.onEditConnection(connection)}
+        />
+      ),
+      children: childNodes,
+    }
+  })
+}
+
+function ConnectionTreeContextMenu({
+  isActive,
+  onConnect,
+  onDisconnect,
+  onEdit,
+}: {
+  isActive: boolean
+  onConnect: () => void
+  onDisconnect: () => void
+  onEdit: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem disabled={isActive} onSelect={onConnect}>
+        Conectar
+      </ContextMenuItem>
+      <ContextMenuItem disabled={!isActive} onSelect={onDisconnect}>
+        Desconectar
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={onEdit}>Editar</ContextMenuItem>
+    </div>
+  )
 }
 
 function buildDatabaseNode(
@@ -302,28 +302,15 @@ function TreeContextMenu({
   supportsQueryActions: boolean
 }) {
   return (
-    <div className="space-y-1 p-1">
-      <ContextMenuItem label={`Inserir ${objectPath}`} onClick={onInsertText} />
+    <div className="p-1">
+      <ContextMenuItem onSelect={onInsertText}>Inserir {objectPath}</ContextMenuItem>
       {supportsQueryActions ? (
         <>
-          <ContextMenuItem label={`Pré-visualizar ${objectPath}`} onClick={onPreviewTable} />
-          <ContextMenuItem label={`Executar ${objectPath}`} onClick={onExecuteTable} />
+          <ContextMenuItem onSelect={onPreviewTable}>Pré-visualizar {objectPath}</ContextMenuItem>
+          <ContextMenuItem onSelect={onExecuteTable}>Executar {objectPath}</ContextMenuItem>
         </>
       ) : null}
     </div>
-  )
-}
-
-function ContextMenuItem({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white/75 transition-colors hover:bg-white/8 hover:text-white"
-    >
-      <CornerDownRight className="size-3.5 text-white/35" />
-      <span className="truncate">{label}</span>
-    </button>
   )
 }
 
@@ -336,6 +323,16 @@ function getDatabaseNodeLabel(connection: SavedConnection) {
 
   const databaseName = connection.databaseName.trim()
   return databaseName ? `${label}: ${databaseName}` : label
+}
+
+function getConnectionTreeSubtitle(connection: SavedConnection) {
+  if (connection.databaseType === "sqlite") {
+    return connection.databaseFile.trim() || "SQLite local"
+  }
+
+  const host = connection.host.trim() || "localhost"
+  const port = connection.port.trim()
+  return port ? `${host}:${port}` : host
 }
 
 function getDefaultSchemaName(connection: SavedConnection) {

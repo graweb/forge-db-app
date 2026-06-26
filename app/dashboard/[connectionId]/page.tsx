@@ -17,14 +17,20 @@ export default async function DashboardPage({
     notFound()
   }
 
-  const recentConnections = listConnections(8)
-  const databaseStructure = await getDatabaseStructure(connection)
+  const connections = listConnections(100)
+  const databaseStructuresById = Object.fromEntries(
+    await Promise.all(
+      connections.map(async (item) => [item.id, await getDatabaseStructure(item)] as const)
+    )
+  )
+  const databaseStructure = databaseStructuresById[connection.id] ?? (await getDatabaseStructure(connection))
 
   return (
     <DashboardShell
       connection={connection}
-      recentConnections={recentConnections}
+      connections={connections}
       databaseStructure={databaseStructure}
+      databaseStructuresById={databaseStructuresById}
     />
   )
 }
