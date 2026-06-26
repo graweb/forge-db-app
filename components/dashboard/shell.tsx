@@ -13,6 +13,7 @@ import type {
 
 import { ConnectionModal } from "@/components/connections/connection-modal"
 import { CreateDatabaseModal } from "./create-database-modal"
+import { CreateTableModal } from "./create-table-modal"
 import { DeleteDatabaseModal } from "./delete-database-modal"
 import {
   DashboardEditorWorkspace,
@@ -50,6 +51,13 @@ export function DashboardShell({
   const [isDatabaseModalOpen, setIsDatabaseModalOpen] = useState(false)
   const [databaseModalMode, setDatabaseModalMode] = useState<"create" | "edit">("create")
   const [databaseModalKey, setDatabaseModalKey] = useState(0)
+  const [isTableModalOpen, setIsTableModalOpen] = useState(false)
+  const [tableModalKey, setTableModalKey] = useState(0)
+  const [tableTargetConnection, setTableTargetConnection] = useState<SavedConnection | null>(null)
+  const [tableTargetDatabase, setTableTargetDatabase] = useState<DatabaseStructureDatabase | null>(
+    null
+  )
+  const [tableTargetSchema, setTableTargetSchema] = useState<string>("")
   const [editingConnection, setEditingConnection] = useState<SavedConnection | null>(null)
   const [databaseTargetConnection, setDatabaseTargetConnection] = useState<SavedConnection | null>(null)
   const [databaseTarget, setDatabaseTarget] = useState<DatabaseStructureDatabase | null>(null)
@@ -152,6 +160,13 @@ export function DashboardShell({
                 setDatabaseTarget(null)
                 setDatabaseModalKey((current) => current + 1)
                 setIsDatabaseModalOpen(true)
+              }}
+              onCreateTable={(connectionToUse, databaseToUse, schemaName) => {
+                setTableTargetConnection(connectionToUse)
+                setTableTargetDatabase(databaseToUse)
+                setTableTargetSchema(schemaName)
+                setTableModalKey((current) => current + 1)
+                setIsTableModalOpen(true)
               }}
               onEditDatabase={(connectionToUse, databaseToEdit) => {
                 setDatabaseModalMode("edit")
@@ -313,6 +328,34 @@ export function DashboardShell({
                   message: "A estrutura foi atualizada após a criação do novo banco.",
                 }
           )
+        }}
+      />
+
+      <CreateTableModal
+        key={`${tableTargetConnection?.id ?? "none"}-${tableTargetDatabase?.name ?? "none"}-${tableTargetSchema}-${tableModalKey}`}
+        open={isTableModalOpen}
+        connection={tableTargetConnection}
+        databaseName={tableTargetDatabase?.name}
+        schemaName={tableTargetSchema}
+        schemaOptions={tableTargetDatabase?.schemas.map((schema) => schema.name) ?? []}
+        onOpenChange={(open) => {
+          setIsTableModalOpen(open)
+          if (!open) {
+            setTableTargetConnection(null)
+            setTableTargetDatabase(null)
+            setTableTargetSchema("")
+          }
+        }}
+        onSaved={async () => {
+          setIsTableModalOpen(false)
+          setTableTargetConnection(null)
+          setTableTargetDatabase(null)
+          setTableTargetSchema("")
+          router.refresh()
+          showNotice({
+            title: "Tabela criada",
+            message: "A estrutura foi atualizada após a criação da tabela.",
+          })
         }}
       />
 

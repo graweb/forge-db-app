@@ -36,6 +36,15 @@ const DialogContent = React.forwardRef<
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      onEscapeKeyDown={(event) => {
+        event.preventDefault()
+      }}
+      onPointerDownOutside={(event) => {
+        event.preventDefault()
+      }}
+      onInteractOutside={(event) => {
+        event.preventDefault()
+      }}
       className={cn(
         "fixed left-1/2 top-1/2 z-50 w-[min(100vw-2rem,72rem)] -translate-x-1/2 -translate-y-1/2",
         "outline-none focus-visible:outline-none",

@@ -1,7 +1,7 @@
 "use client"
 
 import {
-  Clock3,
+  Eye,
   Database,
   FileCode2,
   FolderGit2,
@@ -25,6 +25,7 @@ import type {
   ConnectionAvailability,
   DatabaseStructure,
   DatabaseStructureDatabase,
+  DatabaseStructureGroup,
   SavedConnection,
 } from "@/lib/connections"
 
@@ -35,6 +36,11 @@ type DashboardSidebarProps = {
   databaseStructuresById: Record<string, DatabaseStructure>
   onAddConnection: () => void
   onCreateDatabase: (connection: SavedConnection) => void
+  onCreateTable: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string
+  ) => void
   onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDisconnectConnection: () => void
@@ -50,10 +56,10 @@ type DashboardSidebarProps = {
 
 const sectionIcons = {
   Tabelas: Table2,
-  Views: Clock3,
+  Views: Eye,
   Índices: Table2,
-  Funções: Sigma,
   Procedures: Wrench,
+  Funções: Sigma,
 }
 
 export function DashboardSidebar({
@@ -63,6 +69,7 @@ export function DashboardSidebar({
   databaseStructuresById,
   onAddConnection,
   onCreateDatabase,
+  onCreateTable,
   onEditDatabase,
   onDeleteDatabase,
   onDisconnectConnection,
@@ -78,6 +85,7 @@ export function DashboardSidebar({
   const treeNodes = buildTreeNodes(connections, activeConnectionId, databaseStructuresById, {
     connectionAvailabilityById,
     onCreateDatabase,
+    onCreateTable,
     onEditDatabase,
     onDeleteDatabase,
     onDisconnectConnection,
@@ -127,6 +135,11 @@ function buildTreeNodes(
   actions: {
     connectionAvailabilityById: Record<string, ConnectionAvailability>
     onCreateDatabase: (connection: SavedConnection) => void
+    onCreateTable: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string
+    ) => void
     onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onDisconnectConnection: () => void
@@ -304,10 +317,32 @@ function DatabaseItemContextMenu({
   )
 }
 
+function TableGroupContextMenu({
+  onCreateTable,
+  onRefreshStructure,
+}: {
+  onCreateTable: () => void
+  onRefreshStructure: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem onSelect={onCreateTable}>Criar tabela</ContextMenuItem>
+      <ContextMenuItem onSelect={onRefreshStructure}>Atualizar</ContextMenuItem>
+    </div>
+  )
+}
+
 function buildDatabaseNode(
   connection: SavedConnection,
   database: DatabaseStructureDatabase,
   actions: {
+    connectionAvailabilityById: Record<string, ConnectionAvailability>
+    onCreateDatabase: (connection: SavedConnection) => void
+    onCreateTable: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string
+    ) => void
     onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onRefreshDatabaseStructure: () => void
@@ -338,6 +373,13 @@ function getSchemaNodes(
   connection: SavedConnection,
   databaseStructure: DatabaseStructure,
   actions: {
+    connectionAvailabilityById: Record<string, ConnectionAvailability>
+    onCreateDatabase: (connection: SavedConnection) => void
+    onCreateTable: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string
+    ) => void
     onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onRefreshDatabaseStructure: () => void
@@ -359,6 +401,13 @@ function getSchemaNodesForDatabase(
   connection: SavedConnection,
   database: DatabaseStructureDatabase,
   actions: {
+    connectionAvailabilityById: Record<string, ConnectionAvailability>
+    onCreateDatabase: (connection: SavedConnection) => void
+    onCreateTable: (
+      connection: SavedConnection,
+      database: DatabaseStructureDatabase,
+      schemaName: string
+    ) => void
     onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onRefreshDatabaseStructure: () => void
@@ -372,13 +421,15 @@ function getSchemaNodesForDatabase(
   const schemas = database.schemas.length
     ? database.schemas
     : [{ name: getDefaultSchemaName(connection), groups: database.groups }]
+  const availability = actions.connectionAvailabilityById[connection.id]
+  const isAvailable = availability?.available !== false
 
   return schemas.map((schema) => ({
     id: `schema-${connection.id}-${schema.name}`,
     label: schema.name,
     icon: Layers3,
     defaultExpanded: false,
-    children: schema.groups.map((group) => {
+    children: sortDatabaseGroups(schema.groups).map((group) => {
       const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? Table2
       const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
       const isTableGroup = group.label === "Tabelas"
@@ -389,6 +440,13 @@ function getSchemaNodesForDatabase(
         icon: Icon,
         badge: group.items.length,
         defaultExpanded: false,
+        contextActions:
+          isAvailable && isTableGroup ? (
+            <TableGroupContextMenu
+              onCreateTable={() => actions.onCreateTable(connection, database, schema.name)}
+              onRefreshStructure={actions.onRefreshDatabaseStructure}
+            />
+          ) : null,
         children: group.items.map((item) => {
           const tableReference = getTableReference(
             connection,
@@ -472,6 +530,24 @@ function getDefaultSchemaName(connection: SavedConnection) {
   }
 
   return connection.databaseName.trim() || "schema_1"
+}
+
+function sortDatabaseGroups(groups: DatabaseStructureGroup[]) {
+  const order = ["Tabelas", "Views", "Índices", "Procedures", "Funções"]
+
+  return [...groups].sort((left, right) => {
+    const leftIndex = order.indexOf(left.label)
+    const rightIndex = order.indexOf(right.label)
+
+    const normalizedLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex
+    const normalizedRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex
+
+    if (normalizedLeft !== normalizedRight) {
+      return normalizedLeft - normalizedRight
+    }
+
+    return left.label.localeCompare(right.label, "pt-BR")
+  })
 }
 
 function getTableReference(
