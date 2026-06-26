@@ -36,6 +36,14 @@ const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
 
 let monacoEnhancementsRegistered = false
 
+const AUTOCOMPLETE_KIND = {
+  table: 5,
+  view: 7,
+  procedure: 0,
+  function: 1,
+  column: 3,
+} as const
+
 type DashboardEditorWorkspaceProps = {
   connection: SavedConnection
   databaseStructure: DatabaseStructure
@@ -93,6 +101,85 @@ function getDefaultDatabaseName(connection: SavedConnection, databaseStructure: 
   return connection.databaseName.trim() || "master"
 }
 
+function getAutocompleteGroupDetail(label: string) {
+  switch (label) {
+    case "Tabelas":
+      return "Tabela"
+    case "Views":
+      return "View"
+    case "Procedures":
+      return "Procedure"
+    case "Funções":
+      return "Função"
+    case "Colunas":
+      return "Coluna"
+    default:
+      return label
+  }
+}
+
+function getAutocompleteKindForGroup(label: string) {
+  switch (label) {
+    case "Tabelas":
+      return AUTOCOMPLETE_KIND.table
+    case "Views":
+      return AUTOCOMPLETE_KIND.view
+    case "Procedures":
+      return AUTOCOMPLETE_KIND.procedure
+    case "Funções":
+      return AUTOCOMPLETE_KIND.function
+    default:
+      return null
+  }
+}
+
+function getAutocompleteObjectReference(
+  connection: SavedConnection,
+  schemaName: string,
+  objectName: string
+) {
+  const normalizedSchema = schemaName.trim()
+  const normalizedObject = objectName.trim()
+
+  if (!normalizedSchema || !normalizedObject) {
+    return normalizedObject || normalizedSchema
+  }
+
+  if (connection.databaseType === "sqlite" && normalizedSchema === "main") {
+    return normalizedObject
+  }
+
+  if (connection.databaseType === "postgresql" && normalizedSchema === "public") {
+    return normalizedObject
+  }
+
+  if (
+    (connection.databaseType === "mysql" || connection.databaseType === "mariadb") &&
+    normalizedSchema === connection.databaseName.trim()
+  ) {
+    return normalizedObject
+  }
+
+  return `${normalizedSchema}.${normalizedObject}`
+}
+
+function dedupeAutocompleteSuggestions(suggestions: SqlAutocompleteSuggestion[]) {
+  const seen = new Set<string>()
+  const result: SqlAutocompleteSuggestion[] = []
+
+  for (const item of suggestions) {
+    const key = `${item.kind}:${item.insertText}:${item.detail}`
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    result.push(item)
+  }
+
+  return result
+}
+
 function getSelectedDatabase(
   connection: SavedConnection,
   databaseStructure: DatabaseStructure,
@@ -108,27 +195,354 @@ function getSelectedDatabase(
   )
 }
 
-function getTableCompletionItems(
+type SqlAutocompleteSuggestion = {
+  label: string
+  insertText: string
+  detail: string
+  kind: Monaco.languages.CompletionItemKind
+}
+
+function getAutocompleteSuggestions(
   connection: SavedConnection,
-  database: DatabaseStructureDatabase | undefined
+  database: DatabaseStructureDatabase | undefined,
+  model: Monaco.editor.ITextModel | null,
+  position: Monaco.Position | null
 ) {
-  if (!database) {
+  if (!database || !model || !position) {
     return []
   }
 
-  const suggestions = database.schemas.flatMap((schema) =>
-    (schema.groups.find((group) => group.label === "Tabelas")?.items ?? []).map((tableName) => {
-      const reference = getAutocompleteTableReference(
-        connection,
-        schema.name,
-        tableName,
-      )
+  const context = getAutocompleteContext(model, position)
+  const objects = getAutocompleteObjects(connection, database)
+  const currentStatement = getCurrentSqlStatementAtCursor(model, position)
+  const statementText = currentStatement?.text ?? model.getValue()
+  const sources = getAutocompleteSources(statementText, objects)
 
-      return reference
+  if (context.mode === "columns") {
+    const targetSources = context.sourceReference
+      ? sources.filter(
+          (source) =>
+            normalizeQualifiedIdentifier(source.reference).toLowerCase() ===
+              normalizeQualifiedIdentifier(context.sourceReference ?? "").toLowerCase() ||
+            source.alias?.toLowerCase() ===
+              getIdentifierLeaf(context.sourceReference ?? "").toLowerCase()
+        )
+      : sources
+
+    return buildColumnSuggestions(targetSources)
+  }
+
+  const suggestions: SqlAutocompleteSuggestion[] = []
+
+  for (const object of objects) {
+    suggestions.push({
+      label: object.reference,
+      insertText: object.reference,
+      detail: object.detail,
+      kind: object.kind,
     })
+  }
+
+  return dedupeAutocompleteSuggestions(suggestions)
+}
+
+type AutocompleteContext = {
+  mode: "objects" | "columns"
+  sourceReference: string | null
+}
+
+type AutocompleteObject = {
+  reference: string
+  leafName: string
+  alias: string | null
+  detail: string
+  kind: Monaco.languages.CompletionItemKind
+  columns: string[]
+}
+
+function getAutocompleteContext(
+  model: Monaco.editor.ITextModel,
+  position: Monaco.Position
+): AutocompleteContext {
+  const currentStatement = getCurrentSqlStatementAtCursor(model, position)
+
+  if (!currentStatement) {
+    return { mode: "objects", sourceReference: null }
+  }
+
+  const statementText = currentStatement.text
+  const statementUntilCursor = model.getValueInRange({
+    startLineNumber: currentStatement.startLine,
+    startColumn: 1,
+    endLineNumber: position.lineNumber,
+    endColumn: position.column,
+  })
+  const isSelectStatement = /^\s*select\b/i.test(statementText)
+
+  if (!isSelectStatement) {
+    return { mode: "objects", sourceReference: null }
+  }
+
+  const qualifiedSourceReference = extractQualifiedSourceReferenceBeforeCursor(statementUntilCursor)
+  if (qualifiedSourceReference) {
+    return { mode: "columns", sourceReference: qualifiedSourceReference }
+  }
+
+  const lastObjectClauseIndex = getLastKeywordIndex(statementUntilCursor, ["from", "join"])
+  const lastColumnClauseIndex = getLastKeywordIndex(statementUntilCursor, [
+    "select",
+    "on",
+    "where",
+    "group",
+    "order",
+    "having",
+    "limit",
+    "union",
+    "intersect",
+    "except",
+  ])
+
+  if (lastObjectClauseIndex > lastColumnClauseIndex) {
+    return { mode: "objects", sourceReference: null }
+  }
+
+  return { mode: "columns", sourceReference: null }
+}
+
+function getAutocompleteObjects(
+  connection: SavedConnection,
+  database: DatabaseStructureDatabase
+): AutocompleteObject[] {
+  const objects: AutocompleteObject[] = []
+
+  for (const schema of database.schemas) {
+    for (const group of schema.groups) {
+      const groupKind = getAutocompleteKindForGroup(group.label)
+      if (groupKind === null) {
+        continue
+      }
+
+      const groupDetail = getAutocompleteGroupDetail(group.label)
+      const isColumnSource = group.label === "Tabelas" || group.label === "Views"
+
+      for (const item of group.items) {
+        const reference = getAutocompleteObjectReference(connection, schema.name, item)
+        const columns = isColumnSource ? group.columnsByItem?.[item] ?? [] : []
+
+        objects.push({
+          reference,
+          leafName: item,
+          alias: null,
+          detail: groupDetail,
+          kind: groupKind,
+          columns,
+        })
+      }
+    }
+  }
+
+  return objects
+}
+
+function findAutocompleteObjectByReference(
+  objects: AutocompleteObject[],
+  sourceReference: string
+) {
+  const normalizedReference = normalizeQualifiedIdentifier(sourceReference).toLowerCase()
+  const normalizedLeaf = getIdentifierLeaf(sourceReference).toLowerCase()
+
+  const exactMatch = objects.find(
+    (object) => normalizeQualifiedIdentifier(object.reference).toLowerCase() === normalizedReference
   )
 
-  return Array.from(new Set(suggestions))
+  if (exactMatch) {
+    return exactMatch
+  }
+
+  const leafMatches = objects.filter(
+    (object) => object.leafName.toLowerCase() === normalizedLeaf
+  )
+
+  if (leafMatches.length === 1) {
+    return leafMatches[0]
+  }
+
+  return null
+}
+
+function getAutocompleteSources(
+  statementText: string,
+  objects: AutocompleteObject[]
+) {
+  const parsedSources = parseAutocompleteSources(statementText)
+  const sources: AutocompleteObject[] = []
+
+  for (const parsedSource of parsedSources) {
+    const object = findAutocompleteObjectByReference(objects, parsedSource.reference)
+    if (!object) {
+      continue
+    }
+
+    sources.push({
+      ...object,
+      alias: parsedSource.alias ?? null,
+      reference: object.reference,
+    })
+  }
+
+  return dedupeAutocompleteSources(sources)
+}
+
+function buildColumnSuggestions(sources: AutocompleteObject[]) {
+  if (!sources.length) {
+    return []
+  }
+
+  const multipleSources = sources.length > 1
+  const suggestions: SqlAutocompleteSuggestion[] = []
+
+  for (const source of sources) {
+    const sourcePrefix = source.alias || source.reference
+
+    for (const columnName of source.columns) {
+      const qualifiedName = multipleSources || Boolean(source.alias)
+        ? `${sourcePrefix}.${columnName}`
+        : columnName
+
+      suggestions.push({
+        label: qualifiedName,
+        insertText: qualifiedName,
+        detail: `Coluna · ${source.alias || source.reference}`,
+        kind: AUTOCOMPLETE_KIND.column,
+      })
+    }
+  }
+
+  return dedupeAutocompleteSuggestions(suggestions)
+}
+
+function getCurrentSqlStatementAtCursor(
+  model: Monaco.editor.ITextModel,
+  position: Monaco.Position
+) {
+  const statements = getSqlStatements(model.getValue())
+  return pickSqlStatementBlock(statements, position.lineNumber)
+}
+
+function findKeywordIndex(text: string, keyword: string) {
+  const pattern = new RegExp(`\\b${keyword}\\b`, "i")
+  const match = pattern.exec(text)
+  return match?.index ?? -1
+}
+
+function getLastKeywordIndex(text: string, keywords: string[]) {
+  let lastIndex = -1
+
+  for (const keyword of keywords) {
+    const index = findKeywordIndex(text, keyword)
+    if (index > lastIndex) {
+      lastIndex = index
+    }
+  }
+
+  return lastIndex
+}
+
+function extractQualifiedSourceReferenceBeforeCursor(statementUntilCursor: string) {
+  const compactText = statementUntilCursor.replace(/\s+/g, " ")
+  const match = compactText.match(/([`"\[\]\w.]+)\.\s*$/)
+
+  if (!match?.[1]) {
+    return ""
+  }
+
+  return normalizeQualifiedIdentifier(match[1])
+}
+
+function normalizeQualifiedIdentifier(identifier: string) {
+  return identifier
+    .split(".")
+    .map((part) => part.trim().replace(/^[`"\[]+|[`"\]]+$/g, ""))
+    .filter(Boolean)
+    .join(".")
+}
+
+function getIdentifierLeaf(identifier: string) {
+  const parts = normalizeQualifiedIdentifier(identifier).split(".").filter(Boolean)
+  return parts.at(-1) ?? ""
+}
+
+type ParsedAutocompleteSource = {
+  reference: string
+  alias: string | null
+}
+
+function parseAutocompleteSources(statementText: string) {
+  const compactSql = statementText.replace(/\s+/g, " ")
+  const sourcePattern =
+    /\b(?:from|join)\s+((?:[`"\[\]\w]+(?:\.[`"\[\]\w]+)*)|\([^)]+\))(?:\s+(?:as\s+)?([`"\[\]\w]+))?/gi
+  const sources: ParsedAutocompleteSource[] = []
+  let match: RegExpExecArray | null
+
+  while ((match = sourcePattern.exec(compactSql))) {
+    const reference = match[1]?.trim() ?? ""
+    if (!reference || reference.startsWith("(")) {
+      continue
+    }
+
+    const normalizedReference = normalizeQualifiedIdentifier(reference)
+    const aliasCandidate = match[2] ? normalizeQualifiedIdentifier(match[2]) : null
+    const alias =
+      aliasCandidate && !isSqlClauseKeyword(aliasCandidate) ? aliasCandidate : null
+
+    sources.push({
+      reference: normalizedReference,
+      alias,
+    })
+  }
+
+  return sources
+}
+
+function dedupeAutocompleteSources(sources: AutocompleteObject[]) {
+  const seen = new Set<string>()
+  const result: AutocompleteObject[] = []
+
+  for (const source of sources) {
+    const key = `${normalizeQualifiedIdentifier(source.reference).toLowerCase()}:${(
+      source.alias ?? ""
+    ).toLowerCase()}`
+
+    if (seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    result.push(source)
+  }
+
+  return result
+}
+
+function isSqlClauseKeyword(value: string) {
+  switch (value.toLowerCase()) {
+    case "select":
+    case "from":
+    case "join":
+    case "on":
+    case "where":
+    case "group":
+    case "order":
+    case "having":
+    case "limit":
+    case "union":
+    case "intersect":
+    case "except":
+    case "as":
+      return true
+    default:
+      return false
+  }
 }
 
 type ExecuteSqlOptions = {
@@ -162,17 +576,22 @@ export const DashboardEditorWorkspace = forwardRef<
     databaseStructure,
     effectiveSelectedDatabaseName
   )
-  const tableCompletionItems = getTableCompletionItems(connection, selectedDatabase)
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const highlightDecorationIdsRef = useRef<string[]>([])
   const executeSqlTextRef = useRef<
     (sql: string, options?: ExecuteSqlOptions) => Promise<void>
   >(async () => {})
-  const tableCompletionItemsRef = useRef(tableCompletionItems)
+  const autocompleteContextRef = useRef({
+    connection,
+    database: selectedDatabase,
+  })
 
   useEffect(() => {
-    tableCompletionItemsRef.current = tableCompletionItems
-  }, [tableCompletionItems])
+    autocompleteContextRef.current = {
+      connection,
+      database: selectedDatabase,
+    }
+  }, [connection, selectedDatabase])
 
   useEffect(() => {
     executeSqlTextRef.current = async (sql: string, options?: ExecuteSqlOptions) => {
@@ -482,6 +901,14 @@ export const DashboardEditorWorkspace = forwardRef<
         triggerCharacters: [" ", ".", ",", "(", "\n"],
         provideCompletionItems: (model, position) => {
           const word = model.getWordUntilPosition(position)
+          const { connection: currentConnection, database: currentDatabase } =
+            autocompleteContextRef.current
+          const autocompleteItems = getAutocompleteSuggestions(
+            currentConnection,
+            currentDatabase,
+            model,
+            position
+          )
           const range = {
             startLineNumber: position.lineNumber,
             endLineNumber: position.lineNumber,
@@ -491,11 +918,12 @@ export const DashboardEditorWorkspace = forwardRef<
 
           return {
             suggestions: [
-              ...tableCompletionItemsRef.current.map((tableReference) => ({
-                label: tableReference,
-                kind: monaco.languages.CompletionItemKind.Reference,
-                insertText: tableReference,
-                documentation: "Tabela disponível no banco selecionado.",
+              ...autocompleteItems.map((item) => ({
+                label: item.label,
+                kind: item.kind,
+                insertText: item.insertText,
+                detail: item.detail,
+                documentation: item.detail,
                 range,
               })),
               {
@@ -902,40 +1330,6 @@ function insertTextIntoEditor(editor: Monaco.editor.IStandaloneCodeEditor, text:
 function getLeafName(tablePath: string) {
   const parts = tablePath.split(".").map((part) => part.trim()).filter(Boolean)
   return parts.at(-1) ?? tablePath
-}
-
-function getAutocompleteTableReference(
-  connection: SavedConnection,
-  schemaName: string,
-  tableName: string
-) {
-  const normalizedSchema = schemaName.trim()
-  const normalizedTable = tableName.trim()
-
-  if (!normalizedSchema || !normalizedTable) {
-    return normalizedTable || normalizedSchema
-  }
-
-  if (connection.databaseType === "sqlite" && normalizedSchema === "main") {
-    return normalizedTable
-  }
-
-  if (connection.databaseType === "postgresql" && normalizedSchema === "public") {
-    return normalizedTable
-  }
-
-  if (connection.databaseType === "sqlserver") {
-    return `${normalizedSchema}.${normalizedTable}`
-  }
-
-  if (
-    (connection.databaseType === "mysql" || connection.databaseType === "mariadb") &&
-    normalizedSchema === connection.databaseName.trim()
-  ) {
-    return normalizedTable
-  }
-
-  return `${normalizedSchema}.${normalizedTable}`
 }
 
 function upsertExecutionTabs(

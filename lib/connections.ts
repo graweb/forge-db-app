@@ -42,6 +42,7 @@ export type QueryExecutionResult = {
 export type DatabaseStructureGroup = {
   label: string
   items: string[]
+  columnsByItem?: Record<string, string[]>
 }
 
 export type DatabaseStructureSchema = {
@@ -590,12 +591,12 @@ async function getSqliteStructure(connection: SavedConnection): Promise<Database
 
   if (!filePath) {
     const groups = [
-        { label: "Tabelas", items: [] },
-        { label: "Views", items: [] },
-        { label: "Índices", items: [] },
-        { label: "Funções", items: [] },
-        { label: "Procedures", items: [] },
-      ]
+      createGroup("Tabelas", []),
+      createGroup("Views", []),
+      createGroup("Índices", []),
+      createGroup("Funções", []),
+      createGroup("Procedures", []),
+    ]
 
     return {
       databases: [{ name: "main", schemas: [{ name: "main", groups }], groups }],
@@ -619,16 +620,17 @@ async function getSqliteStructure(connection: SavedConnection): Promise<Database
       )
       .all() as Array<{ type: string; name: string }>
 
+    const tables = rows.filter((row) => row.type === "table").map((row) => row.name)
+    const views = rows.filter((row) => row.type === "view").map((row) => row.name)
+    const tableColumnsByItem = await getSqliteColumnsByItem(db, tables)
+    const viewColumnsByItem = await getSqliteColumnsByItem(db, views)
     const groups = [
-        { label: "Tabelas", items: rows.filter((row) => row.type === "table").map((row) => row.name) },
-        { label: "Views", items: rows.filter((row) => row.type === "view").map((row) => row.name) },
-        {
-          label: "Índices",
-          items: rows.filter((row) => row.type === "index").map((row) => row.name),
-        },
-        { label: "Funções", items: [] },
-        { label: "Procedures", items: [] },
-      ]
+      createGroup("Tabelas", tables, tableColumnsByItem),
+      createGroup("Views", views, viewColumnsByItem),
+      createGroup("Índices", rows.filter((row) => row.type === "index").map((row) => row.name)),
+      createGroup("Funções", []),
+      createGroup("Procedures", []),
+    ]
 
     return {
       databases: [
@@ -743,13 +745,23 @@ async function getMySqlLikeStructure(connection: SavedConnection): Promise<Datab
       [schemaName]
     )
 
+    const tableNames = extractNames(tables)
+    const viewNames = extractNames(views)
     const groups = [
-        { label: "Tabelas", items: extractNames(tables) },
-        { label: "Views", items: extractNames(views) },
-        { label: "Índices", items: extractNames(indexes) },
-        { label: "Funções", items: extractNames(functions) },
-        { label: "Procedures", items: extractNames(procedures) },
-      ]
+      createGroup(
+        "Tabelas",
+        tableNames,
+        await getMySqlLikeColumnsByItem(client, databaseType, schemaName, tableNames)
+      ),
+      createGroup(
+        "Views",
+        viewNames,
+        await getMySqlLikeColumnsByItem(client, databaseType, schemaName, viewNames)
+      ),
+      createGroup("Índices", extractNames(indexes)),
+      createGroup("Funções", extractNames(functions)),
+      createGroup("Procedures", extractNames(procedures)),
+    ]
 
     return {
       databases: [
@@ -862,12 +874,22 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
       [schemaName]
     )
 
+    const tableNames = extractNames(tables.rows)
+    const viewNames = extractNames(views.rows)
     const groups = [
-      { label: "Tabelas", items: extractNames(tables.rows) },
-      { label: "Views", items: extractNames(views.rows) },
-      { label: "Índices", items: extractNames(indexes.rows) },
-      { label: "Funções", items: extractNames(functions.rows) },
-      { label: "Procedures", items: extractNames(procedures.rows) },
+      createGroup(
+        "Tabelas",
+        tableNames,
+        await getPostgreSqlColumnsByItem(client, schemaName, tableNames)
+      ),
+      createGroup(
+        "Views",
+        viewNames,
+        await getPostgreSqlColumnsByItem(client, schemaName, viewNames)
+      ),
+      createGroup("Índices", extractNames(indexes.rows)),
+      createGroup("Funções", extractNames(functions.rows)),
+      createGroup("Procedures", extractNames(procedures.rows)),
     ]
 
     return {
@@ -963,14 +985,14 @@ async function getSqlServerDatabaseStructure(
     ORDER BY name
   `)
 
-  const tables = await pool.request().query(`
-    SELECT
-      s.name AS schema_name,
-      t.name AS name
-    FROM ${quotedDatabase}.sys.tables t
-    INNER JOIN ${quotedDatabase}.sys.schemas s ON t.schema_id = s.schema_id
-    ORDER BY s.name, t.name
-  `)
+    const tables = await pool.request().query(`
+      SELECT
+        s.name AS schema_name,
+        t.name AS name
+      FROM ${quotedDatabase}.sys.tables t
+      INNER JOIN ${quotedDatabase}.sys.schemas s ON t.schema_id = s.schema_id
+      ORDER BY s.name, t.name
+    `)
   const views = await pool.request().query(`
     SELECT
       s.name AS schema_name,
@@ -1009,31 +1031,59 @@ async function getSqlServerDatabaseStructure(
     ORDER BY s.name, o.name
   `)
 
-  const schemaNames = uniqueStrings([
-    ...extractNames(schemasResult.recordset),
-    ...extractSchemaNames(tables.recordset),
-    ...extractSchemaNames(views.recordset),
+  const columns = await pool.request().query(`
+      SELECT
+        s.name AS schema_name,
+        o.name AS object_name,
+        c.name AS column_name
+      FROM ${quotedDatabase}.sys.columns c
+      INNER JOIN ${quotedDatabase}.sys.objects o ON c.object_id = o.object_id
+      INNER JOIN ${quotedDatabase}.sys.schemas s ON o.schema_id = s.schema_id
+      WHERE o.type IN ('U', 'V')
+      ORDER BY s.name, o.name, c.column_id
+    `)
+
+    const schemaNames = uniqueStrings([
+      ...extractNames(schemasResult.recordset),
+      ...extractSchemaNames(tables.recordset),
+      ...extractSchemaNames(views.recordset),
     ...extractSchemaNames(indexes.recordset),
     ...extractSchemaNames(functions.recordset),
     ...extractSchemaNames(procedures.recordset),
   ])
 
-  const schemas = schemaNames.map((schemaName) => ({
-    name: schemaName,
-    groups: [
-      { label: "Tabelas", items: extractNamesForSchema(tables.recordset, schemaName) },
-      { label: "Views", items: extractNamesForSchema(views.recordset, schemaName) },
-      { label: "Índices", items: extractNamesForSchema(indexes.recordset, schemaName) },
-      { label: "Funções", items: extractNamesForSchema(functions.recordset, schemaName) },
-      { label: "Procedures", items: extractNamesForSchema(procedures.recordset, schemaName) },
-    ],
-  }))
+    const schemas = schemaNames.map((schemaName) => ({
+      name: schemaName,
+      groups: [
+        {
+          label: "Tabelas",
+          items: extractNamesForSchema(tables.recordset, schemaName),
+          columnsByItem: extractColumnsByObjectForSchema(columns.recordset, schemaName),
+        },
+        {
+          label: "Views",
+          items: extractNamesForSchema(views.recordset, schemaName),
+          columnsByItem: extractColumnsByObjectForSchema(columns.recordset, schemaName),
+        },
+        { label: "Índices", items: extractNamesForSchema(indexes.recordset, schemaName) },
+        { label: "Funções", items: extractNamesForSchema(functions.recordset, schemaName) },
+        { label: "Procedures", items: extractNamesForSchema(procedures.recordset, schemaName) },
+      ],
+    }))
 
   return {
     name: databaseName,
     schemas,
     groups: schemas[0]?.groups ?? [],
   }
+}
+
+function createGroup(
+  label: string,
+  items: string[],
+  columnsByItem?: Record<string, string[]>
+): DatabaseStructureGroup {
+  return columnsByItem ? { label, items, columnsByItem } : { label, items }
 }
 
 function quoteSqlServerIdentifier(value: string) {
@@ -1063,6 +1113,130 @@ function extractNamesForSchema(rows: Array<Record<string, unknown>>, schemaName:
     .map((row) => row.name ?? row.NAME ?? row.table_name ?? row.TABLE_NAME ?? row.indexname)
     .map((value) => (value === null || value === undefined ? "" : String(value)))
     .filter(Boolean)
+}
+
+function extractColumnsByObjectForSchema(rows: Array<Record<string, unknown>>, schemaName: string) {
+  const result: Record<string, string[]> = {}
+
+  for (const row of rows) {
+    const rowSchema = String(
+      row.schema_name ?? row.SCHEMA_NAME ?? row.table_schema ?? row.TABLE_SCHEMA ?? ""
+    )
+    if (rowSchema !== schemaName) {
+      continue
+    }
+
+    const objectName = String(
+      row.object_name ?? row.OBJECT_NAME ?? row.table_name ?? row.TABLE_NAME ?? ""
+    )
+    const columnName = String(
+      row.column_name ?? row.COLUMN_NAME ?? row.name ?? row.NAME ?? ""
+    ).trim()
+
+    if (!objectName || !columnName) {
+      continue
+    }
+
+    if (!result[objectName]) {
+      result[objectName] = []
+    }
+
+    result[objectName].push(columnName)
+  }
+
+  return result
+}
+
+async function getSqliteColumnsByItem(db: Database.Database, objectNames: string[]) {
+  const result: Record<string, string[]> = {}
+
+  for (const objectName of objectNames) {
+    const pragmaRows = db.prepare(`PRAGMA table_info('${objectName.replace(/'/g, "''")}')`).all() as
+      | Array<{ name?: string }>
+      | undefined
+    const columns = (pragmaRows ?? [])
+      .map((row) => String(row.name ?? "").trim())
+      .filter(Boolean)
+
+    if (columns.length) {
+      result[objectName] = columns
+    }
+  }
+
+  return result
+}
+
+async function getMySqlLikeColumnsByItem(
+  client: {
+    query: (queryText: string, params?: unknown[]) => Promise<unknown>
+  },
+  databaseType: "mysql" | "mariadb",
+  schemaName: string,
+  objectNames: string[]
+) {
+  if (!objectNames.length) {
+    return {}
+  }
+
+  const queryText = `
+    SELECT TABLE_NAME AS object_name, COLUMN_NAME AS column_name
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
+    ORDER BY TABLE_NAME, ORDINAL_POSITION
+  `
+
+  const rows = await runMySqlLikeMetadataQuery(client, databaseType, queryText, [schemaName])
+  return buildColumnsMap(rows, schemaName, objectNames, "object_name", "column_name")
+}
+
+async function getPostgreSqlColumnsByItem(
+  client: PostgresClient,
+  schemaName: string,
+  objectNames: string[]
+) {
+  if (!objectNames.length) {
+    return {}
+  }
+
+  const result = await client.query(
+    `
+      SELECT table_name AS object_name, column_name AS column_name
+      FROM information_schema.columns
+      WHERE table_schema = $1
+      ORDER BY table_name, ordinal_position
+    `,
+    [schemaName]
+  )
+
+  return buildColumnsMap(result.rows, schemaName, objectNames, "object_name", "column_name")
+}
+
+function buildColumnsMap(
+  rows: Array<Record<string, unknown>>,
+  _schemaName: string,
+  objectNames: string[],
+  objectKey: string,
+  columnKey: string
+) {
+  const allowedObjects = new Set(objectNames)
+  const result: Record<string, string[]> = {}
+
+  for (const row of rows) {
+    const objectName = String(row[objectKey] ?? row[objectKey.toUpperCase()] ?? "").trim()
+    const columnName = String(row[columnKey] ?? row[columnKey.toUpperCase()] ?? "").trim()
+
+    if (!objectName || !columnName || !allowedObjects.has(objectName)) {
+      continue
+    }
+
+    if (!result[objectName]) {
+      result[objectName] = []
+    }
+
+    result[objectName].push(columnName)
+  }
+
+  return result
 }
 
 function uniqueStrings(values: string[]) {
