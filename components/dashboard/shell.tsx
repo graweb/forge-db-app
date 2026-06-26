@@ -1,11 +1,19 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { AlertTriangle } from "lucide-react"
 import { useRouter } from "next/navigation"
 
-import type { DatabaseStructure, SavedConnection } from "@/lib/connections"
+import type {
+  ConnectionAvailability,
+  DatabaseStructure,
+  DatabaseStructureDatabase,
+  SavedConnection,
+} from "@/lib/connections"
 
 import { ConnectionModal } from "@/components/connections/connection-modal"
+import { CreateDatabaseModal } from "./create-database-modal"
+import { DeleteDatabaseModal } from "./delete-database-modal"
 import {
   DashboardEditorWorkspace,
   type DashboardEditorWorkspaceHandle,
@@ -16,26 +24,89 @@ import { DashboardStatusbar } from "./statusbar"
 type DashboardShellProps = {
   connection: SavedConnection | null
   connections: SavedConnection[]
+  connectionAvailabilityById: Record<string, ConnectionAvailability>
   databaseStructure?: DatabaseStructure
   databaseStructuresById: Record<string, DatabaseStructure>
+}
+
+type ShellNotice = {
+  title: string
+  message: string
 }
 
 export function DashboardShell({
   connection,
   connections,
+  connectionAvailabilityById,
   databaseStructure,
   databaseStructuresById,
 }: DashboardShellProps) {
-  const hasActiveConnection = Boolean(connection)
+  const activeConnectionAvailability = connection
+    ? connectionAvailabilityById[connection.id]
+    : undefined
+  const hasActiveConnection = Boolean(connection && activeConnectionAvailability?.available !== false)
   const [activePane, setActivePane] = useState<"connections" | "editor">("editor")
   const [isConnectionModalOpen, setIsConnectionModalOpen] = useState(false)
+  const [isDatabaseModalOpen, setIsDatabaseModalOpen] = useState(false)
+  const [databaseModalMode, setDatabaseModalMode] = useState<"create" | "edit">("create")
+  const [databaseModalKey, setDatabaseModalKey] = useState(0)
   const [editingConnection, setEditingConnection] = useState<SavedConnection | null>(null)
+  const [databaseTargetConnection, setDatabaseTargetConnection] = useState<SavedConnection | null>(null)
+  const [databaseTarget, setDatabaseTarget] = useState<DatabaseStructureDatabase | null>(null)
+  const [deleteTargetConnection, setDeleteTargetConnection] = useState<SavedConnection | null>(null)
+  const [deleteTargetDatabase, setDeleteTargetDatabase] = useState<DatabaseStructureDatabase | null>(
+    null
+  )
+  const [isDeleteDatabaseModalOpen, setIsDeleteDatabaseModalOpen] = useState(false)
   const [workspaceSessionKey, setWorkspaceSessionKey] = useState(0)
+  const [notice, setNotice] = useState<ShellNotice | null>(null)
   const editorWorkspaceRef = useRef<DashboardEditorWorkspaceHandle | null>(null)
+  const noticeTimerRef = useRef<number | null>(null)
   const router = useRouter()
 
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current) {
+        window.clearTimeout(noticeTimerRef.current)
+      }
+    }
+  }, [])
+
+  function showNotice(nextNotice: ShellNotice) {
+    setNotice(nextNotice)
+
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current)
+    }
+
+    noticeTimerRef.current = window.setTimeout(() => {
+      setNotice(null)
+      noticeTimerRef.current = null
+    }, 4500)
+  }
+
   return (
-    <main className="h-dvh overflow-hidden bg-[linear-gradient(180deg,#060a11_0%,#080e17_100%)] text-white">
+    <main className="relative h-dvh overflow-hidden bg-[linear-gradient(180deg,#060a11_0%,#080e17_100%)] text-white">
+      {notice ? (
+        <div className="pointer-events-none absolute left-1/2 top-4 z-50 flex w-full max-w-2xl -translate-x-1/2 px-4">
+          <div className="pointer-events-auto flex w-full items-start gap-3 rounded-2xl border border-amber-400/20 bg-[#111827]/95 px-4 py-3 shadow-[0_18px_60px_-30px_rgba(0,0,0,0.9)] backdrop-blur-md">
+            <div className="mt-0.5 rounded-full bg-amber-400/15 p-2 text-amber-300">
+              <AlertTriangle className="size-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-white">{notice.title}</div>
+              <div className="mt-1 text-sm leading-6 text-white/65">{notice.message}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setNotice(null)}
+              className="rounded-lg px-2 py-1 text-xs text-white/45 transition-colors hover:bg-white/5 hover:text-white/80"
+            >
+              Fechar
+            </button>
+          </div>
+        </div>
+      ) : null}
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2 lg:hidden">
           <button
@@ -67,26 +138,72 @@ export function DashboardShell({
             }`}
           >
             <DashboardSidebar
-              activeConnectionId={connection?.id ?? null}
+              activeConnectionId={hasActiveConnection ? connection?.id ?? null : null}
               connections={connections}
+              connectionAvailabilityById={connectionAvailabilityById}
               databaseStructuresById={databaseStructuresById}
               onAddConnection={() => {
                 setEditingConnection(null)
                 setIsConnectionModalOpen(true)
               }}
-            onDisconnectConnection={() => {
-              setActivePane("editor")
-              setIsConnectionModalOpen(false)
-              setEditingConnection(null)
-              setWorkspaceSessionKey((current) => current + 1)
-              router.replace("/")
+              onCreateDatabase={(connectionToUse) => {
+                setDatabaseModalMode("create")
+                setDatabaseTargetConnection(connectionToUse)
+                setDatabaseTarget(null)
+                setDatabaseModalKey((current) => current + 1)
+                setIsDatabaseModalOpen(true)
               }}
-              onSelectConnection={(connectionId) => {
-                router.push(`/dashboard/${connectionId}`)
+              onEditDatabase={(connectionToUse, databaseToEdit) => {
+                setDatabaseModalMode("edit")
+                setDatabaseTargetConnection(connectionToUse)
+                setDatabaseTarget(databaseToEdit)
+                setDatabaseModalKey((current) => current + 1)
+                setIsDatabaseModalOpen(true)
+              }}
+              onDeleteDatabase={(connectionToUse, databaseToDelete) => {
+                setDeleteTargetConnection(connectionToUse)
+                setDeleteTargetDatabase(databaseToDelete)
+                setIsDeleteDatabaseModalOpen(true)
+              }}
+              onDisconnectConnection={() => {
+                setActivePane("editor")
+                setIsConnectionModalOpen(false)
+                setEditingConnection(null)
+                setWorkspaceSessionKey((current) => current + 1)
+                router.replace("/")
+              }}
+              onSelectConnection={(connectionItem) => {
+                const availability = connectionAvailabilityById[connectionItem.id]
+
+                if (availability?.available === false) {
+                  showNotice({
+                    title: "Ambiente indisponível",
+                    message:
+                      availability.message ||
+                      `O ambiente da conexão "${connectionItem.connectionName}" não está disponível no momento.`,
+                  })
+                  return
+                }
+
+                router.push(`/dashboard/${connectionItem.id}`)
               }}
               onEditConnection={(connectionToEdit) => {
                 setEditingConnection(connectionToEdit)
                 setIsConnectionModalOpen(true)
+              }}
+              onRefreshStructure={() => {
+                router.refresh()
+                showNotice({
+                  title: "Estrutura atualizada",
+                  message: "Tabelas, campos, views e procedures foram recarregados.",
+                })
+              }}
+              onRefreshDatabaseStructure={() => {
+                router.refresh()
+                showNotice({
+                  title: "Banco atualizado",
+                  message: "A estrutura do banco selecionado foi recarregada.",
+                })
               }}
               onInsertText={(text) => {
                 editorWorkspaceRef.current?.insertText(text)
@@ -164,6 +281,61 @@ export function DashboardShell({
         }}
         onSaved={() => {
           router.refresh()
+        }}
+      />
+
+      <CreateDatabaseModal
+        key={`${databaseTargetConnection?.id ?? "none"}-${databaseTarget?.name ?? "new"}-${databaseModalMode}-${databaseModalKey}`}
+        open={isDatabaseModalOpen}
+        mode={databaseModalMode}
+        connection={databaseTargetConnection}
+        database={databaseTarget ?? undefined}
+        onOpenChange={(open) => {
+          setIsDatabaseModalOpen(open)
+          if (!open) {
+            setDatabaseTargetConnection(null)
+            setDatabaseTarget(null)
+          }
+        }}
+        onSaved={async () => {
+          setIsDatabaseModalOpen(false)
+          setDatabaseTargetConnection(null)
+          setDatabaseTarget(null)
+          router.refresh()
+          showNotice(
+            databaseModalMode === "edit"
+              ? {
+                  title: "Banco de dados atualizado",
+                  message: "A estrutura foi atualizada após a edição do banco.",
+                }
+              : {
+                  title: "Banco de dados criado",
+                  message: "A estrutura foi atualizada após a criação do novo banco.",
+                }
+          )
+        }}
+      />
+
+      <DeleteDatabaseModal
+        open={isDeleteDatabaseModalOpen}
+        connection={deleteTargetConnection}
+        database={deleteTargetDatabase}
+        onOpenChange={(open) => {
+          setIsDeleteDatabaseModalOpen(open)
+          if (!open) {
+            setDeleteTargetConnection(null)
+            setDeleteTargetDatabase(null)
+          }
+        }}
+        onDeleted={async () => {
+          setIsDeleteDatabaseModalOpen(false)
+          setDeleteTargetConnection(null)
+          setDeleteTargetDatabase(null)
+          router.refresh()
+          showNotice({
+            title: "Banco de dados excluído",
+            message: "A estrutura foi atualizada após a exclusão.",
+          })
         }}
       />
     </main>

@@ -54,6 +54,9 @@ export type DatabaseStructureDatabase = {
   name: string
   schemas: DatabaseStructureSchema[]
   groups: DatabaseStructureGroup[]
+  charset?: string
+  collation?: string
+  encoding?: string
 }
 
 export type DatabaseStructure = {
@@ -66,6 +69,50 @@ export type SavedConnection = ConnectionInput & {
   id: string
   createdAt: string
   updatedAt: string
+}
+
+export const EMPTY_DATABASE_STRUCTURE: DatabaseStructure = {
+  databases: [],
+  schemas: [],
+  groups: [],
+}
+
+export type ConnectionAvailability = {
+  available: boolean
+  message?: string
+}
+
+export type DatabaseStructureLoadResult = {
+  databaseStructure: DatabaseStructure
+  connectionAvailability: ConnectionAvailability
+}
+
+export type CreateDatabaseInput = {
+  databaseName: string
+  charset: string
+}
+
+export type CreateDatabaseResult = {
+  message: string
+  details: string
+  databaseName: string
+}
+
+export type UpdateDatabaseInput = {
+  databaseName: string
+  charset: string
+}
+
+export type UpdateDatabaseResult = {
+  message: string
+  details: string
+  databaseName: string
+}
+
+export type DeleteDatabaseResult = {
+  message: string
+  details: string
+  databaseName: string
 }
 
 const access = promisify(accessCb)
@@ -156,6 +203,36 @@ function parsePort(port?: string) {
   if (!port) return undefined
   const value = Number(port)
   return Number.isFinite(value) ? value : undefined
+}
+
+function sanitizeDatabaseIdentifier(value?: string) {
+  return sanitizeText(value).replace(/[`"'\[\]]/g, "")
+}
+
+function sanitizeCharset(value?: string) {
+  return sanitizeText(value).replace(/[^A-Za-z0-9_:-]/g, "")
+}
+
+function quoteIdentifier(databaseType: DatabaseType, value: string) {
+  const normalized = sanitizeDatabaseIdentifier(value)
+
+  if (!normalized) {
+    throw new Error("Informe um nome válido para o banco de dados.")
+  }
+
+  if (databaseType === "sqlserver") {
+    return `[${normalized.replace(/\]/g, "]]")}]`
+  }
+
+  if (databaseType === "postgresql") {
+    return `"${normalized.replace(/"/g, '""')}"`
+  }
+
+  return `\`${normalized.replace(/`/g, "``")}\``
+}
+
+function quoteSqlLiteral(value: string) {
+  return `'${value.replace(/'/g, "''")}'`
 }
 
 async function testSqlite(databaseFile?: string) {
@@ -258,7 +335,7 @@ export async function testConnection(input: ConnectionInput): Promise<TestConnec
         password,
         server: host,
         port: port ?? 1433,
-        database: database || undefined,
+        database: "master",
         options: {
           encrypt: useSsl,
           trustServerCertificate: true,
@@ -275,6 +352,396 @@ export async function testConnection(input: ConnectionInput): Promise<TestConnec
         details: additional || `Servidor ${host}:${port ?? 1433} respondeu corretamente.`,
       }
     }
+
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function createDatabase(
+  connection: SavedConnection,
+  input: CreateDatabaseInput
+): Promise<CreateDatabaseResult> {
+  const databaseName = sanitizeDatabaseIdentifier(input.databaseName)
+  const charset = sanitizeCharset(input.charset) || "utf8mb4"
+  const useSsl = Boolean(connection.useSsl)
+
+  if (!databaseName) {
+    throw new Error("Informe um nome válido para o banco de dados.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb": {
+      const client =
+        connection.databaseType === "mysql"
+          ? await mysql.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              connectTimeout: 5000,
+              ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+            })
+          : await mariadb.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              connectTimeout: 5000,
+              ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+            })
+
+      try {
+        const quotedDatabase = quoteIdentifier(connection.databaseType, databaseName)
+        await client.query(
+          `CREATE DATABASE IF NOT EXISTS ${quotedDatabase} CHARACTER SET ${charset}`
+        )
+
+        return {
+          message: "Banco de dados criado com sucesso.",
+          details: `O banco ${databaseName} foi criado com charset ${charset}.`,
+          databaseName,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "postgresql": {
+      const client = new PostgresClient({
+        host: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 5432,
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        database: "postgres",
+        connectionTimeoutMillis: 5000,
+        ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+      })
+
+      await client.connect()
+
+      try {
+        const quotedDatabase = quoteIdentifier(connection.databaseType, databaseName)
+        const normalizedCharset = charset.toUpperCase() || "UTF8"
+        await client.query(
+          `CREATE DATABASE ${quotedDatabase} WITH TEMPLATE template0 ENCODING ${quoteSqlLiteral(normalizedCharset)}`
+        )
+
+        return {
+          message: "Banco de dados criado com sucesso.",
+          details: `O banco ${databaseName} foi criado com encoding ${normalizedCharset}.`,
+          databaseName,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "sqlserver": {
+      const pool = await sql.connect({
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        server: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 1433,
+        database: "master",
+        options: {
+          encrypt: useSsl,
+          trustServerCertificate: true,
+        },
+        connectionTimeout: 5000,
+        requestTimeout: 5000,
+      })
+
+      try {
+        const quotedDatabase = quoteIdentifier(connection.databaseType, databaseName)
+        await pool.request().query(`CREATE DATABASE ${quotedDatabase}`)
+
+        return {
+          message: "Banco de dados criado com sucesso.",
+          details: `O banco ${databaseName} foi criado no SQL Server.`,
+          databaseName,
+        }
+      } finally {
+        await pool.close()
+      }
+    }
+
+    case "sqlite":
+      throw new Error("Não é possível criar banco de dados SQLite por esta tela.")
+
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function updateDatabase(
+  connection: SavedConnection,
+  currentDatabaseName: string,
+  input: UpdateDatabaseInput
+): Promise<UpdateDatabaseResult> {
+  const originalDatabaseName = sanitizeDatabaseIdentifier(currentDatabaseName)
+  const nextDatabaseName = sanitizeDatabaseIdentifier(input.databaseName)
+  const charset = sanitizeCharset(input.charset)
+
+  if (!originalDatabaseName) {
+    throw new Error("Informe um banco de dados válido para atualizar.")
+  }
+
+  if (!nextDatabaseName) {
+    throw new Error("Informe um nome válido para o banco de dados.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb": {
+      if (nextDatabaseName !== originalDatabaseName) {
+        throw new Error("Renomear banco de dados não é suportado para MySQL/MariaDB.")
+      }
+
+      if (!charset) {
+        throw new Error("Informe um charset válido para atualizar o banco de dados.")
+      }
+
+      const client =
+        connection.databaseType === "mysql"
+          ? await mysql.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              database: originalDatabaseName,
+              connectTimeout: 5000,
+              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+            })
+          : await mariadb.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              database: originalDatabaseName,
+              connectTimeout: 5000,
+              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+            })
+
+      try {
+        const quotedDatabase = quoteIdentifier(connection.databaseType, originalDatabaseName)
+        await client.query(`ALTER DATABASE ${quotedDatabase} CHARACTER SET ${charset}`)
+
+        return {
+          message: "Banco de dados atualizado com sucesso.",
+          details: `O charset de ${originalDatabaseName} foi atualizado para ${charset}.`,
+          databaseName: originalDatabaseName,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "postgresql": {
+      const client = new PostgresClient({
+        host: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 5432,
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        database: "postgres",
+        connectionTimeoutMillis: 5000,
+        ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+      })
+
+      await client.connect()
+
+      try {
+        if (nextDatabaseName !== originalDatabaseName) {
+          await client.query(
+            `ALTER DATABASE ${quoteIdentifier("postgresql", originalDatabaseName)} RENAME TO ${quoteIdentifier("postgresql", nextDatabaseName)}`
+          )
+
+          if (sanitizeText(connection.databaseName) === originalDatabaseName) {
+            await updateConnection(connection.id, {
+              databaseType: connection.databaseType,
+              connectionName: connection.connectionName,
+              host: connection.host,
+              port: connection.port,
+              user: connection.user,
+              password: connection.password,
+              databaseName: nextDatabaseName,
+              databaseFile: connection.databaseFile,
+              additional: connection.additional,
+              useSsl: connection.useSsl,
+            })
+          }
+        }
+
+        return {
+          message: "Banco de dados atualizado com sucesso.",
+          details:
+            nextDatabaseName !== originalDatabaseName
+              ? `O banco ${originalDatabaseName} foi renomeado para ${nextDatabaseName}.`
+              : `O banco ${originalDatabaseName} permaneceu sem alterações de nome.`,
+          databaseName: nextDatabaseName,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "sqlserver": {
+      const pool = await sql.connect({
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        server: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 1433,
+        database: "master",
+        options: {
+          encrypt: Boolean(connection.useSsl),
+          trustServerCertificate: true,
+        },
+        connectionTimeout: 5000,
+        requestTimeout: 5000,
+      })
+
+      try {
+        if (nextDatabaseName !== originalDatabaseName) {
+          await pool.request().query(
+            `ALTER DATABASE ${quoteSqlServerIdentifier(originalDatabaseName)} MODIFY NAME = ${quoteSqlServerIdentifier(nextDatabaseName)}`
+          )
+
+          if (sanitizeText(connection.databaseName) === originalDatabaseName) {
+            await updateConnection(connection.id, {
+              databaseType: connection.databaseType,
+              connectionName: connection.connectionName,
+              host: connection.host,
+              port: connection.port,
+              user: connection.user,
+              password: connection.password,
+              databaseName: nextDatabaseName,
+              databaseFile: connection.databaseFile,
+              additional: connection.additional,
+              useSsl: connection.useSsl,
+            })
+          }
+        }
+
+        return {
+          message: "Banco de dados atualizado com sucesso.",
+          details:
+            nextDatabaseName !== originalDatabaseName
+              ? `O banco ${originalDatabaseName} foi renomeado para ${nextDatabaseName}.`
+              : `O banco ${originalDatabaseName} foi revisado sem alterações de nome.`,
+          databaseName: nextDatabaseName,
+        }
+      } finally {
+        await pool.close()
+      }
+    }
+
+    case "sqlite":
+      throw new Error("Não é possível editar bancos de dados SQLite por esta tela.")
+
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function deleteDatabase(
+  connection: SavedConnection,
+  databaseName: string
+): Promise<DeleteDatabaseResult> {
+  const normalizedDatabaseName = sanitizeDatabaseIdentifier(databaseName)
+
+  if (!normalizedDatabaseName) {
+    throw new Error("Informe um banco de dados válido para excluir.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb": {
+      const client =
+        connection.databaseType === "mysql"
+          ? await mysql.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              connectTimeout: 5000,
+              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+            })
+          : await mariadb.createConnection({
+              host: sanitizeText(connection.host) || "localhost",
+              port: parsePort(connection.port) ?? 3306,
+              user: sanitizeText(connection.user),
+              password: connection.password ?? "",
+              connectTimeout: 5000,
+              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+            })
+
+      try {
+        await client.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(connection.databaseType, normalizedDatabaseName)}`)
+        return {
+          message: "Banco de dados excluído com sucesso.",
+          details: `O banco ${normalizedDatabaseName} foi removido.`,
+          databaseName: normalizedDatabaseName,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "postgresql": {
+      const client = new PostgresClient({
+        host: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 5432,
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        database: "postgres",
+        connectionTimeoutMillis: 5000,
+        ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+      })
+
+      await client.connect()
+
+      try {
+        await client.query(`DROP DATABASE IF EXISTS ${quoteIdentifier("postgresql", normalizedDatabaseName)}`)
+        return {
+          message: "Banco de dados excluído com sucesso.",
+          details: `O banco ${normalizedDatabaseName} foi removido.`,
+          databaseName: normalizedDatabaseName,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "sqlserver": {
+      const pool = await sql.connect({
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        server: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 1433,
+        database: "master",
+        options: {
+          encrypt: Boolean(connection.useSsl),
+          trustServerCertificate: true,
+        },
+        connectionTimeout: 5000,
+        requestTimeout: 5000,
+      })
+
+      try {
+        await pool.request().query(`DROP DATABASE ${quoteSqlServerIdentifier(normalizedDatabaseName)}`)
+        return {
+          message: "Banco de dados excluído com sucesso.",
+          details: `O banco ${normalizedDatabaseName} foi removido.`,
+          databaseName: normalizedDatabaseName,
+        }
+      } finally {
+        await pool.close()
+      }
+    }
+
+    case "sqlite":
+      throw new Error("Não é possível excluir bancos de dados SQLite por esta tela.")
 
     default:
       throw new Error("Tipo de banco não suportado.")
@@ -634,7 +1101,33 @@ export async function getDatabaseStructure(connection: SavedConnection): Promise
     case "sqlserver":
       return getSqlServerStructure(connection)
     default:
-      return { databases: [], schemas: [], groups: [] }
+      return EMPTY_DATABASE_STRUCTURE
+  }
+}
+
+export async function getDatabaseStructureLoadResult(
+  connection: SavedConnection
+): Promise<DatabaseStructureLoadResult> {
+  try {
+    const databaseStructure = await getDatabaseStructure(connection)
+
+    return {
+      databaseStructure,
+      connectionAvailability: {
+        available: true,
+      },
+    }
+  } catch (error) {
+    return {
+      databaseStructure: EMPTY_DATABASE_STRUCTURE,
+      connectionAvailability: {
+        available: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Não foi possível acessar a conexão no momento.",
+      },
+    }
   }
 }
 
@@ -690,6 +1183,7 @@ async function getSqliteStructure(connection: SavedConnection): Promise<Database
           name: connection.databaseName.trim() || "main",
           schemas: [{ name: connection.databaseName.trim() || "main", groups }],
           groups,
+          charset: "UTF-8",
         },
       ],
       schemas: [{ name: connection.databaseName.trim() || "main", groups }],
@@ -736,6 +1230,32 @@ async function getMySqlLikeStructure(connection: SavedConnection): Promise<Datab
 
   try {
     const schemaName = database || ""
+    const metadataRows = await runMySqlLikeMetadataQuery(
+      client,
+      databaseType,
+      `
+        SELECT
+          DEFAULT_CHARACTER_SET_NAME AS charset,
+          DEFAULT_COLLATION_NAME AS collation
+        FROM INFORMATION_SCHEMA.SCHEMATA
+        WHERE SCHEMA_NAME = ?
+        LIMIT 1
+      `,
+      [schemaName]
+    )
+    const metadataRow = metadataRows[0] ?? {}
+    const metadata = {
+      charset:
+        String(
+          metadataRow.charset ??
+            metadataRow.CHARSET ??
+            metadataRow.default_character_set_name ??
+            ""
+        ).trim() || undefined,
+      collation:
+        String(metadataRow.collation ?? metadataRow.COLLATION ?? metadataRow.default_collation_name ?? "")
+          .trim() || undefined,
+    }
     const tables = await runMySqlLikeMetadataQuery(
       client,
       databaseType,
@@ -821,6 +1341,8 @@ async function getMySqlLikeStructure(connection: SavedConnection): Promise<Datab
           name: connection.databaseName.trim() || "schema",
           schemas: [{ name: schemaName, groups }],
           groups,
+          charset: metadata.charset,
+          collation: metadata.collation,
         },
       ],
       schemas: [{ name: connection.databaseName.trim() || "schema", groups }],
@@ -875,6 +1397,15 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
     const schemaQuery = "SELECT current_schema() AS name"
     const schemaResult = await client.query(schemaQuery)
     const schemaName = String(schemaResult.rows[0]?.name ?? "public")
+    const encodingResult = await client.query(`
+      SELECT pg_encoding_to_char(encoding) AS encoding
+      FROM pg_database
+      WHERE datname = current_database()
+      LIMIT 1
+    `)
+    const encoding =
+      String(encodingResult.rows[0]?.encoding ?? encodingResult.rows[0]?.ENCODING ?? "").trim() ||
+      undefined
 
     const tables = await client.query(
       `
@@ -950,6 +1481,7 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
           name: connection.databaseName.trim() || "schema",
           schemas: [{ name: schemaName, groups }],
           groups,
+          encoding,
         },
       ],
       schemas: [{ name: schemaName, groups }],
@@ -966,14 +1498,13 @@ async function getSqlServerStructure(connection: SavedConnection): Promise<Datab
   const password = connection.password ?? ""
   const port = parsePort(connection.port)
   const useSsl = Boolean(connection.useSsl)
-  const configuredDatabase = sanitizeText(connection.databaseName)
 
   const pool = await sql.connect({
     user,
     password,
     server: host,
     port: port ?? 1433,
-    database: sanitizeText(connection.databaseName) || undefined,
+    database: "master",
     options: {
       encrypt: useSsl,
       trustServerCertificate: true,
@@ -983,15 +1514,13 @@ async function getSqlServerStructure(connection: SavedConnection): Promise<Datab
   })
 
   try {
-    const databaseRows = configuredDatabase
-      ? [{ name: configuredDatabase }]
-      : (await pool.request().query(`
-          SELECT name
-          FROM sys.databases
-          WHERE state_desc = 'ONLINE'
-            AND name NOT IN ('model', 'msdb', 'tempdb', 'SSISDB', 'ReportServer', 'ReportServerTempDB')
-          ORDER BY name
-        `)).recordset as Array<{ name: string }>
+    const databaseRows = (await pool.request().query(`
+        SELECT name
+        FROM sys.databases
+        WHERE state_desc = 'ONLINE'
+          AND name NOT IN ('model', 'msdb', 'tempdb', 'SSISDB', 'ReportServer', 'ReportServerTempDB')
+        ORDER BY name
+      `)).recordset as Array<{ name: string }>
 
     const databaseNames = extractNames(databaseRows)
     const databases = []
@@ -1016,6 +1545,14 @@ async function getSqlServerDatabaseStructure(
   databaseName: string
 ): Promise<DatabaseStructureDatabase> {
   const quotedDatabase = quoteSqlServerIdentifier(databaseName)
+  const collationResult = await pool.request().query(`
+    SELECT collation_name AS collation
+    FROM sys.databases
+    WHERE name = ${quoteSqlLiteral(databaseName)}
+  `)
+  const collation =
+    String(collationResult.recordset[0]?.collation ?? collationResult.recordset[0]?.COLLATION ?? "")
+      .trim() || undefined
 
   const schemasResult = await pool.request().query(`
     SELECT name
@@ -1127,6 +1664,7 @@ async function getSqlServerDatabaseStructure(
     name: databaseName,
     schemas,
     groups: schemas[0]?.groups ?? [],
+    collation,
   }
 }
 

@@ -19,6 +19,8 @@ export type TreeViewNode = {
   children?: TreeViewNode[]
   defaultExpanded?: boolean
   isLeaf?: boolean
+  expandOnClick?: boolean
+  unavailable?: boolean
   selected?: boolean
   onSelect?: () => void
   onDoubleClick?: () => void
@@ -43,12 +45,14 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
   const [open, setOpen] = useState(Boolean(node.defaultExpanded))
   const hasChildren = Boolean(node.children?.length)
   const Icon = node.icon
+  const canExpandOnClick = node.expandOnClick !== false
+  const isUnavailable = node.unavailable === true
 
   const trigger = (
     <button
       type="button"
       onClick={() => {
-        if (hasChildren && !node.isLeaf) {
+        if (hasChildren && !node.isLeaf && canExpandOnClick) {
           node.onSelect?.()
           setOpen((current) => !current)
           return
@@ -62,15 +66,18 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
       className={cn(
         "flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-lg px-3 py-2 text-left text-sm transition-colors",
         level === 0 ? "text-white/80" : "text-white/72",
-        hasChildren && !node.isLeaf
+        isUnavailable ? "cursor-not-allowed text-white/55" : "",
+        hasChildren && !node.isLeaf && canExpandOnClick
           ? "hover:bg-white/5 hover:text-white"
-          : "cursor-default hover:bg-transparent",
+          : isUnavailable
+            ? "hover:bg-white/4 hover:text-white/75"
+            : "cursor-default hover:bg-transparent",
         node.selected ? "bg-sky-400/10 text-white" : ""
       )}
       style={{ paddingLeft: 12 + level * 16 }}
     >
       <span className="flex size-4 items-center justify-center text-white/40">
-        {hasChildren && !node.isLeaf ? (
+        {hasChildren && !node.isLeaf && !isUnavailable ? (
           open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />
         ) : null}
       </span>

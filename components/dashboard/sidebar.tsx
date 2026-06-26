@@ -21,16 +21,27 @@ import {
 import { TreeView, type TreeViewNode } from "@/components/ui/tree-view"
 
 import { getDatabaseLabel } from "./shared"
-import type { DatabaseStructure, DatabaseStructureDatabase, SavedConnection } from "@/lib/connections"
+import type {
+  ConnectionAvailability,
+  DatabaseStructure,
+  DatabaseStructureDatabase,
+  SavedConnection,
+} from "@/lib/connections"
 
 type DashboardSidebarProps = {
   activeConnectionId: string | null
   connections: SavedConnection[]
+  connectionAvailabilityById: Record<string, ConnectionAvailability>
   databaseStructuresById: Record<string, DatabaseStructure>
   onAddConnection: () => void
+  onCreateDatabase: (connection: SavedConnection) => void
+  onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+  onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDisconnectConnection: () => void
-  onSelectConnection: (connectionId: string) => void
+  onSelectConnection: (connection: SavedConnection) => void
   onEditConnection: (connection: SavedConnection) => void
+  onRefreshStructure: () => void
+  onRefreshDatabaseStructure: () => void
   onInsertText: (text: string) => void
   onPreviewTable: (tablePath: string) => Promise<void> | void
   onExecuteTable: (tablePath: string) => Promise<void> | void
@@ -48,20 +59,32 @@ const sectionIcons = {
 export function DashboardSidebar({
   activeConnectionId,
   connections,
+  connectionAvailabilityById,
   databaseStructuresById,
   onAddConnection,
+  onCreateDatabase,
+  onEditDatabase,
+  onDeleteDatabase,
   onDisconnectConnection,
   onSelectConnection,
   onEditConnection,
+  onRefreshStructure,
+  onRefreshDatabaseStructure,
   onInsertText,
   onPreviewTable,
   onExecuteTable,
   onRunTableQuery,
 }: DashboardSidebarProps) {
   const treeNodes = buildTreeNodes(connections, activeConnectionId, databaseStructuresById, {
+    connectionAvailabilityById,
+    onCreateDatabase,
+    onEditDatabase,
+    onDeleteDatabase,
     onDisconnectConnection,
     onSelectConnection,
     onEditConnection,
+    onRefreshStructure,
+    onRefreshDatabaseStructure,
     onInsertText,
     onPreviewTable,
     onExecuteTable,
@@ -102,9 +125,15 @@ function buildTreeNodes(
   activeConnectionId: string | null,
   databaseStructuresById: Record<string, DatabaseStructure>,
   actions: {
+    connectionAvailabilityById: Record<string, ConnectionAvailability>
+    onCreateDatabase: (connection: SavedConnection) => void
+    onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+    onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
     onDisconnectConnection: () => void
-    onSelectConnection: (connectionId: string) => void
+    onSelectConnection: (connection: SavedConnection) => void
     onEditConnection: (connection: SavedConnection) => void
+    onRefreshStructure: () => void
+    onRefreshDatabaseStructure: () => void
     onInsertText: (text: string) => void
     onPreviewTable: (tablePath: string) => Promise<void> | void
     onExecuteTable: (tablePath: string) => Promise<void> | void
@@ -117,6 +146,19 @@ function buildTreeNodes(
       schemas: [],
       groups: [],
     }
+    const primaryDatabase =
+      databaseStructure.databases[0] ??
+      ({
+        name: getDatabaseNodeLabel(connection),
+        schemas: databaseStructure.schemas,
+        groups: databaseStructure.groups,
+        charset: databaseStructure.databases[0]?.charset,
+        collation: databaseStructure.databases[0]?.collation,
+        encoding: databaseStructure.databases[0]?.encoding,
+      } as DatabaseStructureDatabase)
+    const availability = actions.connectionAvailabilityById[connection.id]
+    const isAvailable = availability?.available !== false
+    const canCreateDatabase = isAvailable && connection.databaseType !== "sqlite"
     const connectionSubtitle = getConnectionTreeSubtitle(connection)
     const isActive = connection.id === activeConnectionId
 
@@ -128,17 +170,31 @@ function buildTreeNodes(
               label: "Banco de dados",
               icon: FolderGit2,
               defaultExpanded: false,
+              contextActions: isAvailable ? (
+                <DatabaseNodeContextMenu
+                  canCreate={canCreateDatabase}
+                  onCreateDatabase={() => actions.onCreateDatabase(connection)}
+                  onRefreshStructure={actions.onRefreshStructure}
+                />
+              ) : null,
               children: databaseStructure.databases.map((database) =>
                 buildDatabaseNode(connection, database, actions)
               ),
             },
           ]
-        : [
+      : [
             {
               id: `database-${connection.id}`,
               label: getDatabaseNodeLabel(connection),
               icon: FolderGit2,
               defaultExpanded: false,
+              contextActions: isAvailable ? (
+                <DatabaseItemContextMenu
+                  onEditDatabase={() => actions.onEditDatabase(connection, primaryDatabase)}
+                  onDeleteDatabase={() => actions.onDeleteDatabase(connection, primaryDatabase)}
+                  onRefreshDatabaseStructure={actions.onRefreshDatabaseStructure}
+                />
+              ) : null,
               children: getSchemaNodes(connection, databaseStructure, actions),
             },
           ]
@@ -148,13 +204,32 @@ function buildTreeNodes(
       label: connection.connectionName,
       subtitle: connectionSubtitle,
       icon: Database,
+      badge: (
+        <Badge
+          className={
+            isAvailable
+              ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-300"
+              : "border-rose-400/20 bg-rose-400/10 text-rose-300"
+          }
+        >
+          <span
+            className={`mr-1 size-1.5 rounded-full ${
+              isAvailable ? "bg-emerald-400" : "bg-rose-400"
+            }`}
+          />
+          {isAvailable ? "Online" : "Indisponível"}
+        </Badge>
+      ),
       defaultExpanded: false,
+      expandOnClick: isAvailable,
+      unavailable: !isAvailable,
       selected: isActive,
-      onSelect: () => actions.onSelectConnection(connection.id),
+      onSelect: () => actions.onSelectConnection(connection),
       contextActions: (
         <ConnectionTreeContextMenu
           isActive={isActive}
-          onConnect={() => actions.onSelectConnection(connection.id)}
+          canConnect={isAvailable}
+          onConnect={() => actions.onSelectConnection(connection)}
           onDisconnect={actions.onDisconnectConnection}
           onEdit={() => actions.onEditConnection(connection)}
         />
@@ -166,18 +241,20 @@ function buildTreeNodes(
 
 function ConnectionTreeContextMenu({
   isActive,
+  canConnect,
   onConnect,
   onDisconnect,
   onEdit,
 }: {
   isActive: boolean
+  canConnect: boolean
   onConnect: () => void
   onDisconnect: () => void
   onEdit: () => void
 }) {
   return (
     <div className="min-w-52 p-1">
-      <ContextMenuItem disabled={isActive} onSelect={onConnect}>
+      <ContextMenuItem disabled={isActive || !canConnect} onSelect={onConnect}>
         Conectar
       </ContextMenuItem>
       <ContextMenuItem disabled={!isActive} onSelect={onDisconnect}>
@@ -189,10 +266,51 @@ function ConnectionTreeContextMenu({
   )
 }
 
+function DatabaseNodeContextMenu({
+  canCreate,
+  onCreateDatabase,
+  onRefreshStructure,
+}: {
+  canCreate: boolean
+  onCreateDatabase: () => void
+  onRefreshStructure: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem disabled={!canCreate} onSelect={onCreateDatabase}>
+        Criar banco de dados
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={onRefreshStructure}>Atualizar</ContextMenuItem>
+    </div>
+  )
+}
+
+function DatabaseItemContextMenu({
+  onEditDatabase,
+  onDeleteDatabase,
+  onRefreshDatabaseStructure,
+}: {
+  onEditDatabase: () => void
+  onDeleteDatabase: () => void
+  onRefreshDatabaseStructure: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem onSelect={onEditDatabase}>Editar</ContextMenuItem>
+      <ContextMenuItem onSelect={onDeleteDatabase}>Excluir</ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={onRefreshDatabaseStructure}>Atualizar</ContextMenuItem>
+    </div>
+  )
+}
+
 function buildDatabaseNode(
   connection: SavedConnection,
   database: DatabaseStructureDatabase,
   actions: {
+    onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+    onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+    onRefreshDatabaseStructure: () => void
     onDisconnectConnection: () => void
     onInsertText: (text: string) => void
     onPreviewTable: (tablePath: string) => Promise<void> | void
@@ -205,6 +323,13 @@ function buildDatabaseNode(
     label: database.name,
     icon: Database,
     defaultExpanded: false,
+    contextActions: (
+      <DatabaseItemContextMenu
+        onEditDatabase={() => actions.onEditDatabase(connection, database)}
+        onDeleteDatabase={() => actions.onDeleteDatabase(connection, database)}
+        onRefreshDatabaseStructure={actions.onRefreshDatabaseStructure}
+      />
+    ),
     children: getSchemaNodesForDatabase(connection, database, actions),
   }
 }
@@ -213,6 +338,9 @@ function getSchemaNodes(
   connection: SavedConnection,
   databaseStructure: DatabaseStructure,
   actions: {
+    onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+    onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+    onRefreshDatabaseStructure: () => void
     onDisconnectConnection: () => void
     onInsertText: (text: string) => void
     onPreviewTable: (tablePath: string) => Promise<void> | void
@@ -231,6 +359,9 @@ function getSchemaNodesForDatabase(
   connection: SavedConnection,
   database: DatabaseStructureDatabase,
   actions: {
+    onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+    onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+    onRefreshDatabaseStructure: () => void
     onDisconnectConnection: () => void
     onInsertText: (text: string) => void
     onPreviewTable: (tablePath: string) => Promise<void> | void
