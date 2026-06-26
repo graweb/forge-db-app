@@ -885,6 +885,7 @@ async function getSqlServerStructure(connection: SavedConnection): Promise<Datab
   const password = connection.password ?? ""
   const port = parsePort(connection.port)
   const useSsl = Boolean(connection.useSsl)
+  const configuredDatabase = sanitizeText(connection.databaseName)
 
   const pool = await sql.connect({
     user,
@@ -901,13 +902,13 @@ async function getSqlServerStructure(connection: SavedConnection): Promise<Datab
   })
 
   try {
-    const configuredDatabase = sanitizeText(connection.databaseName)
     const databaseRows = configuredDatabase
       ? [{ name: configuredDatabase }]
       : (await pool.request().query(`
           SELECT name
           FROM sys.databases
           WHERE state_desc = 'ONLINE'
+            AND name NOT IN ('model', 'msdb', 'tempdb', 'SSISDB', 'ReportServer', 'ReportServerTempDB')
           ORDER BY name
         `)).recordset as Array<{ name: string }>
 
@@ -938,7 +939,20 @@ async function getSqlServerDatabaseStructure(
   const schemasResult = await pool.request().query(`
     SELECT name
     FROM ${quotedDatabase}.sys.schemas
-    WHERE name NOT IN ('sys', 'INFORMATION_SCHEMA')
+    WHERE name NOT IN (
+      'sys',
+      'INFORMATION_SCHEMA',
+      'guest',
+      'db_owner',
+      'db_accessadmin',
+      'db_securityadmin',
+      'db_ddladmin',
+      'db_backupoperator',
+      'db_datareader',
+      'db_datawriter',
+      'db_denydatareader',
+      'db_denydatawriter'
+    )
     ORDER BY name
   `)
 
