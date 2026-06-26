@@ -100,7 +100,19 @@ export function DashboardSidebar({
                       {getConnectionSubtitle(item)}
                     </div>
                   </div>
-                  <MoreHorizontal className="size-4 text-white/25" />
+                  {active ? (
+                    <button
+                      type="button"
+                      onClick={() => onDisconnectConnection()}
+                      className="inline-flex size-8 items-center justify-center rounded-lg border border-white/8 bg-white/4 text-white/45 transition-colors hover:bg-rose-400/10 hover:text-rose-200"
+                      aria-label="Desconectar conexão"
+                      title="Desconectar conexão"
+                    >
+                      <LogOut className="size-3.5" />
+                    </button>
+                  ) : (
+                    <MoreHorizontal className="size-4 text-white/25" />
+                  )}
                 </div>
               )
             })}
@@ -139,27 +151,13 @@ function buildTreeNodes(
         id: `connection-${connection.id}`,
         label: connection.connectionName,
         icon: Database,
-        defaultExpanded: true,
-        actions: (
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              actions.onDisconnectConnection()
-            }}
-            className="inline-flex size-8 items-center justify-center rounded-lg border border-white/8 bg-white/4 text-white/45 transition-colors hover:bg-rose-400/10 hover:text-rose-200"
-            aria-label="Desconectar conexão"
-            title="Desconectar conexão"
-          >
-            <LogOut className="size-3.5" />
-          </button>
-        ),
+        defaultExpanded: false,
         children: [
           {
             id: `databases-${connection.id}`,
             label: "Banco de dados",
             icon: FolderGit2,
-            defaultExpanded: true,
+            defaultExpanded: false,
             children: databaseStructure.databases.map((database) =>
               buildDatabaseNode(connection, database, actions)
             ),
@@ -177,27 +175,13 @@ function buildTreeNodes(
       id: `connection-${connection.id}`,
       label: connection.connectionName,
       icon: Database,
-      defaultExpanded: true,
-      actions: (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation()
-            actions.onDisconnectConnection()
-          }}
-          className="inline-flex size-8 items-center justify-center rounded-lg border border-white/8 bg-white/4 text-white/45 transition-colors hover:bg-rose-400/10 hover:text-rose-200"
-          aria-label="Desconectar conexão"
-          title="Desconectar conexão"
-        >
-          <LogOut className="size-3.5" />
-        </button>
-      ),
+      defaultExpanded: false,
       children: [
         {
           id: `database-${connection.id}`,
           label: databaseNodeLabel,
           icon: FolderGit2,
-          defaultExpanded: true,
+          defaultExpanded: false,
           children: schemaNodes,
         },
       ],
@@ -220,7 +204,7 @@ function buildDatabaseNode(
     id: `database-${connection.id}-${database.name}`,
     label: database.name,
     icon: Database,
-    defaultExpanded: true,
+    defaultExpanded: false,
     children: getSchemaNodesForDatabase(connection, database, actions),
   }
 }
@@ -262,8 +246,8 @@ function getSchemaNodesForDatabase(
     id: `schema-${connection.id}-${schema.name}`,
     label: schema.name,
     icon: Layers3,
-    defaultExpanded: true,
-        children: schema.groups.map((group) => {
+    defaultExpanded: false,
+    children: schema.groups.map((group) => {
       const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? Table2
       const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
       const isTableGroup = group.label === "Tabelas"
@@ -273,7 +257,7 @@ function getSchemaNodesForDatabase(
         label: group.label,
         icon: Icon,
         badge: group.items.length,
-        defaultExpanded: true,
+        defaultExpanded: false,
         children: group.items.map((item) => {
           const tableReference = getTableReference(
             connection,
