@@ -305,10 +305,10 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
           </div>
         </div>
 
-        <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,0.92fr)]">
-          <div className="min-h-0 border-b border-white/10 px-4 py-4">
-            <div className="h-60 min-h-0 rounded-2xl border border-white/10 bg-[#07111d] p-4 shadow-[0_16px_50px_-34px_rgba(0,0,0,0.95)]">
-              <div className="h-52 min-h-0 overflow-hidden rounded-xl border border-white/10 bg-[#050913]">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="shrink-0 border-b border-white/10 px-4 py-4">
+            <div className="h-56 min-h-0 rounded-2xl border border-white/10 bg-[#07111d] p-3 shadow-[0_16px_50px_-34px_rgba(0,0,0,0.95)]">
+              <div className="h-full min-h-0 overflow-hidden rounded-xl border border-white/10 bg-[#050913]">
                 <MonacoEditor
                   value={sqlText}
                   onChange={(value) => setSqlText(value ?? "")}
@@ -335,14 +335,14 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
                     parameterHints: { enabled: true },
                     wordBasedSuggestions: "currentDocument",
                   }}
-                  className="h-52 min-h-60"
+                  className="h-full min-h-45"
                   loading={<div className="p-4 text-sm text-white/45">Carregando editor SQL...</div>}
                 />
               </div>
             </div>
           </div>
 
-          <div className="grid min-h-0 grid-rows-[48px_minmax(0,1fr)]">
+          <div className="grid min-h-0 flex-1 grid-rows-[48px_minmax(0,1fr)]">
             <div className="flex items-center gap-3 border-b border-white/10 px-4">
               <Tab active={activeTab === "resultado"} onClick={() => setActiveTab("resultado")}>
                 Resultado
@@ -366,9 +366,6 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
                     key={queryResult ? resultNonce : "empty-result"}
                     result={queryResult}
                   />
-                  <div className="text-sm text-white/55">
-                    {executionMessage}
-                  </div>
                 </div>
               ) : null}
 
