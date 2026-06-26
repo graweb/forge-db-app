@@ -41,7 +41,7 @@ export function DashboardSidebar({ connection, recentConnections }: DashboardSid
                     "flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-colors",
                     active
                       ? "border-sky-400/25 bg-sky-400/10"
-                      : "border-white/8 bg-white/[0.02] hover:bg-white/[0.04]"
+                      : "border-white/8 bg-white/2 hover:bg-white/4"
                   )}
                 >
                   <div

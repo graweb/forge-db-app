@@ -262,12 +262,12 @@ export default function Home() {
   return (
     <main className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top,rgba(72,116,255,0.16),transparent_30%),radial-gradient(circle_at_85%_0%,rgba(32,80,180,0.22),transparent_28%),linear-gradient(180deg,#050816_0%,#07111f_52%,#03060b_100%)] text-white">
       <div className="relative mx-auto flex min-h-screen w-full max-w-[1600px] flex-col px-4 py-6 sm:px-6 lg:px-10">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-[460px] bg-[radial-gradient(circle_at_20%_20%,rgba(84,131,255,0.18),transparent_32%),radial-gradient(circle_at_80%_10%,rgba(76,108,255,0.22),transparent_26%)]" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-115 bg-[radial-gradient(circle_at_20%_20%,rgba(84,131,255,0.18),transparent_32%),radial-gradient(circle_at_80%_10%,rgba(76,108,255,0.22),transparent_26%)]" />
 
         <section className="relative grid gap-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
           <div className="space-y-4">
             <h1 className="max-w-4xl text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
-              <span className="bg-gradient-to-r from-sky-400 via-blue-400 to-indigo-300 bg-clip-text text-transparent">
+              <span className="bg-linear-to-r from-sky-400 via-blue-400 to-indigo-300 bg-clip-text text-transparent">
                 Forge DB
               </span>
             </h1>
@@ -314,7 +314,7 @@ export default function Home() {
                           <div className="text-sm font-medium">{option.label}</div>
                           <div
                             className={cn(
-                              "h-1 w-14 rounded-full bg-gradient-to-r opacity-35 transition-opacity",
+                              "h-1 w-14 rounded-full bg-linear-to-r opacity-35 transition-opacity",
                               option.accent,
                               active ? "opacity-100" : "opacity-0"
                             )}
@@ -494,7 +494,7 @@ export default function Home() {
                     size="lg"
                     onClick={handleSaveAndConnect}
                     disabled={testing || saving}
-                    className="bg-gradient-to-r from-[#3f7bff] to-[#2a61ef] text-white shadow-[0_18px_45px_-18px_rgba(59,113,255,0.9)] hover:from-[#4a84ff] hover:to-[#2457da]"
+                    className="bg-linear-to-r from-[#3f7bff] to-[#2a61ef] text-white shadow-[0_18px_45px_-18px_rgba(59,113,255,0.9)] hover:from-[#4a84ff] hover:to-[#2457da]"
                   >
                     {saving ? <Loader2 className="size-4 animate-spin" /> : <Plug className="size-4" />}
                     {saving ? "Salvando..." : "Salvar e Conectar"}

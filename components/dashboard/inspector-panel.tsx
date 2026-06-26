@@ -36,7 +36,7 @@ export function DashboardInspectorPanel({ connection }: DashboardInspectorPanelP
   ]
 
   return (
-    <aside className="flex h-full min-h-0 w-[370px] flex-col border-l border-white/10 bg-[#07111d]/95">
+    <aside className="flex h-full min-h-0 w-92.5 flex-col border-l border-white/10 bg-[#07111d]/95">
       <div className="border-b border-white/10 p-4">
         <div className="flex gap-3">
           {tabs.map((tab, index) => (
@@ -64,7 +64,7 @@ export function DashboardInspectorPanel({ connection }: DashboardInspectorPanelP
               {connectionDetails.map(([label, value]) => (
                 <div key={label} className="grid grid-cols-[120px_1fr] gap-3 px-4 py-3 text-sm">
                   <div className="text-white/45">{label}</div>
-                  <div className="break-words text-white/80">{value}</div>
+                  <div className="wrap-break-word text-white/80">{value}</div>
                 </div>
               ))}
             </div>

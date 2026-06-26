@@ -120,7 +120,7 @@ export function QueryResults({ result }: QueryResultsProps) {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-white/10">
-        <Table className="min-w-[760px]">
+        <Table className="min-w-190">
           <TableHeader className="bg-white/4">
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-20">#</TableHead>
@@ -128,7 +128,7 @@ export function QueryResults({ result }: QueryResultsProps) {
                 const active = sort?.column === column
 
                 return (
-                  <TableHead key={column} className="min-w-[160px]">
+                  <TableHead key={column} className="min-w-40">
                     <button
                       type="button"
                       onClick={() => {
