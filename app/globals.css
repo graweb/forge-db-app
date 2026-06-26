@@ -130,3 +130,15 @@
     @apply font-sans;
   }
 }
+
+@layer utilities {
+  .query-execution-highlight {
+    background: linear-gradient(90deg, rgba(56, 189, 248, 0.16), rgba(56, 189, 248, 0.06));
+    border-radius: 8px;
+  }
+
+  .query-execution-highlight-gutter {
+    border-left: 3px solid rgba(56, 189, 248, 0.75);
+    margin-left: -3px;
+  }
+}

@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic"
 import { useRef, useState } from "react"
 import type { ReactNode } from "react"
-import { Brackets, Filter, Play, Settings2, Sparkles } from "lucide-react"
+import { Brackets, Filter, Play, Settings2, Sparkles, X } from "lucide-react"
 import type * as Monaco from "monaco-editor"
 
 import { Button } from "@/components/ui/button"
@@ -27,12 +27,16 @@ type DashboardEditorWorkspaceProps = {
   connection: SavedConnection
 }
 
-type QueryHistoryEntry = {
+type QueryTabStatus = "success" | "error"
+
+type QueryExecutionTab = {
+  id: string
+  title: string
   sql: string
-  status: "success" | "error"
+  status: QueryTabStatus
   message: string
-  durationMs?: number
-  timestamp: string
+  durationMs: number
+  result: QueryExecutionResult | null
 }
 
 function getDefaultQuery(databaseType: SavedConnection["databaseType"]) {
@@ -45,106 +49,156 @@ function getDefaultQuery(databaseType: SavedConnection["databaseType"]) {
 
 export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspaceProps) {
   const [sqlText, setSqlText] = useState(() => getDefaultQuery(connection.databaseType))
-  const [activeTab, setActiveTab] = useState<"resultado" | "mensagens" | "historico">("resultado")
-  const [queryResult, setQueryResult] = useState<QueryExecutionResult | null>(null)
-  const [resultNonce, setResultNonce] = useState(0)
-  const [executionMessage, setExecutionMessage] = useState<string>(
-    "Execute uma consulta para ver o resultado aqui."
+  const [queryTabs, setQueryTabs] = useState<QueryExecutionTab[]>([])
+  const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  const [executionSummary, setExecutionSummary] = useState(
+    "Execute uma consulta para abrir uma aba de resultado."
   )
-  const [history, setHistory] = useState<QueryHistoryEntry[]>([])
+  const [summaryTone, setSummaryTone] = useState<"neutral" | "success" | "error">("neutral")
   const [executing, setExecuting] = useState(false)
   const [lastDurationMs, setLastDurationMs] = useState<number | null>(null)
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
+  const highlightDecorationIdsRef = useRef<string[]>([])
+
+  const activeTab = queryTabs.find((tab) => tab.id === activeTabId) ?? queryTabs[0] ?? null
+
+  const handleCloseTab = (tabId: string) => {
+    setQueryTabs((current) => {
+      const nextTabs = current.filter((tab) => tab.id !== tabId)
+
+      if (tabId === activeTabId) {
+        const removedIndex = current.findIndex((tab) => tab.id === tabId)
+        const fallbackTab = nextTabs[Math.max(0, removedIndex - 1)] ?? nextTabs[removedIndex] ?? null
+
+        setActiveTabId(fallbackTab?.id ?? null)
+      }
+
+      return nextTabs
+    })
+  }
 
   const handleExecute = async (mode: "full" | "cursor" = "cursor") => {
-    const statement = getExecutionStatement(mode, editorRef.current, sqlText)
+    const editor = editorRef.current
+    const executionPlan = getExecutionPlan(mode, editor, sqlText)
+    const statements = executionPlan.map((item) => item.text)
 
-    if (!statement) {
-      setActiveTab("mensagens")
-      setExecutionMessage("Digite uma consulta SQL antes de executar.")
+    if (!statements.length) {
+      setSummaryTone("error")
+      setExecutionSummary("Digite uma consulta SQL antes de executar.")
       return
     }
 
     setExecuting(true)
-    setExecutionMessage("")
-    setQueryResult(null)
+    setLastDurationMs(null)
+    setSummaryTone("neutral")
+    setExecutionSummary("Executando consulta(s)...")
 
     const startedAt = performance.now()
+    const nextTabs: QueryExecutionTab[] = []
 
     try {
-      const response = await fetch(`/api/connections/${connection.id}/query`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ sql: statement }),
-      })
+      for (const [index, statement] of statements.entries()) {
+        const statementStartedAt = performance.now()
+        const response = await fetch(`/api/connections/${connection.id}/query`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ sql: statement }),
+        })
 
-      const payload: {
-        success: boolean
-        message: string
-        details?: string
-        columns?: string[]
-        rows?: Array<Record<string, string | number | boolean | null>>
-        rowCount?: number
-        affectedRows?: number
-      } = await response.json()
+        const payload: {
+          success: boolean
+          message: string
+          details?: string
+          columns?: string[]
+          rows?: Array<Record<string, string | number | boolean | null>>
+          rowCount?: number
+          affectedRows?: number
+        } = await response.json()
 
-      const durationMs = Math.round(performance.now() - startedAt)
-      setLastDurationMs(durationMs)
+        const durationMs = Math.round(performance.now() - statementStartedAt)
 
-      if (!response.ok || !payload.success) {
-        const message = payload.details || payload.message || "Não foi possível executar a consulta."
-        const entry: QueryHistoryEntry = {
-          sql: statement,
-          status: "error",
-          message,
-          durationMs,
-          timestamp: new Date().toLocaleTimeString("pt-BR"),
+        if (!response.ok || !payload.success) {
+          nextTabs.push({
+            id: createQueryTabId(),
+            title: getQueryTabTitle(statement, index),
+            sql: statement,
+            status: "error",
+            message: payload.details || payload.message || "Não foi possível executar a consulta.",
+            durationMs,
+            result: null,
+          })
+          continue
         }
 
-        setActiveTab("mensagens")
-        setExecutionMessage(message)
-        setHistory((current) => [entry, ...current].slice(0, 8))
-        return
+        const result: QueryExecutionResult = {
+          columns: payload.columns ?? [],
+          rows: payload.rows ?? [],
+          rowCount: payload.rowCount ?? payload.rows?.length ?? 0,
+          affectedRows: payload.affectedRows,
+          message: payload.message,
+        }
+
+        nextTabs.push({
+          id: createQueryTabId(),
+          title: getQueryTabTitle(statement, index),
+          sql: statement,
+          status: "success",
+          message: payload.message,
+          durationMs,
+          result,
+        })
       }
 
-      const result: QueryExecutionResult = {
-        columns: payload.columns ?? [],
-        rows: payload.rows ?? [],
-        rowCount: payload.rowCount ?? payload.rows?.length ?? 0,
-        affectedRows: payload.affectedRows,
-        message: payload.message,
+      if (nextTabs.length) {
+        const hasError = nextTabs.some((tab) => tab.status === "error")
+        const merged = upsertExecutionTabs(queryTabs, nextTabs)
+        setQueryTabs(merged.tabs)
+        setActiveTabId(merged.activeTabId)
+        setLastDurationMs(Math.round(performance.now() - startedAt))
+        setSummaryTone(hasError ? "error" : "success")
+        setExecutionSummary(
+          hasError
+            ? nextTabs.length === 1
+              ? "1 consulta processada em uma aba, com erro."
+              : `${nextTabs.length} consultas processadas em abas, com pelo menos um erro.`
+            : nextTabs.length === 1
+              ? "1 consulta processada em uma aba."
+              : `${nextTabs.length} consultas processadas em abas.`
+        )
       }
 
-      setQueryResult(result)
-      setResultNonce((current) => current + 1)
-      setExecutionMessage(payload.message)
-      setActiveTab("resultado")
-      const entry: QueryHistoryEntry = {
-        sql: statement,
-        status: "success",
-        message: payload.message,
-        durationMs,
-        timestamp: new Date().toLocaleTimeString("pt-BR"),
+      if (mode === "cursor" && executionPlan[0]) {
+        highlightExecutedStatement(editor, executionPlan[0].block, highlightDecorationIdsRef)
       }
-
-      setHistory((current) => [entry, ...current].slice(0, 8))
     } catch {
       const durationMs = Math.round(performance.now() - startedAt)
-      setLastDurationMs(durationMs)
-      const message = "Falha inesperada ao executar a consulta."
-      const entry: QueryHistoryEntry = {
-        sql: statement,
-        status: "error",
-        message,
-        durationMs,
-        timestamp: new Date().toLocaleTimeString("pt-BR"),
+      if (nextTabs.length) {
+        const hasError = nextTabs.some((tab) => tab.status === "error")
+        const merged = upsertExecutionTabs(queryTabs, nextTabs)
+        setQueryTabs(merged.tabs)
+        setActiveTabId(merged.activeTabId)
+        setLastDurationMs(durationMs)
+        setSummaryTone(hasError ? "error" : "success")
+        setExecutionSummary(
+          hasError
+            ? nextTabs.length === 1
+              ? "1 consulta processada em uma aba, com erro e interrupção."
+              : `${nextTabs.length} consultas processadas em abas, com erro e interrupção.`
+            : nextTabs.length === 1
+              ? "1 consulta processada antes de ocorrer uma falha."
+              : `${nextTabs.length} consultas processadas antes de ocorrer uma falha.`
+        )
+      } else {
+        setLastDurationMs(durationMs)
+        setSummaryTone("error")
+        setExecutionSummary("Falha inesperada ao executar a consulta.")
       }
 
-      setActiveTab("mensagens")
-      setExecutionMessage(message)
-      setHistory((current) => [entry, ...current].slice(0, 8))
+      if (mode === "cursor" && executionPlan[0]) {
+        highlightExecutedStatement(editor, executionPlan[0].block, highlightDecorationIdsRef)
+      }
     } finally {
       setExecuting(false)
     }
@@ -155,6 +209,18 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
     monaco: typeof Monaco
   ) => {
     editorRef.current = editor
+
+    editor.onMouseMove(() => {
+      clearExecutedStatementHighlight(editor, highlightDecorationIdsRef)
+    })
+
+    editor.onMouseDown(() => {
+      clearExecutedStatementHighlight(editor, highlightDecorationIdsRef)
+    })
+
+    editor.onDidChangeCursorPosition(() => {
+      clearExecutedStatementHighlight(editor, highlightDecorationIdsRef)
+    })
 
     if (!monacoEnhancementsRegistered) {
       monacoEnhancementsRegistered = true
@@ -284,9 +350,19 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
           <Filter className="size-4" />
           Executar tudo
         </Button>
-        <div className="ml-auto hidden shrink-0 items-center gap-2 text-sm text-emerald-300 md:flex">
+        <div
+          className={cn(
+            "ml-auto hidden shrink-0 items-center gap-2 text-sm md:flex",
+            summaryTone === "success"
+              ? "text-emerald-300"
+              : summaryTone === "error"
+                ? "text-rose-300"
+                : "text-white/45"
+          )}
+        >
           <Sparkles className="size-4" />
-          {lastDurationMs ? `Execução concluída em ${lastDurationMs} ms` : "Pronto para executar"}
+          <span>{executionSummary}</span>
+          {lastDurationMs !== null ? <span>• {lastDurationMs} ms</span> : null}
         </div>
       </div>
 
@@ -296,7 +372,7 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
             <div className="rounded-t-xl border border-b-0 border-white/10 bg-white/8 px-4 py-2 text-sm text-white">
               Query 1.sql
             </div>
-            <div className="rounded-t-xl border border-white/10 px-3 py-2 text-white/40">
+            <div className="rounded-t-xl border border-white/10 bg-white/4 px-3 py-2 text-white/40">
               <Brackets className="size-4" />
             </div>
             <div className="ml-auto text-xs text-white/45">
@@ -342,80 +418,41 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
             </div>
           </div>
 
-          <div className="grid min-h-0 flex-1 grid-rows-[48px_minmax(0,1fr)]">
-            <div className="flex items-center gap-3 border-b border-white/10 px-4">
-              <Tab active={activeTab === "resultado"} onClick={() => setActiveTab("resultado")}>
-                Resultado
-              </Tab>
-              <Tab active={activeTab === "mensagens"} onClick={() => setActiveTab("mensagens")}>
-                Mensagens
-              </Tab>
-              <Tab active={activeTab === "historico"} onClick={() => setActiveTab("historico")}>
-                Histórico
-              </Tab>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex items-center gap-3 overflow-x-auto border-b border-white/10 px-4">
+              {queryTabs.length ? (
+                queryTabs.map((tab, index) => (
+                  <Tab
+                    key={tab.id}
+                    active={tab.id === activeTab?.id}
+                    onClick={() => setActiveTabId(tab.id)}
+                    onClose={() => handleCloseTab(tab.id)}
+                  >
+                    <span className="truncate">{tab.title}</span>
+                    <span className="text-[10px] uppercase tracking-[0.18em] text-white/35">
+                      {index + 1}
+                    </span>
+                  </Tab>
+                ))
+              ) : (
+                <div className="py-3 text-sm text-white/45">
+                  As execuções vão abrir abas com o nome da tabela encontrada na query.
+                </div>
+              )}
               <div className="ml-auto flex items-center gap-2 text-xs text-white/45">
                 <Settings2 className="size-4" />
                 Exportar
               </div>
             </div>
 
-            <div className="min-h-0 overflow-hidden p-4">
-              {activeTab === "resultado" ? (
-                <div className="flex h-full min-h-0 flex-col">
-                  <QueryResults
-                    key={queryResult ? resultNonce : "empty-result"}
-                    result={queryResult}
-                  />
+            <div className="min-h-0 flex-1 overflow-hidden p-4">
+              {activeTab ? (
+                <QueryTabPanel tab={activeTab} />
+              ) : (
+                <div className="flex h-full min-h-0 items-center justify-center rounded-2xl border border-dashed border-white/10 bg-[#07111d] px-6 py-8 text-sm text-white/50">
+                  Execute uma ou mais queries para abrir os resultados em abas separadas.
                 </div>
-              ) : null}
-
-              {activeTab === "mensagens" ? (
-                <div className="space-y-3 rounded-2xl border border-white/10 bg-[#07111d] p-4">
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-medium text-white">Mensagens</div>
-                    <div className="text-xs text-white/45">
-                      {lastDurationMs ? `${lastDurationMs} ms` : "Sem execução"}
-                    </div>
-                  </div>
-                  <div className="rounded-xl border border-white/10 bg-white/4 p-4 text-sm leading-6 text-white/75">
-                    {executionMessage}
-                  </div>
-                </div>
-              ) : null}
-
-              {activeTab === "historico" ? (
-                <div className="space-y-3">
-                  {history.length ? (
-                    history.map((entry) => (
-                      <div
-                        key={`${entry.timestamp}-${entry.durationMs ?? 0}`}
-                        className="rounded-2xl border border-white/10 bg-[#07111d] p-4"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              "size-2 rounded-full",
-                              entry.status === "success" ? "bg-emerald-400" : "bg-red-400"
-                            )}
-                          />
-                          <div className="text-sm text-white">{entry.message}</div>
-                          <div className="ml-auto text-xs text-white/45">
-                            {entry.timestamp}
-                            {entry.durationMs ? ` · ${entry.durationMs} ms` : ""}
-                          </div>
-                        </div>
-                        <pre className="mt-3 overflow-auto rounded-xl border border-white/10 bg-white/4 p-3 text-xs leading-5 text-white/60">
-                          {entry.sql}
-                        </pre>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="rounded-2xl border border-dashed border-white/10 bg-[#07111d] px-6 py-8 text-sm text-white/50">
-                      Nenhuma execução registrada ainda.
-                    </div>
-                  )}
-                </div>
-              ) : null}
+              )}
             </div>
           </div>
         </div>
@@ -424,66 +461,204 @@ export function DashboardEditorWorkspace({ connection }: DashboardEditorWorkspac
   )
 }
 
+function QueryTabPanel({ tab }: { tab: QueryExecutionTab }) {
+  if (tab.status === "error") {
+    return (
+      <div className="space-y-4 rounded-2xl border border-white/10 bg-[#07111d] p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-sm font-medium text-white">{tab.title}</div>
+          <div className="text-xs text-white/45">{tab.durationMs} ms</div>
+        </div>
+        <div className="rounded-xl border border-rose-400/20 bg-rose-400/10 p-4 text-sm leading-6 text-rose-100">
+          {tab.message}
+        </div>
+        <pre className="overflow-auto rounded-xl border border-white/10 bg-white/4 p-3 text-xs leading-5 text-white/60">
+          {tab.sql}
+        </pre>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <QueryResults key={tab.id} result={tab.result} />
+    </div>
+  )
+}
+
 function Tab({
   children,
   active = false,
   onClick,
+  onClose,
 }: {
   children: ReactNode
   active?: boolean
   onClick?: () => void
+  onClose?: () => void
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "rounded-t-lg border px-4 py-2 text-sm transition-colors",
-        active
-          ? "border-sky-400/20 bg-sky-400/10 text-white"
-          : "border-transparent text-white/55 hover:text-white"
-      )}
-    >
-      {children}
-    </button>
+    <div className="inline-flex items-center gap-1">
+      <button
+        type="button"
+        onClick={onClick}
+        className={cn(
+          "inline-flex items-center gap-2 rounded-t-lg border px-4 py-2 text-sm transition-colors",
+          active
+            ? "border-sky-400/20 bg-sky-400/10 text-white"
+            : "border-transparent text-white/55 hover:text-white"
+        )}
+      >
+        {children}
+      </button>
+
+      {onClose ? (
+        <button
+          type="button"
+          aria-label="Fechar aba"
+          onClick={onClose}
+          className={cn(
+            "inline-flex size-8 items-center justify-center rounded-t-lg border border-white/10 bg-white/4 text-white/45 transition-colors hover:bg-white/10 hover:text-white",
+            active && "border-sky-400/20 bg-sky-400/10 text-white/70"
+          )}
+        >
+          <X className="size-3.5" />
+        </button>
+      ) : null}
+    </div>
   )
 }
 
-function getExecutionStatement(
+function highlightExecutedStatement(
+  editor: Monaco.editor.IStandaloneCodeEditor | null,
+  block: SqlStatementBlock,
+  decorationIdsRef: { current: string[] }
+) {
+  if (!editor) {
+    return
+  }
+
+  const model = editor.getModel()
+  if (!model) {
+    return
+  }
+
+  const range = {
+    startLineNumber: block.startLine,
+    startColumn: 1,
+    endLineNumber: block.endLine,
+    endColumn: model.getLineMaxColumn(block.endLine),
+  }
+
+  decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, [
+    {
+      range,
+      options: {
+        isWholeLine: true,
+        className: "query-execution-highlight",
+        linesDecorationsClassName: "query-execution-highlight-gutter",
+      },
+    },
+  ])
+
+  editor.revealRangeInCenter(range)
+}
+
+function clearExecutedStatementHighlight(
+  editor: Monaco.editor.IStandaloneCodeEditor | null,
+  decorationIdsRef: { current: string[] }
+) {
+  if (!editor || decorationIdsRef.current.length === 0) {
+    return
+  }
+
+  decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, [])
+}
+
+function upsertExecutionTabs(
+  currentTabs: QueryExecutionTab[],
+  incomingTabs: QueryExecutionTab[]
+) {
+  let nextTabs = [...currentTabs]
+  let activeTabId = incomingTabs[0]?.id ?? null
+
+  for (const [index, incomingTab] of incomingTabs.entries()) {
+    const existingIndex = nextTabs.findIndex((tab) => tab.title === incomingTab.title)
+    let resolvedId = incomingTab.id
+
+    if (existingIndex >= 0) {
+      const existingTab = nextTabs[existingIndex]
+      resolvedId = existingTab.id
+      nextTabs = [
+        ...nextTabs.slice(0, existingIndex),
+        {
+          ...existingTab,
+          ...incomingTab,
+          id: existingTab.id,
+        },
+        ...nextTabs.slice(existingIndex + 1),
+      ]
+    } else {
+      nextTabs = [...nextTabs, incomingTab]
+    }
+
+    if (index === 0) {
+      activeTabId = resolvedId
+    }
+  }
+
+  return {
+    tabs: nextTabs,
+    activeTabId,
+  }
+}
+
+type StatementExecutionPlan = {
+  text: string
+  block: SqlStatementBlock
+}
+
+function getExecutionPlan(
   mode: "full" | "cursor",
   editor: Monaco.editor.IStandaloneCodeEditor | null,
   fallbackText: string
-) {
+): StatementExecutionPlan[] {
   const model = editor?.getModel()
   const baseText = model?.getValue() ?? fallbackText
 
   if (mode === "full") {
-    return baseText.trim()
+    return getSqlStatements(baseText).map((block) => ({
+      text: block.text,
+      block,
+    }))
   }
 
   if (!editor || !model) {
-    return baseText.trim()
-  }
-
-  const selection = editor.getSelection()
-  if (selection && !selection.isEmpty()) {
-    const selectedText = model.getValueInRange(selection).trim()
-    if (selectedText) {
-      return selectedText
-    }
+    return getSqlStatements(baseText).map((block) => ({
+      text: block.text,
+      block,
+    }))
   }
 
   const position = editor.getPosition()
   if (!position) {
-    return baseText.trim()
+    return getSqlStatements(baseText).map((block) => ({
+      text: block.text,
+      block,
+    }))
   }
 
-  const text = baseText
-  const cursorLine = position.lineNumber
-  const statements = getSqlStatements(text)
-  const statement = pickSqlStatement(statements, cursorLine)
+  const statements = getSqlStatements(baseText)
+  const statement = pickSqlStatementBlock(statements, position.lineNumber)
 
-  return statement || text.trim()
+  return statement
+    ? [
+        {
+          text: statement.text,
+          block: statement,
+        },
+      ]
+    : []
 }
 
 type SqlStatementBlock = {
@@ -492,9 +667,9 @@ type SqlStatementBlock = {
   text: string
 }
 
-function pickSqlStatement(statements: SqlStatementBlock[], cursorLine: number) {
+function pickSqlStatementBlock(statements: SqlStatementBlock[], cursorLine: number) {
   if (!statements.length) {
-    return ""
+    return null
   }
 
   const currentStatement = statements.find(
@@ -502,20 +677,68 @@ function pickSqlStatement(statements: SqlStatementBlock[], cursorLine: number) {
   )
 
   if (currentStatement) {
-    return currentStatement.text
+    return currentStatement
   }
 
   const nextStatementIndex = statements.findIndex((statement) => statement.startLine > cursorLine)
 
   if (nextStatementIndex === -1) {
-    return statements.at(-1)?.text ?? ""
+    return statements.at(-1) ?? null
   }
 
   if (nextStatementIndex === 0) {
-    return statements[0]?.text ?? ""
+    return statements[0] ?? null
   }
 
-  return statements[nextStatementIndex - 1]?.text ?? ""
+  return statements[nextStatementIndex - 1] ?? null
+}
+
+function createQueryTabId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function getQueryTabTitle(sql: string, fallbackIndex: number) {
+  const tableName = extractTableName(sql)
+
+  return tableName || `Query ${fallbackIndex + 1}`
+}
+
+function extractTableName(sql: string) {
+  const compactSql = sql.replace(/\s+/g, " ").trim()
+  const patterns = [
+    /\bfrom\s+([`"\[\]\w.]+)/i,
+    /\bjoin\s+([`"\[\]\w.]+)/i,
+    /\binsert\s+into\s+([`"\[\]\w.]+)/i,
+    /\bupdate\s+([`"\[\]\w.]+)/i,
+    /\bdelete\s+from\s+([`"\[\]\w.]+)/i,
+    /\btruncate\s+table\s+([`"\[\]\w.]+)/i,
+    /\bmerge\s+into\s+([`"\[\]\w.]+)/i,
+  ]
+
+  for (const pattern of patterns) {
+    const match = compactSql.match(pattern)
+    const identifier = match?.[1]
+
+    if (!identifier || identifier.startsWith("(")) {
+      continue
+    }
+
+    const tableName = normalizeIdentifier(identifier)
+    if (tableName) {
+      return tableName
+    }
+  }
+
+  return ""
+}
+
+function normalizeIdentifier(identifier: string) {
+  const parts = identifier
+    .split(".")
+    .map((part) => part.trim().replace(/^[`"\[]+|[`"\]]+$/g, ""))
+    .filter(Boolean)
+
+  return parts.at(-1) ?? ""
 }
 
 function getSqlStatements(text: string) {
@@ -621,7 +844,7 @@ function findSqlSeparators(text: string) {
         continue
       }
 
-      if (char === "'" ) {
+      if (char === "'") {
         inSingleQuote = false
       }
       continue
