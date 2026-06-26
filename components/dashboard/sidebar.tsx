@@ -263,7 +263,7 @@ function getSchemaNodesForDatabase(
     label: schema.name,
     icon: Layers3,
     defaultExpanded: true,
-    children: schema.groups.map((group) => {
+        children: schema.groups.map((group) => {
       const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? Table2
       const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
       const isTableGroup = group.label === "Tabelas"
@@ -275,7 +275,12 @@ function getSchemaNodesForDatabase(
         badge: group.items.length,
         defaultExpanded: true,
         children: group.items.map((item) => {
-          const tableReference = getTableReference(connection, schema.name, item)
+          const tableReference = getTableReference(
+            connection,
+            schema.name,
+            item,
+            connection.databaseType === "sqlserver" ? database.name : undefined
+          )
 
           return {
             id: `${connection.id}-${schema.name}-${group.label}-${item}`,
@@ -357,9 +362,15 @@ function getDefaultSchemaName(connection: SavedConnection) {
   return connection.databaseName.trim() || "schema_1"
 }
 
-function getTableReference(connection: SavedConnection, schemaName: string, tableName: string) {
+function getTableReference(
+  connection: SavedConnection,
+  schemaName: string,
+  tableName: string,
+  databaseName?: string
+) {
   const normalizedSchema = schemaName.trim()
   const normalizedTable = tableName.trim()
+  const normalizedDatabase = databaseName?.trim() ?? ""
 
   if (!normalizedSchema || !normalizedTable) {
     return normalizedTable || normalizedSchema
@@ -373,8 +384,16 @@ function getTableReference(connection: SavedConnection, schemaName: string, tabl
     return normalizedTable
   }
 
-  if (connection.databaseType === "sqlserver" && normalizedSchema === "dbo") {
-    return normalizedTable
+  if (connection.databaseType === "sqlserver") {
+    const qualifiedDatabase = normalizedDatabase ? formatSqlServerIdentifier(normalizedDatabase) : ""
+    const qualifiedSchema = formatSqlServerIdentifier(normalizedSchema)
+    const qualifiedTable = formatSqlServerIdentifier(normalizedTable)
+
+    if (!qualifiedDatabase) {
+      return `${qualifiedSchema}.${qualifiedTable}`
+    }
+
+    return `${qualifiedDatabase}.${qualifiedSchema}.${qualifiedTable}`
   }
 
   if (
@@ -385,4 +404,16 @@ function getTableReference(connection: SavedConnection, schemaName: string, tabl
   }
 
   return `${normalizedSchema}.${normalizedTable}`
+}
+
+function formatSqlServerIdentifier(value: string) {
+  if (!value) {
+    return value
+  }
+
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    return value
+  }
+
+  return `[${value.replace(/\]/g, "]]")}]`
 }

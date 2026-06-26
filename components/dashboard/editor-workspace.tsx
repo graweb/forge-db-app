@@ -1,14 +1,27 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react"
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { Brackets, Filter, Play, Settings2, Sparkles, X } from "lucide-react"
 import type * as Monaco from "monaco-editor"
 
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import type { QueryExecutionResult, SavedConnection } from "@/lib/connections"
+import type {
+  DatabaseStructure,
+  DatabaseStructureDatabase,
+  QueryExecutionResult,
+  SavedConnection,
+} from "@/lib/connections"
 
 import { QueryResults } from "./query-results"
 
@@ -25,6 +38,7 @@ let monacoEnhancementsRegistered = false
 
 type DashboardEditorWorkspaceProps = {
   connection: SavedConnection
+  databaseStructure: DatabaseStructure
 }
 
 export type DashboardEditorWorkspaceHandle = {
@@ -54,15 +68,79 @@ function getDefaultQuery(databaseType: SavedConnection["databaseType"]) {
   return `SELECT 1 AS id, 'example' AS name, CURRENT_TIMESTAMP AS created_at;`
 }
 
+function getAvailableDatabaseNames(
+  connection: SavedConnection,
+  databaseStructure: DatabaseStructure
+) {
+  const databaseNames = databaseStructure.databases.map((database) => database.name).filter(Boolean)
+
+  if (databaseNames.length > 0) {
+    return databaseNames
+  }
+
+  return [getDefaultDatabaseName(connection, databaseStructure)]
+}
+
+function getDefaultDatabaseName(connection: SavedConnection, databaseStructure: DatabaseStructure) {
+  if (databaseStructure.databases[0]?.name) {
+    return databaseStructure.databases[0].name
+  }
+
+  if (connection.databaseType === "sqlite") {
+    return "main"
+  }
+
+  return connection.databaseName.trim() || "master"
+}
+
+function getSelectedDatabase(
+  connection: SavedConnection,
+  databaseStructure: DatabaseStructure,
+  selectedDatabaseName: string
+) {
+  const availableDatabases = databaseStructure.databases.length
+    ? databaseStructure.databases
+    : [{ name: getDefaultDatabaseName(connection, databaseStructure), schemas: [], groups: [] }]
+
+  return (
+    availableDatabases.find((database) => database.name === selectedDatabaseName) ??
+    availableDatabases[0]
+  )
+}
+
+function getTableCompletionItems(
+  connection: SavedConnection,
+  database: DatabaseStructureDatabase | undefined
+) {
+  if (!database) {
+    return []
+  }
+
+  const suggestions = database.schemas.flatMap((schema) =>
+    (schema.groups.find((group) => group.label === "Tabelas")?.items ?? []).map((tableName) => {
+      const reference = getAutocompleteTableReference(
+        connection,
+        schema.name,
+        tableName,
+      )
+
+      return reference
+    })
+  )
+
+  return Array.from(new Set(suggestions))
+}
+
 type ExecuteSqlOptions = {
   title?: string
   insertIntoEditor?: boolean
+  databaseName?: string
 }
 
 export const DashboardEditorWorkspace = forwardRef<
   DashboardEditorWorkspaceHandle,
   DashboardEditorWorkspaceProps
->(function DashboardEditorWorkspace({ connection }, ref) {
+>(function DashboardEditorWorkspace({ connection, databaseStructure }, ref) {
   const [sqlText, setSqlText] = useState(() => getDefaultQuery(connection.databaseType))
   const [queryTabs, setQueryTabs] = useState<QueryExecutionTab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
@@ -72,101 +150,127 @@ export const DashboardEditorWorkspace = forwardRef<
   const [summaryTone, setSummaryTone] = useState<"neutral" | "success" | "error">("neutral")
   const [executing, setExecuting] = useState(false)
   const [lastDurationMs, setLastDurationMs] = useState<number | null>(null)
+  const [selectedDatabaseName, setSelectedDatabaseName] = useState<string>(
+    () => getDefaultDatabaseName(connection, databaseStructure)
+  )
+  const availableDatabaseNames = getAvailableDatabaseNames(connection, databaseStructure)
+  const effectiveSelectedDatabaseName = availableDatabaseNames.includes(selectedDatabaseName)
+    ? selectedDatabaseName
+    : availableDatabaseNames[0] ?? getDefaultDatabaseName(connection, databaseStructure)
+  const selectedDatabase = getSelectedDatabase(
+    connection,
+    databaseStructure,
+    effectiveSelectedDatabaseName
+  )
+  const tableCompletionItems = getTableCompletionItems(connection, selectedDatabase)
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const highlightDecorationIdsRef = useRef<string[]>([])
+  const executeSqlTextRef = useRef<
+    (sql: string, options?: ExecuteSqlOptions) => Promise<void>
+  >(async () => {})
+  const tableCompletionItemsRef = useRef(tableCompletionItems)
 
-  const executeSqlText = useCallback(async (sql: string, options?: ExecuteSqlOptions) => {
-    const statement = sql.trim()
+  useEffect(() => {
+    tableCompletionItemsRef.current = tableCompletionItems
+  }, [tableCompletionItems])
 
-    if (!statement) {
-      setSummaryTone("error")
-      setExecutionSummary("Digite uma consulta SQL antes de executar.")
-      return
-    }
+  useEffect(() => {
+    executeSqlTextRef.current = async (sql: string, options?: ExecuteSqlOptions) => {
+      const statement = sql.trim()
 
-    if (options?.insertIntoEditor) {
-      const editor = editorRef.current
-      if (editor) {
-        editor.setValue(statement)
-        setSqlText(statement)
+      if (!statement) {
+        setSummaryTone("error")
+        setExecutionSummary("Digite uma consulta SQL antes de executar.")
+        return
+      }
+
+      if (options?.insertIntoEditor) {
+        const editor = editorRef.current
+        if (editor) {
+          editor.setValue(statement)
+          setSqlText(statement)
+        }
+      }
+
+      setExecuting(true)
+      setLastDurationMs(null)
+      setSummaryTone("neutral")
+      setExecutionSummary("Executando consulta...")
+
+      const startedAt = performance.now()
+
+      try {
+        const statementStartedAt = performance.now()
+        const response = await fetch(`/api/connections/${connection.id}/query`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sql: statement,
+            databaseName: options?.databaseName ?? effectiveSelectedDatabaseName,
+          }),
+        })
+
+        const payload: {
+          success: boolean
+          message: string
+          details?: string
+          columns?: string[]
+          rows?: Array<Record<string, string | number | boolean | null>>
+          rowCount?: number
+          affectedRows?: number
+        } = await response.json()
+
+        const durationMs = Math.round(performance.now() - statementStartedAt)
+        const nextTab: QueryExecutionTab = !response.ok || !payload.success
+          ? {
+              id: createQueryTabId(),
+              title: options?.title || getQueryTabTitle(statement, 0),
+              sql: statement,
+              status: "error",
+              message: payload.details || payload.message || "Não foi possível executar a consulta.",
+              durationMs,
+              result: null,
+            }
+          : {
+              id: createQueryTabId(),
+              title: options?.title || getQueryTabTitle(statement, 0),
+              sql: statement,
+              status: "success",
+              message: payload.message,
+              durationMs,
+              result: {
+                columns: payload.columns ?? [],
+                rows: payload.rows ?? [],
+                rowCount: payload.rowCount ?? payload.rows?.length ?? 0,
+                affectedRows: payload.affectedRows,
+                message: payload.message,
+              },
+            }
+
+        setQueryTabs((current) => {
+          const merged = upsertExecutionTabs(current, [nextTab])
+          setActiveTabId(merged.activeTabId)
+          return merged.tabs
+        })
+        setLastDurationMs(Math.round(performance.now() - startedAt))
+        setSummaryTone(nextTab.status === "error" ? "error" : "success")
+        setExecutionSummary(
+          nextTab.status === "error"
+            ? "Consulta processada com erro."
+            : "Consulta processada com sucesso."
+        )
+      } catch {
+        const durationMs = Math.round(performance.now() - startedAt)
+        setLastDurationMs(durationMs)
+        setSummaryTone("error")
+        setExecutionSummary("Falha inesperada ao executar a consulta.")
+      } finally {
+        setExecuting(false)
       }
     }
-
-    setExecuting(true)
-    setLastDurationMs(null)
-    setSummaryTone("neutral")
-    setExecutionSummary("Executando consulta...")
-
-    const startedAt = performance.now()
-
-    try {
-      const statementStartedAt = performance.now()
-      const response = await fetch(`/api/connections/${connection.id}/query`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ sql: statement }),
-      })
-
-      const payload: {
-        success: boolean
-        message: string
-        details?: string
-        columns?: string[]
-        rows?: Array<Record<string, string | number | boolean | null>>
-        rowCount?: number
-        affectedRows?: number
-      } = await response.json()
-
-      const durationMs = Math.round(performance.now() - statementStartedAt)
-      const nextTab: QueryExecutionTab = !response.ok || !payload.success
-        ? {
-            id: createQueryTabId(),
-            title: options?.title || getQueryTabTitle(statement, 0),
-            sql: statement,
-            status: "error",
-            message: payload.details || payload.message || "Não foi possível executar a consulta.",
-            durationMs,
-            result: null,
-          }
-        : {
-            id: createQueryTabId(),
-            title: options?.title || getQueryTabTitle(statement, 0),
-            sql: statement,
-            status: "success",
-            message: payload.message,
-            durationMs,
-            result: {
-              columns: payload.columns ?? [],
-              rows: payload.rows ?? [],
-              rowCount: payload.rowCount ?? payload.rows?.length ?? 0,
-              affectedRows: payload.affectedRows,
-              message: payload.message,
-            },
-          }
-
-      setQueryTabs((current) => {
-        const merged = upsertExecutionTabs(current, [nextTab])
-        setActiveTabId(merged.activeTabId)
-        return merged.tabs
-      })
-      setLastDurationMs(Math.round(performance.now() - startedAt))
-      setSummaryTone(nextTab.status === "error" ? "error" : "success")
-      setExecutionSummary(
-        nextTab.status === "error"
-          ? "Consulta processada com erro."
-          : "Consulta processada com sucesso."
-      )
-    } catch {
-      const durationMs = Math.round(performance.now() - startedAt)
-      setLastDurationMs(durationMs)
-      setSummaryTone("error")
-      setExecutionSummary("Falha inesperada ao executar a consulta.")
-    } finally {
-      setExecuting(false)
-    }
-  }, [connection.id])
+  }, [connection.id, effectiveSelectedDatabaseName])
 
   useImperativeHandle(
     ref,
@@ -182,25 +286,28 @@ export const DashboardEditorWorkspace = forwardRef<
         editor.focus()
       },
       previewTable: async (tablePath: string) => {
-        await executeSqlText(`SELECT *\nFROM ${tablePath}\nLIMIT 100;`, {
+        await executeSqlTextRef.current(`SELECT *\nFROM ${tablePath}\nLIMIT 100;`, {
           title: `Preview: ${getLeafName(tablePath)}`,
           insertIntoEditor: true,
+          databaseName: effectiveSelectedDatabaseName,
         })
       },
       executeTable: async (tablePath: string) => {
-        await executeSqlText(`SELECT *\nFROM ${tablePath};`, {
+        await executeSqlTextRef.current(`SELECT *\nFROM ${tablePath};`, {
           title: getLeafName(tablePath),
           insertIntoEditor: true,
+          databaseName: effectiveSelectedDatabaseName,
         })
       },
       runTableQuery: async (tablePath: string) => {
-        await executeSqlText(`SELECT *\nFROM ${tablePath};`, {
+        await executeSqlTextRef.current(`SELECT *\nFROM ${tablePath};`, {
           title: getLeafName(tablePath),
           insertIntoEditor: true,
+          databaseName: effectiveSelectedDatabaseName,
         })
       },
     }),
-    [executeSqlText]
+    [effectiveSelectedDatabaseName]
   )
 
   const activeTab = queryTabs.find((tab) => tab.id === activeTabId) ?? queryTabs[0] ?? null
@@ -247,7 +354,10 @@ export const DashboardEditorWorkspace = forwardRef<
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ sql: statement }),
+          body: JSON.stringify({
+            sql: statement,
+            databaseName: effectiveSelectedDatabaseName,
+          }),
         })
 
         const payload: {
@@ -381,6 +491,13 @@ export const DashboardEditorWorkspace = forwardRef<
 
           return {
             suggestions: [
+              ...tableCompletionItemsRef.current.map((tableReference) => ({
+                label: tableReference,
+                kind: monaco.languages.CompletionItemKind.Reference,
+                insertText: tableReference,
+                documentation: "Tabela disponível no banco selecionado.",
+                range,
+              })),
               {
                 label: "SELECT * FROM table",
                 kind: monaco.languages.CompletionItemKind.Snippet,
@@ -473,6 +590,25 @@ export const DashboardEditorWorkspace = forwardRef<
   return (
     <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden border-x border-white/10 bg-[linear-gradient(180deg,#0b1221_0%,#091019_100%)]">
       <div className="flex items-center gap-2 overflow-x-auto border-b border-white/10 px-4 py-3">
+        <div className="min-w-56">
+          <Select
+            value={effectiveSelectedDatabaseName}
+            onValueChange={(value) => setSelectedDatabaseName(value)}
+          >
+            <SelectTrigger className="h-9 min-w-56 border-white/10 bg-white/4 text-white hover:bg-white/8">
+              <SelectValue placeholder="Selecionar banco" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {availableDatabaseNames.map((databaseName) => (
+                  <SelectItem key={databaseName} value={databaseName}>
+                    {databaseName}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </div>
         <Button
           variant="default"
           size="sm"
@@ -766,6 +902,40 @@ function insertTextIntoEditor(editor: Monaco.editor.IStandaloneCodeEditor, text:
 function getLeafName(tablePath: string) {
   const parts = tablePath.split(".").map((part) => part.trim()).filter(Boolean)
   return parts.at(-1) ?? tablePath
+}
+
+function getAutocompleteTableReference(
+  connection: SavedConnection,
+  schemaName: string,
+  tableName: string
+) {
+  const normalizedSchema = schemaName.trim()
+  const normalizedTable = tableName.trim()
+
+  if (!normalizedSchema || !normalizedTable) {
+    return normalizedTable || normalizedSchema
+  }
+
+  if (connection.databaseType === "sqlite" && normalizedSchema === "main") {
+    return normalizedTable
+  }
+
+  if (connection.databaseType === "postgresql" && normalizedSchema === "public") {
+    return normalizedTable
+  }
+
+  if (connection.databaseType === "sqlserver") {
+    return `${normalizedSchema}.${normalizedTable}`
+  }
+
+  if (
+    (connection.databaseType === "mysql" || connection.databaseType === "mariadb") &&
+    normalizedSchema === connection.databaseName.trim()
+  ) {
+    return normalizedTable
+  }
+
+  return `${normalizedSchema}.${normalizedTable}`
 }
 
 function upsertExecutionTabs(

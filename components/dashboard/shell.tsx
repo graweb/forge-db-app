@@ -89,7 +89,11 @@ export function DashboardShell({
               activePane === "editor" ? "flex" : "hidden lg:flex"
             }`}
           >
-            <DashboardEditorWorkspace ref={editorWorkspaceRef} connection={connection} />
+            <DashboardEditorWorkspace
+              ref={editorWorkspaceRef}
+              connection={connection}
+              databaseStructure={databaseStructure}
+            />
           </div>
         </div>
 

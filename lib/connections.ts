@@ -380,7 +380,8 @@ async function executeSqliteQuery(connection: SavedConnection, sqlText: string) 
 
 export async function executeQuery(
   connection: SavedConnection,
-  sqlText: string
+  sqlText: string,
+  databaseNameOverride?: string
 ): Promise<QueryExecutionResult> {
   const sqlStatement = sanitizeText(sqlText)
 
@@ -392,7 +393,9 @@ export async function executeQuery(
   const user = sanitizeText(connection.user)
   const password = connection.password ?? ""
   const database = sanitizeText(
-    connection.databaseType === "sqlite" ? connection.databaseFile : connection.databaseName
+    connection.databaseType === "sqlite"
+      ? connection.databaseFile
+      : databaseNameOverride ?? connection.databaseName
   )
   const port = parsePort(connection.port)
   const useSsl = Boolean(connection.useSsl)
@@ -552,14 +555,18 @@ export async function executeQuery(
   }
 }
 
-export async function executeQueryById(connectionId: string, sqlText: string) {
+export async function executeQueryById(
+  connectionId: string,
+  sqlText: string,
+  databaseNameOverride?: string
+) {
   const connection = getConnectionById(connectionId)
 
   if (!connection) {
     throw new Error("Conexão não encontrada.")
   }
 
-  return executeQuery(connection, sqlText)
+  return executeQuery(connection, sqlText, databaseNameOverride)
 }
 
 export async function getDatabaseStructure(connection: SavedConnection): Promise<DatabaseStructure> {

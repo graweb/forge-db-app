@@ -10,8 +10,8 @@ export async function POST(
 ) {
   try {
     const { connectionId } = await params
-    const body = (await request.json()) as { sql?: string }
-    const result = await executeQueryById(connectionId, body.sql ?? "")
+    const body = (await request.json()) as { sql?: string; databaseName?: string }
+    const result = await executeQueryById(connectionId, body.sql ?? "", body.databaseName)
 
     return NextResponse.json({
       success: true,
