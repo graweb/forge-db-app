@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { AlertTriangle } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 
 import type {
   ConnectionAvailability,
@@ -78,6 +78,7 @@ export function DashboardShell({
   const editorWorkspaceRef = useRef<DashboardEditorWorkspaceHandle | null>(null)
   const noticeTimerRef = useRef<number | null>(null)
   const router = useRouter()
+  const pathname = usePathname()
 
   useEffect(() => {
     return () => {
@@ -299,6 +300,7 @@ export function DashboardShell({
               }}
               onSelectConnection={(connectionItem) => {
                 const availability = connectionAvailabilityById[connectionItem.id]
+                const connectionPath = `/dashboard/${connectionItem.id}`
 
                 if (availability?.available === false) {
                   showNotice({
@@ -310,7 +312,13 @@ export function DashboardShell({
                   return
                 }
 
-                router.push(`/dashboard/${connectionItem.id}`)
+                setActivePane("editor")
+
+                if (pathname === connectionPath) {
+                  return
+                }
+
+                router.push(connectionPath)
               }}
               onEditConnection={(connectionToEdit) => {
                 setEditingConnection(connectionToEdit)
