@@ -18,59 +18,18 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
 } from "@/components/ui/context-menu"
-import { TreeView, type TreeViewNode } from "@/components/ui/tree-view"
+import { TreeView } from "@/components/ui/tree-view"
 
-import { getDatabaseLabel } from "./shared"
+import { getDatabaseLabel } from "@/helpers/dashboard"
 import type {
   ConnectionAvailability,
   DatabaseStructure,
   DatabaseStructureDatabase,
   DatabaseStructureGroup,
   SavedConnection,
-} from "@/lib/connections"
-
-type DashboardSidebarProps = {
-  activeConnectionId: string | null
-  connections: SavedConnection[]
-  connectionAvailabilityById: Record<string, ConnectionAvailability>
-  databaseStructuresById: Record<string, DatabaseStructure>
-  onAddConnection: () => void
-  onCreateDatabase: (connection: SavedConnection) => void
-  onCreateTable: (
-    connection: SavedConnection,
-    database: DatabaseStructureDatabase,
-    schemaName: string
-  ) => void
-  onEditTable: (
-    connection: SavedConnection,
-    database: DatabaseStructureDatabase,
-    schemaName: string,
-    tableName: string
-  ) => void
-  onDeleteTable: (
-    connection: SavedConnection,
-    database: DatabaseStructureDatabase,
-    schemaName: string,
-    tableName: string
-  ) => void
-  onSelect100Rows: (
-    connection: SavedConnection,
-    database: DatabaseStructureDatabase,
-    schemaName: string,
-    tableName: string
-  ) => void
-  onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-  onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-  onDisconnectConnection: () => void
-  onSelectConnection: (connection: SavedConnection) => void
-  onEditConnection: (connection: SavedConnection) => void
-  onRefreshStructure: () => void
-  onRefreshDatabaseStructure: () => void
-  onInsertText: (text: string) => void
-  onPreviewTable: (tablePath: string) => Promise<void> | void
-  onExecuteTable: (tablePath: string) => Promise<void> | void
-  onRunTableQuery: (tablePath: string) => Promise<void> | void
-}
+} from "@/types/connections"
+import type { DashboardSidebarActions, DashboardSidebarProps } from "@/types/dashboard-sidebar"
+import type { TreeViewNode } from "@/types/ui"
 
 const sectionIcons = {
   Tabelas: Table2,
@@ -156,60 +115,24 @@ function buildTreeNodes(
   connections: SavedConnection[],
   activeConnectionId: string | null,
   databaseStructuresById: Record<string, DatabaseStructure>,
-  actions: {
-    connectionAvailabilityById: Record<string, ConnectionAvailability>
-    onCreateDatabase: (connection: SavedConnection) => void
-    onCreateTable: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string
-    ) => void
-    onEditTable: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string,
-      tableName: string
-    ) => void
-    onDeleteTable: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string,
-      tableName: string
-    ) => void
-    onSelect100Rows: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string,
-      tableName: string
-    ) => void
-    onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-    onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-    onDisconnectConnection: () => void
-    onSelectConnection: (connection: SavedConnection) => void
-    onEditConnection: (connection: SavedConnection) => void
-    onRefreshStructure: () => void
-    onRefreshDatabaseStructure: () => void
-    onInsertText: (text: string) => void
-    onPreviewTable: (tablePath: string) => Promise<void> | void
-    onExecuteTable: (tablePath: string) => Promise<void> | void
-    onRunTableQuery: (tablePath: string) => Promise<void> | void
-  }
+  actions: DashboardSidebarActions
 ): TreeViewNode[] {
   return connections.map((connection) => {
-    const databaseStructure = databaseStructuresById[connection.id] ?? {
+    const databaseStructure: DatabaseStructure = databaseStructuresById[connection.id] ?? {
       databases: [],
       schemas: [],
       groups: [],
     }
+    const firstDatabase: any = databaseStructure.databases[0]
     const primaryDatabase =
-      databaseStructure.databases[0] ??
+      firstDatabase ??
       ({
         name: getDatabaseNodeLabel(connection),
         schemas: databaseStructure.schemas,
         groups: databaseStructure.groups,
-        charset: databaseStructure.databases[0]?.charset,
-        collation: databaseStructure.databases[0]?.collation,
-        encoding: databaseStructure.databases[0]?.encoding,
+        charset: firstDatabase?.charset,
+        collation: firstDatabase?.collation,
+        encoding: firstDatabase?.encoding,
       } as DatabaseStructureDatabase)
     const availability = actions.connectionAvailabilityById[connection.id]
     const isAvailable = availability?.available !== false
@@ -218,7 +141,10 @@ function buildTreeNodes(
     const isActive = connection.id === activeConnectionId
 
     const childNodes =
-      connection.databaseType === "sqlserver" && databaseStructure.databases.length > 0
+      (connection.databaseType === "sqlserver" ||
+        connection.databaseType === "mysql" ||
+        connection.databaseType === "mariadb") &&
+      databaseStructure.databases.length > 0
         ? [
             {
               id: `databases-${connection.id}`,
@@ -377,78 +303,31 @@ function TableGroupContextMenu({
 function buildDatabaseNode(
   connection: SavedConnection,
   database: DatabaseStructureDatabase,
-  actions: {
-    connectionAvailabilityById: Record<string, ConnectionAvailability>
-    onCreateDatabase: (connection: SavedConnection) => void
-    onCreateTable: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string
-    ) => void
-    onEditTable: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string,
-      tableName: string
-    ) => void
-    onDeleteTable: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string,
-      tableName: string
-    ) => void
-    onSelect100Rows: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string,
-      tableName: string
-    ) => void
-    onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-    onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-    onRefreshDatabaseStructure: () => void
-    onDisconnectConnection: () => void
-    onInsertText: (text: string) => void
-    onPreviewTable: (tablePath: string) => Promise<void> | void
-    onExecuteTable: (tablePath: string) => Promise<void> | void
-    onRunTableQuery: (tablePath: string) => Promise<void> | void
-  }
+  actions: DashboardSidebarActions
 ): TreeViewNode {
-  return {
-    id: `database-${connection.id}-${database.name}`,
-    label: database.name,
-    icon: Database,
-    defaultExpanded: false,
-    contextActions: (
-      <DatabaseItemContextMenu
-        onEditDatabase={() => actions.onEditDatabase(connection, database)}
-        onDeleteDatabase={() => actions.onDeleteDatabase(connection, database)}
-        onRefreshDatabaseStructure={actions.onRefreshDatabaseStructure}
-      />
-    ),
-    children: getSchemaNodesForDatabase(connection, database, actions),
+    return {
+      id: `database-${connection.id}-${database.name}`,
+      label: database.name,
+      icon: Database,
+      defaultExpanded: false,
+      contextActions: (
+        <DatabaseItemContextMenu
+          onEditDatabase={() => actions.onEditDatabase(connection, database)}
+          onDeleteDatabase={() => actions.onDeleteDatabase(connection, database)}
+          onRefreshDatabaseStructure={actions.onRefreshDatabaseStructure}
+        />
+      ),
+      children:
+        connection.databaseType === "mysql" || connection.databaseType === "mariadb"
+          ? getMySqlLikeDatabaseChildren(connection, database, actions)
+          : getSchemaNodesForDatabase(connection, database, actions),
+    }
   }
-}
 
 function getSchemaNodes(
   connection: SavedConnection,
   databaseStructure: DatabaseStructure,
-  actions: {
-    connectionAvailabilityById: Record<string, ConnectionAvailability>
-    onCreateDatabase: (connection: SavedConnection) => void
-    onCreateTable: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string
-    ) => void
-    onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-    onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-    onRefreshDatabaseStructure: () => void
-    onDisconnectConnection: () => void
-    onInsertText: (text: string) => void
-    onPreviewTable: (tablePath: string) => Promise<void> | void
-    onExecuteTable: (tablePath: string) => Promise<void> | void
-    onRunTableQuery: (tablePath: string) => Promise<void> | void
-  }
+  actions: DashboardSidebarActions
 ): TreeViewNode[] {
   return getSchemaNodesForDatabase(connection, {
     name: getDatabaseNodeLabel(connection),
@@ -457,26 +336,18 @@ function getSchemaNodes(
   }, actions)
 }
 
+function getMySqlLikeDatabaseChildren(
+  connection: SavedConnection,
+  database: DatabaseStructureDatabase,
+  actions: DashboardSidebarActions
+): TreeViewNode[] {
+  return sortDatabaseGroups(database.groups).map((group) => buildGroupNode(connection, database, group, actions, database.name))
+}
+
 function getSchemaNodesForDatabase(
   connection: SavedConnection,
   database: DatabaseStructureDatabase,
-  actions: {
-    connectionAvailabilityById: Record<string, ConnectionAvailability>
-    onCreateDatabase: (connection: SavedConnection) => void
-    onCreateTable: (
-      connection: SavedConnection,
-      database: DatabaseStructureDatabase,
-      schemaName: string
-    ) => void
-    onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-    onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
-    onRefreshDatabaseStructure: () => void
-    onDisconnectConnection: () => void
-    onInsertText: (text: string) => void
-    onPreviewTable: (tablePath: string) => Promise<void> | void
-    onExecuteTable: (tablePath: string) => Promise<void> | void
-    onRunTableQuery: (tablePath: string) => Promise<void> | void
-  }
+  actions: DashboardSidebarActions
 ): TreeViewNode[] {
   const schemas = database.schemas.length
     ? database.schemas
@@ -489,68 +360,76 @@ function getSchemaNodesForDatabase(
     label: schema.name,
     icon: Layers3,
     defaultExpanded: false,
-    children: sortDatabaseGroups(schema.groups).map((group) => {
-      const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? Table2
-      const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
-      const isTableGroup = group.label === "Tabelas"
+    children: sortDatabaseGroups(schema.groups).map((group) =>
+      buildGroupNode(connection, database, group, actions, schema.name, isAvailable)
+    ),
+  }))
+}
+
+function buildGroupNode(
+  connection: SavedConnection,
+  database: DatabaseStructureDatabase,
+  group: DatabaseStructureGroup,
+  actions: DashboardSidebarActions,
+  schemaName: string,
+  isAvailable = actions.connectionAvailabilityById[connection.id]?.available !== false
+): TreeViewNode {
+  const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? Table2
+  const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
+  const isTableGroup = group.label === "Tabelas"
+
+  return {
+    id: `${connection.id}-${schemaName}-${group.label}`,
+    label: group.label,
+    icon: Icon,
+    badge: group.items.length,
+    defaultExpanded: false,
+    contextActions:
+      isAvailable && isTableGroup ? (
+        <TableGroupContextMenu
+          onCreateTable={() => actions.onCreateTable(connection, database, schemaName)}
+          onRefreshStructure={actions.onRefreshDatabaseStructure}
+        />
+      ) : null,
+    children: group.items.map((item) => {
+      const tableReference = getTableReference(
+        connection,
+        schemaName,
+        item,
+        connection.databaseType === "sqlserver" ? database.name : undefined
+      )
+      const tableSchemaName = connection.databaseType === "sqlite" ? "main" : schemaName
+      const tableName = item
 
       return {
-        id: `${connection.id}-${schema.name}-${group.label}`,
-        label: group.label,
-        icon: Icon,
-        badge: group.items.length,
-        defaultExpanded: false,
-        contextActions:
-          isAvailable && isTableGroup ? (
-            <TableGroupContextMenu
-              onCreateTable={() => actions.onCreateTable(connection, database, schema.name)}
-              onRefreshStructure={actions.onRefreshDatabaseStructure}
-            />
-          ) : null,
-        children: group.items.map((item) => {
-          const tableReference = getTableReference(
-            connection,
-            schema.name,
-            item,
-            connection.databaseType === "sqlserver" ? database.name : undefined
-          )
-          const tableSchemaName =
-            connection.databaseType === "sqlite" ? "main" : schema.name
-          const tableName = item
-
-          return {
-            id: `${connection.id}-${schema.name}-${group.label}-${item}`,
-            label: item,
-            icon: FileCode2,
-            isLeaf: true,
-            onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
-            contextActions: isTableGroup ? (
-              <TableItemContextMenu
-                onCreateTable={() => actions.onCreateTable(connection, database, schema.name)}
-                onEditTable={() =>
-                  actions.onEditTable(connection, database, tableSchemaName, tableName)
-                }
-                onDeleteTable={() =>
-                  actions.onDeleteTable(connection, database, tableSchemaName, tableName)
-                }
-                onSelect100Rows={() =>
-                  actions.onSelect100Rows(connection, database, tableSchemaName, tableName)
-                }
-              />
-            ) : (
-              <TreeContextMenu
-                objectPath={tableReference}
-                onInsertText={() => actions.onInsertText(`SELECT *\nFROM ${tableReference};`)}
-                onPreviewTable={() => void actions.onPreviewTable(tableReference)}
-                onExecuteTable={() => void actions.onExecuteTable(tableReference)}
-                supportsQueryActions={supportsQueryActions}
-              />
-            ),
-          }
-        }),
+        id: `${connection.id}-${schemaName}-${group.label}-${item}`,
+        label: item,
+        icon: FileCode2,
+        isLeaf: true,
+        onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
+        contextActions: isTableGroup ? (
+          <TableItemContextMenu
+            onCreateTable={() => actions.onCreateTable(connection, database, schemaName)}
+            onEditTable={() => actions.onEditTable(connection, database, tableSchemaName, tableName)}
+            onDeleteTable={() =>
+              actions.onDeleteTable(connection, database, tableSchemaName, tableName)
+            }
+            onSelect100Rows={() =>
+              actions.onSelect100Rows(connection, database, tableSchemaName, tableName)
+            }
+          />
+        ) : (
+          <TreeContextMenu
+            objectPath={tableReference}
+            onInsertText={() => actions.onInsertText(`SELECT *\nFROM ${tableReference};`)}
+            onPreviewTable={() => void actions.onPreviewTable(tableReference)}
+            onExecuteTable={() => void actions.onExecuteTable(tableReference)}
+            supportsQueryActions={supportsQueryActions}
+          />
+        ),
       }
     }),
-  }))
+  }
 }
 
 function TreeContextMenu({

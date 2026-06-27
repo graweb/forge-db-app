@@ -5,8 +5,8 @@ import {
   getDatabaseStructureLoadResult,
   getConnectionById,
   listConnections,
-  type ConnectionAvailability,
 } from "@/lib/connections"
+import type { ConnectionAvailability } from "@/types/connections"
 
 export const runtime = "nodejs"
 

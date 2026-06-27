@@ -1,10 +1,5 @@
-import type { SavedConnection } from "@/lib/connections"
-
-import { getDatabaseLabel, getConnectionSubtitle } from "./shared"
-
-type DashboardStatusbarProps = {
-  connection: SavedConnection
-}
+import { getDatabaseLabel, getConnectionSubtitle } from "@/helpers/dashboard"
+import type { DashboardStatusbarProps } from "@/types/dashboard-ui"
 
 export function DashboardStatusbar({ connection }: DashboardStatusbarProps) {
   return (

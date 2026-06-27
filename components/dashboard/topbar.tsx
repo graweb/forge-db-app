@@ -1,14 +1,10 @@
 import { Home, LayoutGrid, Settings2, UserCircle2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
+import { cn } from "@/helpers/utils"
 
-import { getDatabaseLabel } from "./shared"
-import type { SavedConnection } from "@/lib/connections"
-
-type DashboardTopbarProps = {
-  connection: SavedConnection
-}
+import { getDatabaseLabel } from "@/helpers/dashboard"
+import type { DashboardTopbarProps } from "@/types/dashboard-ui"
 
 const menuItems = ["Dashboard", "Editor SQL", "Tabelas", "Usuários", "Procedures", "Funções", "Backup", "Relatórios"]
 

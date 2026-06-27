@@ -11,15 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import type { DatabaseStructureDatabase, SavedConnection } from "@/lib/connections"
-
-type DeleteDatabaseModalProps = {
-  open: boolean
-  connection: SavedConnection | null
-  database: DatabaseStructureDatabase | null
-  onOpenChange: (open: boolean) => void
-  onDeleted: () => void | Promise<void>
-}
+import type { DeleteDatabaseModalProps } from "@/types/dashboard-modals"
 
 export function DeleteDatabaseModal({
   open,
@@ -34,6 +26,8 @@ export function DeleteDatabaseModal({
   if (!connection || !database) {
     return null
   }
+  const activeConnection = connection
+  const activeDatabase = database
 
   async function handleDelete() {
     setSaving(true)
@@ -41,7 +35,7 @@ export function DeleteDatabaseModal({
 
     try {
       const response = await fetch(
-        `/api/connections/${connection.id}/databases/${encodeURIComponent(database.name)}`,
+        `/api/connections/${activeConnection.id}/databases/${encodeURIComponent(activeDatabase.name)}`,
         {
           method: "DELETE",
           headers: {
@@ -78,8 +72,8 @@ export function DeleteDatabaseModal({
             <DialogHeader className="text-left">
               <DialogTitle>Excluir banco de dados</DialogTitle>
               <DialogDescription>
-                Essa ação não pode ser desfeita. O banco {database.name} será removido da conexão{" "}
-                {connection.connectionName}.
+                Essa ação não pode ser desfeita. O banco {activeDatabase.name} será removido da conexão{" "}
+                {activeConnection.connectionName}.
               </DialogDescription>
             </DialogHeader>
           </div>

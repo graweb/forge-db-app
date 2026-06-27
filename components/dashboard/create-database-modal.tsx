@@ -21,31 +21,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { cn } from "@/lib/utils"
-import type { SavedConnection } from "@/lib/connections"
-
-type DatabaseModalMode = "create" | "edit"
-
-type DatabaseDraft = {
-  name: string
-  charset: string
-}
-
-type DatabaseInfo = {
-  name: string
-  charset?: string
-  collation?: string
-  encoding?: string
-}
-
-type DatabaseModalProps = {
-  open: boolean
-  mode: DatabaseModalMode
-  connection: SavedConnection | null
-  database?: DatabaseInfo | null
-  onOpenChange: (open: boolean) => void
-  onSaved: (details: { message: string; details: string }) => void | Promise<void>
-}
+import { cn } from "@/helpers/utils"
+import type {
+  DatabaseModalMode,
+  DatabaseDraft,
+  DatabaseInfo,
+  DatabaseModalProps,
+} from "@/types/dashboard-modals"
+import type { SavedConnection } from "@/types/connections"
 
 const createCharsetOptions: Record<
   Exclude<SavedConnection["databaseType"], "sqlite">,
@@ -180,19 +163,23 @@ export function CreateDatabaseModal({
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
-  const databaseType = connection?.databaseType ?? "mysql"
-  const isSqlite = databaseType === "sqlite"
-  const canEditName = mode === "create" || databaseType === "postgresql" || databaseType === "sqlserver"
-  const canEditCharset = mode === "create" && databaseType !== "sqlite" ? true : databaseType === "mysql" || databaseType === "mariadb"
+  if (!connection) {
+    return null
+  }
+
+  const databaseType = connection.databaseType
+  if (databaseType === "sqlite") {
+    return null
+  }
+
   const currentDatabase = database ?? null
+  const activeConnection = connection
+  const canEditName = mode === "create" || databaseType === "postgresql" || databaseType === "sqlserver"
+  const canEditCharset = mode === "create" || databaseType === "mysql" || databaseType === "mariadb"
 
   const [form, setForm] = useState<DatabaseDraft>(() =>
     getInitialDraft(mode, databaseType, currentDatabase)
   )
-
-  if (!connection || isSqlite) {
-    return null
-  }
 
   function updateForm(field: keyof DatabaseDraft, value: string) {
     setForm((current) => ({ ...current, [field]: value }))
@@ -212,8 +199,8 @@ export function CreateDatabaseModal({
     try {
       const endpoint =
         mode === "edit" && currentDatabase
-          ? `/api/connections/${connection.id}/databases/${encodeURIComponent(currentDatabase.name)}`
-          : `/api/connections/${connection.id}/databases`
+          ? `/api/connections/${activeConnection.id}/databases/${encodeURIComponent(currentDatabase.name)}`
+          : `/api/connections/${activeConnection.id}/databases`
 
       const response = await fetch(endpoint, {
         method: mode === "edit" ? "PUT" : "POST",

@@ -9,67 +9,74 @@ import mysql from "mysql2/promise"
 import { Client as PostgresClient } from "pg"
 import sql from "mssql"
 
-export type DatabaseType = "mysql" | "mariadb" | "postgresql" | "sqlserver" | "sqlite"
-
-export type ConnectionInput = {
-  databaseType: DatabaseType
-  connectionName: string
-  host: string
-  port: string
-  user: string
-  password: string
-  databaseName: string
-  databaseFile: string
-  additional: string
-  useSsl: boolean
+type QueryClient = {
+  query: (queryText: string, params?: unknown[]) => Promise<unknown>
+  end: () => Promise<void>
 }
 
-export type TestConnectionResult = {
-  message: string
-  details: string
+type SqlServerPool = {
+  request: () => {
+    query: (queryText: string) => Promise<{ recordset?: unknown[] }>
+  }
+  close: () => Promise<void>
 }
 
-export type SerializedValue = string | number | boolean | null
-
-export type QueryExecutionResult = {
-  columns: string[]
-  rows: Array<Record<string, SerializedValue>>
-  rowCount: number
-  affectedRows?: number
-  message: string
-}
-
-export type DatabaseStructureGroup = {
-  label: string
-  items: string[]
-  columnsByItem?: Record<string, string[]>
-}
-
-export type DatabaseStructureSchema = {
-  name: string
-  groups: DatabaseStructureGroup[]
-}
-
-export type DatabaseStructureDatabase = {
-  name: string
-  schemas: DatabaseStructureSchema[]
-  groups: DatabaseStructureGroup[]
-  charset?: string
-  collation?: string
-  encoding?: string
-}
-
-export type DatabaseStructure = {
-  databases: DatabaseStructureDatabase[]
-  schemas: DatabaseStructureSchema[]
-  groups: DatabaseStructureGroup[]
-}
-
-export type SavedConnection = ConnectionInput & {
-  id: string
-  createdAt: string
-  updatedAt: string
-}
+import type {
+  ConnectionInput,
+  CreateDatabaseInput,
+  CreateDatabaseResult,
+  CreateTableInput,
+  CreateTableResult,
+  DatabaseStructure,
+  DatabaseStructureDatabase,
+  DatabaseStructureLoadResult,
+  DatabaseType,
+  DeleteDatabaseResult,
+  DeleteTableResult,
+  QueryExecutionResult,
+  SavedConnection,
+  TableDetails,
+  TestConnectionResult,
+  UpdateDatabaseInput,
+  UpdateDatabaseResult,
+  UpdateTableInput,
+  UpdateTableResult,
+} from "@/types/connections"
+import {
+  buildMySqlLikeConnectionOptions,
+  buildPostgresConnectionOptions,
+  buildSqlServerConnectionOptions,
+  getFallbackSchemaName,
+  normalizeRows,
+  parsePort,
+  quoteIdentifier,
+  quoteSqlLiteral,
+  quoteSqlServerIdentifier,
+  sanitizeCharset,
+  sanitizeDatabaseIdentifier,
+  sanitizeSqlExpression,
+  sanitizeSqlType,
+  sanitizeText,
+} from "@/helpers/connections"
+import { buildMySqlLikeCreateTableSql } from "@/helpers/create-table/mysql"
+import { buildPostgreSqlCreateTableSql } from "@/helpers/create-table/postgres"
+import { buildSqlServerCreateTableSql } from "@/helpers/create-table/sqlserver"
+import { buildSqliteCreateTableSql } from "@/helpers/create-table/sqlite"
+import type { CreateTableColumnSpec } from "@/helpers/create-table/shared"
+import {
+  createGroup,
+  extractNames,
+  normalizeColumnSize,
+  uniqueStrings,
+} from "@/helpers/metadata/shared"
+import { getMySqlLikeColumnsByItem, runMySqlLikeMetadataQuery } from "@/helpers/metadata/mysql"
+import { getPostgreSqlColumnsByItem } from "@/helpers/metadata/postgres"
+import { getSqliteColumnsByItem } from "@/helpers/metadata/sqlite"
+import {
+  extractColumnsByObjectForSchema,
+  extractNamesForSchema,
+  extractSchemaNames,
+} from "@/helpers/metadata/sqlserver"
 
 export const EMPTY_DATABASE_STRUCTURE: DatabaseStructure = {
   databases: [],
@@ -77,169 +84,11 @@ export const EMPTY_DATABASE_STRUCTURE: DatabaseStructure = {
   groups: [],
 }
 
-export type ConnectionAvailability = {
-  available: boolean
-  message?: string
-}
-
-export type DatabaseStructureLoadResult = {
-  databaseStructure: DatabaseStructure
-  connectionAvailability: ConnectionAvailability
-}
-
-export type CreateDatabaseInput = {
-  databaseName: string
-  charset: string
-}
-
-export type CreateDatabaseResult = {
-  message: string
-  details: string
-  databaseName: string
-}
-
-export type UpdateDatabaseInput = {
-  databaseName: string
-  charset: string
-}
-
-export type UpdateDatabaseResult = {
-  message: string
-  details: string
-  databaseName: string
-}
-
-export type DeleteDatabaseResult = {
-  message: string
-  details: string
-  databaseName: string
-}
-
-export type CreateTableColumnInput = {
-  name: string
-  dataType: string
-  size: string
-  notNull: boolean
-  primaryKey: boolean
-  autoIncrement: boolean
-  defaultValue: string
-  comment: string
-}
-
-export type CreateTableInput = {
-  databaseName: string
-  schemaName: string
-  tableName: string
-  comment: string
-  columns: CreateTableColumnInput[]
-}
-
-export type CreateTableResult = {
-  message: string
-  details: string
-  tableName: string
-  schemaName: string
-}
-
-export type TableColumnDefinition = {
-  name: string
-  dataType: string
-  size: string
-  notNull: boolean
-  primaryKey: boolean
-  autoIncrement: boolean
-  defaultValue: string
-  comment: string
-}
-
-export type TableDetails = {
-  databaseName: string
-  schemaName: string
-  tableName: string
-  comment: string
-  columns: TableColumnDefinition[]
-  foreignKeys: string[]
-  indexes: string[]
-  triggers: string[]
-  functions: string[]
-}
-
-export type UpdateTableInput = {
-  databaseName: string
-  schemaName: string
-  tableName: string
-  nextTableName: string
-  columns: Array<TableColumnDefinition & { sourceName?: string }>
-  comment: string
-}
-
-export type UpdateTableResult = {
-  message: string
-  details: string
-  tableName: string
-  schemaName: string
-}
-
-export type DeleteTableResult = {
-  message: string
-  details: string
-  tableName: string
-  schemaName: string
-}
-
 const access = promisify(accessCb)
 const appDataDir = path.join(process.cwd(), "data")
 const databasePath = path.join(appDataDir, "forge-db.sqlite")
 
 let sqliteDatabase: Database.Database | null = null
-
-function sanitizeText(value?: string) {
-  return value?.trim() ?? ""
-}
-
-function serializeValue(value: unknown): SerializedValue {
-  if (value === null || value === undefined) {
-    return null
-  }
-
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return value
-  }
-
-  if (typeof value === "bigint") {
-    return value.toString()
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString()
-  }
-
-  if (Buffer.isBuffer(value)) {
-    return value.toString("base64")
-  }
-
-  return String(value)
-}
-
-function normalizeRows(rows: Array<Record<string, unknown>>) {
-  const columns = new Set<string>()
-
-  const normalizedRows = rows.map((row) => {
-    const normalizedRow: Record<string, SerializedValue> = {}
-
-    Object.entries(row).forEach(([key, value]) => {
-      columns.add(key)
-      normalizedRow[key] = serializeValue(value)
-    })
-
-    return normalizedRow
-  })
-
-  return {
-    columns: Array.from(columns),
-    rows: normalizedRows,
-  }
-}
 
 function ensureAppDatabase() {
   if (sqliteDatabase) {
@@ -271,48 +120,67 @@ function ensureAppDatabase() {
   return sqliteDatabase
 }
 
-function parsePort(port?: string) {
-  if (!port) return undefined
-  const value = Number(port)
-  return Number.isFinite(value) ? value : undefined
+async function withMySqlLikeClient<T>(
+  connection: SavedConnection,
+  database: string | undefined,
+  run: (client: QueryClient) => Promise<T>
+) {
+  const client =
+    connection.databaseType === "mysql"
+      ? await mysql.createConnection(buildMySqlLikeConnectionOptions(connection, database))
+      : await mariadb.createConnection(buildMySqlLikeConnectionOptions(connection, database))
+
+  try {
+    return await run(client as QueryClient)
+  } finally {
+    await client.end()
+  }
 }
 
-function sanitizeDatabaseIdentifier(value?: string) {
-  return sanitizeText(value).replace(/[`"'\[\]]/g, "")
+async function withPostgresClient<T>(
+  connection: SavedConnection,
+  database: string | undefined,
+  run: (client: PostgresClient) => Promise<T>
+) {
+  const client = new PostgresClient(buildPostgresConnectionOptions(connection, database))
+
+  await client.connect()
+
+  try {
+    return await run(client)
+  } finally {
+    await client.end()
+  }
 }
 
-function sanitizeCharset(value?: string) {
-  return sanitizeText(value).replace(/[^A-Za-z0-9_:-]/g, "")
+async function withSqlServerPool<T>(
+  connection: SavedConnection,
+  database: string,
+  run: (pool: SqlServerPool) => Promise<T>
+) {
+  const pool = await sql.connect(buildSqlServerConnectionOptions(connection, database))
+
+  try {
+    return await run(pool)
+  } finally {
+    await pool.close()
+  }
 }
 
-function quoteIdentifier(databaseType: DatabaseType, value: string) {
-  const normalized = sanitizeDatabaseIdentifier(value)
-
-  if (!normalized) {
-    throw new Error("Informe um nome válido para o banco de dados.")
+async function withSqliteDatabase<T>(connection: SavedConnection, run: (db: Database.Database) => Promise<T> | T) {
+  const filePath = sanitizeText(connection.databaseFile)
+  if (!filePath) {
+    throw new Error("Informe o arquivo SQLite da conexão.")
   }
 
-  if (databaseType === "sqlserver") {
-    return `[${normalized.replace(/\]/g, "]]")}]`
+  const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
+  const db = new Database(resolvedPath)
+
+  try {
+    return await run(db)
+  } finally {
+    db.close()
   }
-
-  if (databaseType === "postgresql") {
-    return `"${normalized.replace(/"/g, '""')}"`
-  }
-
-  return `\`${normalized.replace(/`/g, "``")}\``
-}
-
-function quoteSqlLiteral(value: string) {
-  return `'${value.replace(/'/g, "''")}'`
-}
-
-function sanitizeSqlType(value?: string) {
-  return sanitizeText(value).toUpperCase().replace(/[^A-Z0-9_]/g, "")
-}
-
-function sanitizeSqlExpression(value?: string) {
-  return sanitizeText(value)
 }
 
 async function testSqlite(databaseFile?: string) {
@@ -453,55 +321,20 @@ export async function createDatabase(
   switch (connection.databaseType) {
     case "mysql":
     case "mariadb": {
-      const client =
-        connection.databaseType === "mysql"
-          ? await mysql.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              connectTimeout: 5000,
-              ssl: useSsl ? { rejectUnauthorized: false } : undefined,
-            })
-          : await mariadb.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              connectTimeout: 5000,
-              ssl: useSsl ? { rejectUnauthorized: false } : undefined,
-            })
-
-      try {
+      return withMySqlLikeClient(connection, undefined, async (client) => {
         const quotedDatabase = quoteIdentifier(connection.databaseType, databaseName)
-        await client.query(
-          `CREATE DATABASE IF NOT EXISTS ${quotedDatabase} CHARACTER SET ${charset}`
-        )
+        await client.query(`CREATE DATABASE IF NOT EXISTS ${quotedDatabase} CHARACTER SET ${charset}`)
 
         return {
           message: "Banco de dados criado com sucesso.",
           details: `O banco ${databaseName} foi criado com charset ${charset}.`,
           databaseName,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "postgresql": {
-      const client = new PostgresClient({
-        host: sanitizeText(connection.host) || "localhost",
-        port: parsePort(connection.port) ?? 5432,
-        user: sanitizeText(connection.user),
-        password: connection.password ?? "",
-        database: "postgres",
-        connectionTimeoutMillis: 5000,
-        ssl: useSsl ? { rejectUnauthorized: false } : undefined,
-      })
-
-      await client.connect()
-
-      try {
+      return withPostgresClient(connection, "postgres", async (client) => {
         const quotedDatabase = quoteIdentifier(connection.databaseType, databaseName)
         const normalizedCharset = charset.toUpperCase() || "UTF8"
         await client.query(
@@ -513,27 +346,11 @@ export async function createDatabase(
           details: `O banco ${databaseName} foi criado com encoding ${normalizedCharset}.`,
           databaseName,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "sqlserver": {
-      const pool = await sql.connect({
-        user: sanitizeText(connection.user),
-        password: connection.password ?? "",
-        server: sanitizeText(connection.host) || "localhost",
-        port: parsePort(connection.port) ?? 1433,
-        database: "master",
-        options: {
-          encrypt: useSsl,
-          trustServerCertificate: true,
-        },
-        connectionTimeout: 5000,
-        requestTimeout: 5000,
-      })
-
-      try {
+      return withSqlServerPool(connection, "master", async (pool) => {
         const quotedDatabase = quoteIdentifier(connection.databaseType, databaseName)
         await pool.request().query(`CREATE DATABASE ${quotedDatabase}`)
 
@@ -542,9 +359,7 @@ export async function createDatabase(
           details: `O banco ${databaseName} foi criado no SQL Server.`,
           databaseName,
         }
-      } finally {
-        await pool.close()
-      }
+      })
     }
 
     case "sqlite":
@@ -583,28 +398,7 @@ export async function updateDatabase(
         throw new Error("Informe um charset válido para atualizar o banco de dados.")
       }
 
-      const client =
-        connection.databaseType === "mysql"
-          ? await mysql.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              database: originalDatabaseName,
-              connectTimeout: 5000,
-              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-            })
-          : await mariadb.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              database: originalDatabaseName,
-              connectTimeout: 5000,
-              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-            })
-
-      try {
+      return withMySqlLikeClient(connection, originalDatabaseName, async (client) => {
         const quotedDatabase = quoteIdentifier(connection.databaseType, originalDatabaseName)
         await client.query(`ALTER DATABASE ${quotedDatabase} CHARACTER SET ${charset}`)
 
@@ -613,25 +407,11 @@ export async function updateDatabase(
           details: `O charset de ${originalDatabaseName} foi atualizado para ${charset}.`,
           databaseName: originalDatabaseName,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "postgresql": {
-      const client = new PostgresClient({
-        host: sanitizeText(connection.host) || "localhost",
-        port: parsePort(connection.port) ?? 5432,
-        user: sanitizeText(connection.user),
-        password: connection.password ?? "",
-        database: "postgres",
-        connectionTimeoutMillis: 5000,
-        ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-      })
-
-      await client.connect()
-
-      try {
+      return withPostgresClient(connection, "postgres", async (client) => {
         if (nextDatabaseName !== originalDatabaseName) {
           await client.query(
             `ALTER DATABASE ${quoteIdentifier("postgresql", originalDatabaseName)} RENAME TO ${quoteIdentifier("postgresql", nextDatabaseName)}`
@@ -658,30 +438,14 @@ export async function updateDatabase(
           details:
             nextDatabaseName !== originalDatabaseName
               ? `O banco ${originalDatabaseName} foi renomeado para ${nextDatabaseName}.`
-              : `O banco ${originalDatabaseName} permaneceu sem alterações de nome.`,
+          : `O banco ${originalDatabaseName} permaneceu sem alterações de nome.`,
           databaseName: nextDatabaseName,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "sqlserver": {
-      const pool = await sql.connect({
-        user: sanitizeText(connection.user),
-        password: connection.password ?? "",
-        server: sanitizeText(connection.host) || "localhost",
-        port: parsePort(connection.port) ?? 1433,
-        database: "master",
-        options: {
-          encrypt: Boolean(connection.useSsl),
-          trustServerCertificate: true,
-        },
-        connectionTimeout: 5000,
-        requestTimeout: 5000,
-      })
-
-      try {
+      return withSqlServerPool(connection, "master", async (pool) => {
         if (nextDatabaseName !== originalDatabaseName) {
           await pool.request().query(
             `ALTER DATABASE ${quoteSqlServerIdentifier(originalDatabaseName)} MODIFY NAME = ${quoteSqlServerIdentifier(nextDatabaseName)}`
@@ -708,12 +472,10 @@ export async function updateDatabase(
           details:
             nextDatabaseName !== originalDatabaseName
               ? `O banco ${originalDatabaseName} foi renomeado para ${nextDatabaseName}.`
-              : `O banco ${originalDatabaseName} foi revisado sem alterações de nome.`,
+          : `O banco ${originalDatabaseName} foi revisado sem alterações de nome.`,
           databaseName: nextDatabaseName,
         }
-      } finally {
-        await pool.close()
-      }
+      })
     }
 
     case "sqlite":
@@ -737,87 +499,36 @@ export async function deleteDatabase(
   switch (connection.databaseType) {
     case "mysql":
     case "mariadb": {
-      const client =
-        connection.databaseType === "mysql"
-          ? await mysql.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              connectTimeout: 5000,
-              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-            })
-          : await mariadb.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              connectTimeout: 5000,
-              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-            })
-
-      try {
+      return withMySqlLikeClient(connection, undefined, async (client) => {
         await client.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(connection.databaseType, normalizedDatabaseName)}`)
         return {
           message: "Banco de dados excluído com sucesso.",
           details: `O banco ${normalizedDatabaseName} foi removido.`,
           databaseName: normalizedDatabaseName,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "postgresql": {
-      const client = new PostgresClient({
-        host: sanitizeText(connection.host) || "localhost",
-        port: parsePort(connection.port) ?? 5432,
-        user: sanitizeText(connection.user),
-        password: connection.password ?? "",
-        database: "postgres",
-        connectionTimeoutMillis: 5000,
-        ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-      })
-
-      await client.connect()
-
-      try {
+      return withPostgresClient(connection, "postgres", async (client) => {
         await client.query(`DROP DATABASE IF EXISTS ${quoteIdentifier("postgresql", normalizedDatabaseName)}`)
         return {
           message: "Banco de dados excluído com sucesso.",
           details: `O banco ${normalizedDatabaseName} foi removido.`,
           databaseName: normalizedDatabaseName,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "sqlserver": {
-      const pool = await sql.connect({
-        user: sanitizeText(connection.user),
-        password: connection.password ?? "",
-        server: sanitizeText(connection.host) || "localhost",
-        port: parsePort(connection.port) ?? 1433,
-        database: "master",
-        options: {
-          encrypt: Boolean(connection.useSsl),
-          trustServerCertificate: true,
-        },
-        connectionTimeout: 5000,
-        requestTimeout: 5000,
-      })
-
-      try {
+      return withSqlServerPool(connection, "master", async (pool) => {
         await pool.request().query(`DROP DATABASE ${quoteSqlServerIdentifier(normalizedDatabaseName)}`)
         return {
           message: "Banco de dados excluído com sucesso.",
           details: `O banco ${normalizedDatabaseName} foi removido.`,
           databaseName: normalizedDatabaseName,
         }
-      } finally {
-        await pool.close()
-      }
+      })
     }
 
     case "sqlite":
@@ -894,28 +605,7 @@ export async function updateTable(
   switch (connection.databaseType) {
     case "mysql":
     case "mariadb": {
-      const client =
-        connection.databaseType === "mysql"
-          ? await mysql.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              database: normalizedDatabase,
-              connectTimeout: 5000,
-              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-            })
-          : await mariadb.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              database: normalizedDatabase,
-              connectTimeout: 5000,
-              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-            })
-
-      try {
+      return withMySqlLikeClient(connection, normalizedDatabase, async (client) => {
         const tempTableName = `${originalTableName}__forge_tmp_${randomUUID().replace(/-/g, "").slice(0, 10)}`
         const qualifiedOriginal = `${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
           connection.databaseType,
@@ -931,8 +621,7 @@ export async function updateTable(
           normalizedSchema,
           tempTableName,
           input.comment,
-          normalizedColumns,
-          connection.databaseType
+          normalizedColumns
         )
 
         const targetColumns = normalizedColumns.map((column) =>
@@ -977,25 +666,11 @@ export async function updateTable(
           tableName: nextTableName,
           schemaName: normalizedSchema,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "postgresql": {
-      const client = new PostgresClient({
-        host: sanitizeText(connection.host) || "localhost",
-        port: parsePort(connection.port) ?? 5432,
-        user: sanitizeText(connection.user),
-        password: connection.password ?? "",
-        database: normalizedDatabase || "postgres",
-        connectionTimeoutMillis: 5000,
-        ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-      })
-
-      await client.connect()
-
-      try {
+      return withPostgresClient(connection, normalizedDatabase || "postgres", async (client) => {
         const tempTableName = `${originalTableName}__forge_tmp_${randomUUID().replace(/-/g, "").slice(0, 10)}`
         const qualifiedOriginal = `${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
           "postgresql",
@@ -1035,27 +710,11 @@ export async function updateTable(
           tableName: nextTableName,
           schemaName: normalizedSchema,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "sqlserver": {
-      const pool = await sql.connect({
-        user: sanitizeText(connection.user),
-        password: connection.password ?? "",
-        server: sanitizeText(connection.host) || "localhost",
-        port: parsePort(connection.port) ?? 1433,
-        database: normalizedDatabase || "master",
-        options: {
-          encrypt: Boolean(connection.useSsl),
-          trustServerCertificate: true,
-        },
-        connectionTimeout: 5000,
-        requestTimeout: 5000,
-      })
-
-      try {
+      return withSqlServerPool(connection, normalizedDatabase || "master", async (pool) => {
         const tempTableName = `${originalTableName}__forge_tmp_${randomUUID().replace(/-/g, "").slice(0, 10)}`
         const qualifiedOriginal = `${quoteSqlServerIdentifier(normalizedSchema)}.${quoteSqlServerIdentifier(
           originalTableName
@@ -1114,21 +773,11 @@ export async function updateTable(
           tableName: nextTableName,
           schemaName: normalizedSchema,
         }
-      } finally {
-        await pool.close()
-      }
+      })
     }
 
     case "sqlite": {
-      const filePath = sanitizeText(connection.databaseFile)
-      if (!filePath) {
-        throw new Error("Informe o arquivo SQLite da conexão.")
-      }
-
-      const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
-      const db = new Database(resolvedPath)
-
-      try {
+      return withSqliteDatabase(connection, async (db) => {
         const tempTableName = `${originalTableName}__forge_tmp_${randomUUID().replace(/-/g, "").slice(0, 10)}`
         const qualifiedOriginal = quoteIdentifier("sqlite", originalTableName)
         const qualifiedTemp = quoteIdentifier("sqlite", tempTableName)
@@ -1160,9 +809,7 @@ export async function updateTable(
           tableName: nextTableName,
           schemaName: "main",
         }
-      } finally {
-        db.close()
-      }
+      })
     }
 
     default:
@@ -1187,28 +834,7 @@ export async function deleteTable(
   switch (connection.databaseType) {
     case "mysql":
     case "mariadb": {
-      const client =
-        connection.databaseType === "mysql"
-          ? await mysql.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              database: normalizedDatabase,
-              connectTimeout: 5000,
-              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-            })
-          : await mariadb.createConnection({
-              host: sanitizeText(connection.host) || "localhost",
-              port: parsePort(connection.port) ?? 3306,
-              user: sanitizeText(connection.user),
-              password: connection.password ?? "",
-              database: normalizedDatabase,
-              connectTimeout: 5000,
-              ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-            })
-
-      try {
+      return withMySqlLikeClient(connection, normalizedDatabase, async (client) => {
         await client.query(
           `DROP TABLE IF EXISTS ${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
             connection.databaseType,
@@ -1222,9 +848,7 @@ export async function deleteTable(
           tableName: normalizedTable,
           schemaName: normalizedSchema,
         }
-      } finally {
-        await client.end()
-      }
+      })
     }
 
     case "postgresql": {
@@ -1355,8 +979,7 @@ export async function createTable(
         schemaName,
         tableName,
         comment,
-        columns,
-        connection.databaseType
+        columns
       )
 
     case "postgresql":
@@ -1380,137 +1003,23 @@ export async function createTable(
   }
 }
 
-function getFallbackSchemaName(connection: SavedConnection) {
-  if (connection.databaseType === "sqlite") {
-    return "main"
-  }
-
-  if (connection.databaseType === "sqlserver") {
-    return "dbo"
-  }
-
-  return connection.databaseName.trim() || "public"
-}
-
-function buildCreateTableColumnDefinition(
-  connection: SavedConnection,
-  column: {
-    name: string
-    dataType: string
-    size: string
-    notNull: boolean
-    primaryKey: boolean
-    autoIncrement: boolean
-    defaultValue: string
-    comment: string
-  }
-) {
-  const columnName = quoteIdentifier(connection.databaseType, column.name)
-  const parts = [columnName]
-  const baseType = column.dataType
-  const typeWithSize =
-    column.size && /^(CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER)$/.test(baseType)
-      ? `${baseType}(${column.size})`
-      : baseType
-
-  if (connection.databaseType === "sqlite" && column.autoIncrement && column.primaryKey) {
-    return `${columnName} INTEGER PRIMARY KEY AUTOINCREMENT`
-  }
-
-  parts.push(typeWithSize)
-
-  if (column.autoIncrement) {
-    if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
-      parts.push("AUTO_INCREMENT")
-    } else if (connection.databaseType === "postgresql") {
-      parts.push("GENERATED BY DEFAULT AS IDENTITY")
-    } else if (connection.databaseType === "sqlserver") {
-      parts.push("IDENTITY(1,1)")
-    }
-  }
-
-  if (column.notNull) {
-    parts.push("NOT NULL")
-  }
-
-  if (column.defaultValue) {
-    parts.push(`DEFAULT ${normalizeDefaultValue(column.defaultValue)}`)
-  }
-
-  if (column.primaryKey && !(connection.databaseType === "sqlite" && column.autoIncrement)) {
-    parts.push("PRIMARY KEY")
-  }
-
-  if (column.comment && (connection.databaseType === "mysql" || connection.databaseType === "mariadb")) {
-    parts.push(`COMMENT ${quoteSqlLiteral(column.comment)}`)
-  }
-
-  return parts.join(" ")
-}
-
-function normalizeDefaultValue(value: string) {
-  const trimmed = value.trim()
-
-  if (
-    /^(CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME|NOW\(\)|TRUE|FALSE)$/i.test(trimmed) ||
-    /^-?\d+(\.\d+)?$/.test(trimmed)
-  ) {
-    return trimmed
-  }
-
-  return quoteSqlLiteral(trimmed)
-}
-
 async function createSqlTableLike(
   connection: SavedConnection,
   schemaName: string,
   tableName: string,
   comment: string,
-  columns: Array<{
-    name: string
-    dataType: string
-    size: string
-    notNull: boolean
-    primaryKey: boolean
-    autoIncrement: boolean
-    defaultValue: string
-    comment: string
-  }>,
-  databaseType: "mysql" | "mariadb"
+  columns: CreateTableColumnSpec[]
 ): Promise<CreateTableResult> {
-  const client =
-    databaseType === "mysql"
-      ? await mysql.createConnection({
-          host: sanitizeText(connection.host) || "localhost",
-          port: parsePort(connection.port) ?? 3306,
-          user: sanitizeText(connection.user),
-          password: connection.password ?? "",
-          database: schemaName,
-          connectTimeout: 5000,
-          ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-        })
-      : await mariadb.createConnection({
-          host: sanitizeText(connection.host) || "localhost",
-          port: parsePort(connection.port) ?? 3306,
-          user: sanitizeText(connection.user),
-          password: connection.password ?? "",
-          database: schemaName,
-          connectTimeout: 5000,
-          ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-        })
-
-  try {
-    const quotedSchema = quoteIdentifier(connection.databaseType, schemaName)
-    const quotedTable = quoteIdentifier(connection.databaseType, tableName)
-    const columnDefinitions = columns.map((column) => buildCreateTableColumnDefinition(connection, column))
-    const tableCommentClause =
-      comment && (connection.databaseType === "mysql" || connection.databaseType === "mariadb")
-        ? ` COMMENT=${quoteSqlLiteral(comment)}`
-        : ""
-
-    await client.query(
-      `CREATE TABLE IF NOT EXISTS ${quotedSchema}.${quotedTable} (\n  ${columnDefinitions.join(",\n  ")}\n)${tableCommentClause}`
+  return withMySqlLikeClient(connection, schemaName, async (client) => {
+    const createTableSql = buildMySqlLikeCreateTableSql(
+      connection,
+      schemaName,
+      tableName,
+      comment,
+      columns
     )
+
+    await client.query(createTableSql)
 
     return {
       message: "Tabela criada com sucesso.",
@@ -1518,9 +1027,7 @@ async function createSqlTableLike(
       tableName,
       schemaName,
     }
-  } finally {
-    await client.end()
-  }
+  })
 }
 
 async function createPostgreSqlTable(
@@ -1528,46 +1035,25 @@ async function createPostgreSqlTable(
   schemaName: string,
   tableName: string,
   comment: string,
-  columns: Array<{
-    name: string
-    dataType: string
-    size: string
-    notNull: boolean
-    primaryKey: boolean
-    autoIncrement: boolean
-    defaultValue: string
-    comment: string
-  }>
+  columns: CreateTableColumnSpec[]
 ): Promise<CreateTableResult> {
-  const client = new PostgresClient({
-    host: sanitizeText(connection.host) || "localhost",
-    port: parsePort(connection.port) ?? 5432,
-    user: sanitizeText(connection.user),
-    password: connection.password ?? "",
-    database: connection.databaseName.trim() || "postgres",
-    connectionTimeoutMillis: 5000,
-    ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
-  })
-
-  await client.connect()
-
-  try {
-    if (schemaName && schemaName !== "public") {
-      await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier("postgresql", schemaName)}`)
-    }
-
-    const quotedSchema = quoteIdentifier("postgresql", schemaName)
-    const quotedTable = quoteIdentifier("postgresql", tableName)
-    const columnDefinitions = columns.map((column) => buildCreateTableColumnDefinition(connection, column))
-
-    await client.query(
-      `CREATE TABLE IF NOT EXISTS ${quotedSchema}.${quotedTable} (\n  ${columnDefinitions.join(",\n  ")}\n)`
+  return withPostgresClient(connection, connection.databaseName.trim() || "postgres", async (client) => {
+    const { createSchemaSql, createTableSql, commentSql } = buildPostgreSqlCreateTableSql(
+      connection,
+      schemaName,
+      tableName,
+      comment,
+      columns
     )
 
-    if (comment) {
-      await client.query(
-        `COMMENT ON TABLE ${quotedSchema}.${quotedTable} IS ${quoteSqlLiteral(comment)}`
-      )
+    if (createSchemaSql) {
+      await client.query(createSchemaSql)
+    }
+
+    await client.query(createTableSql)
+
+    if (commentSql) {
+      await client.query(commentSql)
     }
 
     return {
@@ -1576,9 +1062,7 @@ async function createPostgreSqlTable(
       tableName,
       schemaName,
     }
-  } finally {
-    await client.end()
-  }
+  })
 }
 
 async function createSqlServerTable(
@@ -1587,102 +1071,52 @@ async function createSqlServerTable(
   schemaName: string,
   tableName: string,
   _comment: string,
-  columns: Array<{
-    name: string
-    dataType: string
-    size: string
-    notNull: boolean
-    primaryKey: boolean
-    autoIncrement: boolean
-    defaultValue: string
-    comment: string
-  }>
+  columns: CreateTableColumnSpec[]
 ): Promise<CreateTableResult> {
-  const pool = await sql.connect({
-    user: sanitizeText(connection.user),
-    password: connection.password ?? "",
-    server: sanitizeText(connection.host) || "localhost",
-    port: parsePort(connection.port) ?? 1433,
-    database: sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim() || "master",
-    options: {
-      encrypt: Boolean(connection.useSsl),
-      trustServerCertificate: true,
-    },
-    connectionTimeout: 5000,
-    requestTimeout: 5000,
-  })
+  return withSqlServerPool(
+    connection,
+    sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim() || "master",
+    async (pool) => {
+      const { createSchemaSql, createTableSql } = buildSqlServerCreateTableSql(
+        connection,
+        schemaName,
+        tableName,
+        columns
+      )
 
-  try {
-    if (schemaName && schemaName !== "dbo") {
-      await pool.request().query(`
-        IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = ${quoteSqlLiteral(schemaName)})
-        EXEC('CREATE SCHEMA ${quoteSqlServerIdentifier(schemaName)}')
-      `)
+      if (createSchemaSql) {
+        await pool.request().query(createSchemaSql)
+      }
+
+      await pool.request().query(createTableSql)
+
+      return {
+        message: "Tabela criada com sucesso.",
+        details: `A tabela ${schemaName}.${tableName} foi criada com sucesso.`,
+        tableName,
+        schemaName,
+      }
     }
-
-    const quotedSchema = quoteSqlServerIdentifier(schemaName)
-    const quotedTable = quoteSqlServerIdentifier(tableName)
-    const columnDefinitions = columns.map((column) => buildCreateTableColumnDefinition(connection, column))
-
-    await pool.request().query(
-      `CREATE TABLE ${quotedSchema}.${quotedTable} (\n  ${columnDefinitions.join(",\n  ")}\n)`
-    )
-
-    return {
-      message: "Tabela criada com sucesso.",
-      details: `A tabela ${schemaName}.${tableName} foi criada com sucesso.`,
-      tableName,
-      schemaName,
-    }
-  } finally {
-    await pool.close()
-  }
+  )
 }
 
 async function createSqliteTable(
   connection: SavedConnection,
   tableName: string,
   _comment: string,
-  columns: Array<{
-    name: string
-    dataType: string
-    size: string
-    notNull: boolean
-    primaryKey: boolean
-    autoIncrement: boolean
-    defaultValue: string
-    comment: string
-  }>
+  columns: CreateTableColumnSpec[]
 ): Promise<CreateTableResult> {
-  const tablePath = sanitizeDatabaseIdentifier(tableName)
+  return withSqliteDatabase(connection, async (db) => {
+    const { tablePath, createTableSql } = buildSqliteCreateTableSql(connection, tableName, columns)
+    db.exec(createTableSql)
 
-  if (!tablePath) {
-    throw new Error("Informe um nome válido para a tabela.")
-  }
-
-  const filePath = sanitizeText(connection.databaseFile)
-  if (!filePath) {
-    throw new Error("Informe o arquivo SQLite da conexão.")
-  }
-
-  const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
-  const db = new Database(resolvedPath)
-  const columnDefinitions = columns.map((column) => buildCreateTableColumnDefinition(connection, column))
-
-  try {
-    db.exec(
-      `CREATE TABLE IF NOT EXISTS ${quoteIdentifier("sqlite", tablePath)} (\n  ${columnDefinitions.join(",\n  ")}\n)`
-    )
-  } finally {
-    db.close()
-  }
-
-  return {
-    message: "Tabela criada com sucesso.",
-    details: `A tabela ${tablePath} foi criada com sucesso.`,
-    tableName: tablePath,
-    schemaName: "main",
-  }
+    return {
+      message: "Tabela criada com sucesso.",
+      details: `A tabela ${tablePath} foi criada com sucesso.`,
+      tableName: tablePath,
+      schemaName: "main",
+    }
+  })
 }
 
 export async function saveConnection(input: ConnectionInput) {
@@ -2166,148 +1600,166 @@ async function getMySqlLikeStructure(connection: SavedConnection): Promise<Datab
   const client = await clientFactory()
 
   try {
-    const schemaName = database || ""
-    const metadataRows = await runMySqlLikeMetadataQuery(
-      client,
-      databaseType,
-      `
-        SELECT
-          DEFAULT_CHARACTER_SET_NAME AS charset,
-          DEFAULT_COLLATION_NAME AS collation
-        FROM INFORMATION_SCHEMA.SCHEMATA
-        WHERE SCHEMA_NAME = ?
-        LIMIT 1
-      `,
-      [schemaName]
-    )
-    const metadataRow = metadataRows[0] ?? {}
-    const metadata = {
-      charset:
-        String(
-          metadataRow.charset ??
-            metadataRow.CHARSET ??
-            metadataRow.default_character_set_name ??
-            ""
-        ).trim() || undefined,
-      collation:
-        String(metadataRow.collation ?? metadataRow.COLLATION ?? metadataRow.default_collation_name ?? "")
-          .trim() || undefined,
-    }
-    const tables = await runMySqlLikeMetadataQuery(
-      client,
-      databaseType,
-      `
-        SELECT TABLE_NAME AS name
-        FROM INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
-          AND TABLE_TYPE = 'BASE TABLE'
-        ORDER BY TABLE_NAME
-      `,
-      [schemaName]
-    )
-    const views = await runMySqlLikeMetadataQuery(
-      client,
-      databaseType,
-      `
-        SELECT TABLE_NAME AS name
-        FROM INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
-          AND TABLE_TYPE = 'VIEW'
-        ORDER BY TABLE_NAME
-      `,
-      [schemaName]
-    )
-    const indexes = await runMySqlLikeMetadataQuery(
-      client,
-      databaseType,
-      `
-        SELECT DISTINCT INDEX_NAME AS name
-        FROM INFORMATION_SCHEMA.STATISTICS
-        WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
-          AND INDEX_NAME <> 'PRIMARY'
-        ORDER BY INDEX_NAME
-      `,
-      [schemaName]
-    )
-    const procedures = await runMySqlLikeMetadataQuery(
-      client,
-      databaseType,
-      `
-        SELECT ROUTINE_NAME AS name
-        FROM INFORMATION_SCHEMA.ROUTINES
-        WHERE ROUTINE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
-          AND ROUTINE_TYPE = 'PROCEDURE'
-        ORDER BY ROUTINE_NAME
-      `,
-      [schemaName]
-    )
-    const functions = await runMySqlLikeMetadataQuery(
-      client,
-      databaseType,
-      `
-        SELECT ROUTINE_NAME AS name
-        FROM INFORMATION_SCHEMA.ROUTINES
-        WHERE ROUTINE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
-          AND ROUTINE_TYPE = 'FUNCTION'
-        ORDER BY ROUTINE_NAME
-      `,
-      [schemaName]
-    )
+    const databaseNames = database
+      ? [database]
+      : await listMySqlLikeDatabaseNames(client, databaseType)
 
-    const tableNames = extractNames(tables)
-    const viewNames = extractNames(views)
-    const groups = [
-      createGroup(
-        "Tabelas",
-        tableNames,
-        await getMySqlLikeColumnsByItem(client, databaseType, schemaName, tableNames)
-      ),
-      createGroup(
-        "Views",
-        viewNames,
-        await getMySqlLikeColumnsByItem(client, databaseType, schemaName, viewNames)
-      ),
-      createGroup("Índices", extractNames(indexes)),
-      createGroup("Funções", extractNames(functions)),
-      createGroup("Procedures", extractNames(procedures)),
-    ]
+    const databases: DatabaseStructureDatabase[] = []
+
+    for (const databaseName of databaseNames) {
+      databases.push(await buildMySqlLikeDatabaseStructure(client, databaseType, databaseName))
+    }
 
     return {
-      databases: [
-        {
-          name: connection.databaseName.trim() || "schema",
-          schemas: [{ name: schemaName, groups }],
-          groups,
-          charset: metadata.charset,
-          collation: metadata.collation,
-        },
-      ],
-      schemas: [{ name: connection.databaseName.trim() || "schema", groups }],
-      groups,
+      databases,
+      schemas: [],
+      groups: [],
     }
   } finally {
     await client.end()
   }
 }
 
-async function runMySqlLikeMetadataQuery(
+async function listMySqlLikeDatabaseNames(
+  client: {
+    query: (queryText: string, params?: unknown[]) => Promise<unknown>
+  },
+  databaseType: "mysql" | "mariadb"
+) {
+  const rows = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT schema_name AS name
+      FROM information_schema.schemata
+      WHERE schema_name NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+      ORDER BY schema_name
+    `,
+    []
+  )
+
+  return extractNames(rows)
+}
+
+async function buildMySqlLikeDatabaseStructure(
   client: {
     query: (queryText: string, params?: unknown[]) => Promise<unknown>
   },
   databaseType: "mysql" | "mariadb",
-  queryText: string,
-  params: unknown[]
-) {
-  if (databaseType === "mysql") {
-    const [rows] = (await client.query(queryText, params)) as [
-      Array<Record<string, unknown>>,
-      unknown,
-    ]
-    return rows as Array<Record<string, unknown>>
+  databaseName: string
+): Promise<DatabaseStructureDatabase> {
+  const metadataRows = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT
+        DEFAULT_CHARACTER_SET_NAME AS charset,
+        DEFAULT_COLLATION_NAME AS collation
+      FROM INFORMATION_SCHEMA.SCHEMATA
+      WHERE SCHEMA_NAME = ?
+      LIMIT 1
+    `,
+    [databaseName]
+  )
+  const metadataRow = metadataRows[0] ?? {}
+  const metadata = {
+    charset:
+      String(
+        metadataRow.charset ??
+          metadataRow.CHARSET ??
+          metadataRow.default_character_set_name ??
+          ""
+      ).trim() || undefined,
+    collation:
+      String(metadataRow.collation ?? metadataRow.COLLATION ?? metadataRow.default_collation_name ?? "")
+        .trim() || undefined,
   }
+  const tables = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT TABLE_NAME AS name
+      FROM INFORMATION_SCHEMA.TABLES
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_TYPE = 'BASE TABLE'
+      ORDER BY TABLE_NAME
+    `,
+    [databaseName]
+  )
+  const views = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT TABLE_NAME AS name
+      FROM INFORMATION_SCHEMA.TABLES
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_TYPE = 'VIEW'
+      ORDER BY TABLE_NAME
+    `,
+    [databaseName]
+  )
+  const indexes = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT DISTINCT INDEX_NAME AS name
+      FROM INFORMATION_SCHEMA.STATISTICS
+      WHERE TABLE_SCHEMA = ?
+        AND INDEX_NAME <> 'PRIMARY'
+      ORDER BY name
+    `,
+    [databaseName]
+  )
+  const procedures = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT ROUTINE_NAME AS name
+      FROM INFORMATION_SCHEMA.ROUTINES
+      WHERE ROUTINE_SCHEMA = ?
+        AND ROUTINE_TYPE = 'PROCEDURE'
+      ORDER BY ROUTINE_NAME
+    `,
+    [databaseName]
+  )
+  const functions = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT ROUTINE_NAME AS name
+      FROM INFORMATION_SCHEMA.ROUTINES
+      WHERE ROUTINE_SCHEMA = ?
+        AND ROUTINE_TYPE = 'FUNCTION'
+      ORDER BY ROUTINE_NAME
+    `,
+    [databaseName]
+  )
 
-  const rows = (await client.query(queryText, params)) as Array<Record<string, unknown>>
-  return Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : []
+  const tableNames = extractNames(tables)
+  const viewNames = extractNames(views)
+  const groups = [
+    createGroup(
+      "Tabelas",
+      tableNames,
+      await getMySqlLikeColumnsByItem(client, databaseType, databaseName, tableNames)
+    ),
+    createGroup(
+      "Views",
+      viewNames,
+      await getMySqlLikeColumnsByItem(client, databaseType, databaseName, viewNames)
+    ),
+    createGroup("Índices", extractNames(indexes)),
+    createGroup("Funções", extractNames(functions)),
+    createGroup("Procedures", extractNames(procedures)),
+  ]
+
+  return {
+    name: databaseName,
+    schemas: [],
+    groups,
+    charset: metadata.charset,
+    collation: metadata.collation,
+  }
 }
 
 async function getPostgreSqlStructure(connection: SavedConnection): Promise<DatabaseStructure> {
@@ -2676,7 +2128,8 @@ async function getMySqlLikeTableDetails(
           rc.CONSTRAINT_NAME AS name,
           kcu.COLUMN_NAME AS column_name,
           kcu.REFERENCED_TABLE_NAME AS referenced_table,
-          kcu.REFERENCED_COLUMN_NAME AS referenced_column
+          kcu.REFERENCED_COLUMN_NAME AS referenced_column,
+          kcu.ORDINAL_POSITION AS ordinal_position
         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
         INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
           ON rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
@@ -2684,7 +2137,7 @@ async function getMySqlLikeTableDetails(
         WHERE kcu.TABLE_SCHEMA = ?
           AND kcu.TABLE_NAME = ?
           AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-        ORDER BY rc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+        ORDER BY name, ordinal_position
       `,
       [schemaName, tableName]
     )
@@ -2697,7 +2150,7 @@ async function getMySqlLikeTableDetails(
         WHERE TABLE_SCHEMA = ?
           AND TABLE_NAME = ?
           AND INDEX_NAME <> 'PRIMARY'
-        ORDER BY INDEX_NAME
+        ORDER BY name
       `,
       [schemaName, tableName]
     )
@@ -3086,193 +2539,6 @@ async function getSqliteTableDetails(
   } finally {
     db.close()
   }
-}
-
-function normalizeColumnSize(
-  length?: unknown,
-  precision?: unknown,
-  scale?: unknown
-) {
-  const normalizedLength = Number(length)
-  const normalizedPrecision = Number(precision)
-  const normalizedScale = Number(scale)
-
-  if (Number.isFinite(normalizedLength) && normalizedLength > 0) {
-    return String(normalizedLength)
-  }
-
-  if (Number.isFinite(normalizedPrecision) && normalizedPrecision > 0) {
-    return Number.isFinite(normalizedScale) && normalizedScale > 0
-      ? `${normalizedPrecision},${normalizedScale}`
-      : String(normalizedPrecision)
-  }
-
-  return ""
-}
-
-function createGroup(
-  label: string,
-  items: string[],
-  columnsByItem?: Record<string, string[]>
-): DatabaseStructureGroup {
-  return columnsByItem ? { label, items, columnsByItem } : { label, items }
-}
-
-function quoteSqlServerIdentifier(value: string) {
-  return `[${value.replace(/\]/g, "]]")}]`
-}
-
-function extractNames(rows: Array<Record<string, unknown>>) {
-  return rows
-    .map((row) => row.name ?? row.NAME ?? row.table_name ?? row.TABLE_NAME ?? row.indexname)
-    .map((value) => (value === null || value === undefined ? "" : String(value)))
-    .filter(Boolean)
-}
-
-function extractSchemaNames(rows: Array<Record<string, unknown>>) {
-  return rows
-    .map((row) => row.schema_name ?? row.SCHEMA_NAME ?? row.table_schema ?? row.TABLE_SCHEMA)
-    .map((value) => (value === null || value === undefined ? "" : String(value)))
-    .filter(Boolean)
-}
-
-function extractNamesForSchema(rows: Array<Record<string, unknown>>, schemaName: string) {
-  return rows
-    .filter((row) => {
-      const rowSchema = row.schema_name ?? row.SCHEMA_NAME ?? row.table_schema ?? row.TABLE_SCHEMA
-      return String(rowSchema ?? "") === schemaName
-    })
-    .map((row) => row.name ?? row.NAME ?? row.table_name ?? row.TABLE_NAME ?? row.indexname)
-    .map((value) => (value === null || value === undefined ? "" : String(value)))
-    .filter(Boolean)
-}
-
-function extractColumnsByObjectForSchema(rows: Array<Record<string, unknown>>, schemaName: string) {
-  const result: Record<string, string[]> = {}
-
-  for (const row of rows) {
-    const rowSchema = String(
-      row.schema_name ?? row.SCHEMA_NAME ?? row.table_schema ?? row.TABLE_SCHEMA ?? ""
-    )
-    if (rowSchema !== schemaName) {
-      continue
-    }
-
-    const objectName = String(
-      row.object_name ?? row.OBJECT_NAME ?? row.table_name ?? row.TABLE_NAME ?? ""
-    )
-    const columnName = String(
-      row.column_name ?? row.COLUMN_NAME ?? row.name ?? row.NAME ?? ""
-    ).trim()
-
-    if (!objectName || !columnName) {
-      continue
-    }
-
-    if (!result[objectName]) {
-      result[objectName] = []
-    }
-
-    result[objectName].push(columnName)
-  }
-
-  return result
-}
-
-async function getSqliteColumnsByItem(db: Database.Database, objectNames: string[]) {
-  const result: Record<string, string[]> = {}
-
-  for (const objectName of objectNames) {
-    const pragmaRows = db.prepare(`PRAGMA table_info('${objectName.replace(/'/g, "''")}')`).all() as
-      | Array<{ name?: string }>
-      | undefined
-    const columns = (pragmaRows ?? [])
-      .map((row) => String(row.name ?? "").trim())
-      .filter(Boolean)
-
-    if (columns.length) {
-      result[objectName] = columns
-    }
-  }
-
-  return result
-}
-
-async function getMySqlLikeColumnsByItem(
-  client: {
-    query: (queryText: string, params?: unknown[]) => Promise<unknown>
-  },
-  databaseType: "mysql" | "mariadb",
-  schemaName: string,
-  objectNames: string[]
-) {
-  if (!objectNames.length) {
-    return {}
-  }
-
-  const queryText = `
-    SELECT TABLE_NAME AS object_name, COLUMN_NAME AS column_name
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
-    ORDER BY TABLE_NAME, ORDINAL_POSITION
-  `
-
-  const rows = await runMySqlLikeMetadataQuery(client, databaseType, queryText, [schemaName])
-  return buildColumnsMap(rows, schemaName, objectNames, "object_name", "column_name")
-}
-
-async function getPostgreSqlColumnsByItem(
-  client: PostgresClient,
-  schemaName: string,
-  objectNames: string[]
-) {
-  if (!objectNames.length) {
-    return {}
-  }
-
-  const result = await client.query(
-    `
-      SELECT table_name AS object_name, column_name AS column_name
-      FROM information_schema.columns
-      WHERE table_schema = $1
-      ORDER BY table_name, ordinal_position
-    `,
-    [schemaName]
-  )
-
-  return buildColumnsMap(result.rows, schemaName, objectNames, "object_name", "column_name")
-}
-
-function buildColumnsMap(
-  rows: Array<Record<string, unknown>>,
-  _schemaName: string,
-  objectNames: string[],
-  objectKey: string,
-  columnKey: string
-) {
-  const allowedObjects = new Set(objectNames)
-  const result: Record<string, string[]> = {}
-
-  for (const row of rows) {
-    const objectName = String(row[objectKey] ?? row[objectKey.toUpperCase()] ?? "").trim()
-    const columnName = String(row[columnKey] ?? row[columnKey.toUpperCase()] ?? "").trim()
-
-    if (!objectName || !columnName || !allowedObjects.has(objectName)) {
-      continue
-    }
-
-    if (!result[objectName]) {
-      result[objectName] = []
-    }
-
-    result[objectName].push(columnName)
-  }
-
-  return result
-}
-
-function uniqueStrings(values: string[]) {
-  return Array.from(new Set(values.filter(Boolean)))
 }
 
 export function getConnectionById(id: string): SavedConnection | null {

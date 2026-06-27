@@ -1,13 +1,9 @@
 import { Badge } from "@/components/ui/badge"
-import { cn } from "@/lib/utils"
+import { cn } from "@/helpers/utils"
 
-import { getConnectionSubtitle, getDatabaseLabel } from "./shared"
-import type { SavedConnection } from "@/lib/connections"
+import { getConnectionSubtitle, getDatabaseLabel } from "@/helpers/dashboard"
 import type { ReactNode } from "react"
-
-type DashboardInspectorPanelProps = {
-  connection: SavedConnection
-}
+import type { DashboardInspectorPanelProps } from "@/types/dashboard-ui"
 
 const tabs = ["Propriedades", "DDL"] as const
 

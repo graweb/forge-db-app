@@ -25,39 +25,13 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { cn } from "@/lib/utils"
-import type { SavedConnection, TableDetails } from "@/lib/connections"
-
-type CreateTableColumnDraft = {
-  sourceName?: string
-  name: string
-  dataType: string
-  size: string
-  notNull: boolean
-  primaryKey: boolean
-  autoIncrement: boolean
-  defaultValue: string
-  comment: string
-}
-
-type CreateTableDraft = {
-  schemaName: string
-  tableName: string
-  comment: string
-  columns: CreateTableColumnDraft[]
-}
-
-type CreateTableModalProps = {
-  open: boolean
-  connection: SavedConnection | null
-  mode: "create" | "edit"
-  databaseName?: string
-  schemaName?: string
-  schemaOptions?: string[]
-  table?: TableDetails | null
-  onOpenChange: (open: boolean) => void
-  onSaved: (details: { message: string; details: string }) => void | Promise<void>
-}
+import { cn } from "@/helpers/utils"
+import type {
+  CreateTableColumnDraft,
+  CreateTableDraft,
+  CreateTableModalProps,
+} from "@/types/dashboard-modals"
+import type { SavedConnection, TableDetails } from "@/types/connections"
 
 const typeOptions = [
   { value: "INTEGER", label: "integer" },
@@ -539,11 +513,18 @@ export function CreateTableModal({
   if (!connection) {
     return null
   }
+  const activeConnection = connection
 
   const availableSchemas = schemaOptions?.length ? schemaOptions : [form.schemaName]
   const isSingleSchema = availableSchemas.length === 1
   const isEditMode = mode === "edit"
-  const sqlPreview = buildSqlPreview(connection, form, mode, table, databaseName || connection.databaseName)
+  const sqlPreview = buildSqlPreview(
+    activeConnection,
+    form,
+    mode,
+    table,
+    databaseName || activeConnection.databaseName
+  )
   const rebuildSensitiveChanges = hasRebuildSensitiveChanges(form, table)
 
   function updateField(field: keyof CreateTableDraft, value: string) {
@@ -603,10 +584,10 @@ export function CreateTableModal({
     try {
       const endpoint =
         isEditMode && table
-          ? `/api/connections/${connection.id}/tables/${encodeURIComponent(table.tableName)}?databaseName=${encodeURIComponent(
-              databaseName || connection.databaseName
+          ? `/api/connections/${activeConnection.id}/tables/${encodeURIComponent(table.tableName)}?databaseName=${encodeURIComponent(
+              databaseName || activeConnection.databaseName
             )}&schemaName=${encodeURIComponent(form.schemaName)}`
-          : `/api/connections/${connection.id}/tables`
+          : `/api/connections/${activeConnection.id}/tables`
 
       const response = await fetch(endpoint, {
         method: isEditMode ? "PUT" : "POST",
@@ -614,7 +595,7 @@ export function CreateTableModal({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          databaseName: databaseName || connection.databaseName,
+          databaseName: databaseName || activeConnection.databaseName,
           schemaName: form.schemaName,
           tableName: form.tableName,
           nextTableName: form.tableName,
@@ -663,7 +644,7 @@ export function CreateTableModal({
                     {isEditMode
                       ? `Revise a tabela ${table?.tableName ?? form.tableName} no schema ${form.schemaName}.`
                       : `Crie uma nova tabela no esquema ${form.schemaName}.`}{" "}
-                    {getDatabaseTypeDescription(connection.databaseType)}
+                    {getDatabaseTypeDescription(activeConnection.databaseType)}
                   </DialogDescription>
                 </div>
               </div>
@@ -1002,7 +983,7 @@ export function CreateTableModal({
           <div className="flex items-center justify-between border-t border-white/10 px-6 py-4">
             <div className="flex items-center gap-2 text-xs text-white/45">
               <Table2 className="size-3.5" />
-              {databaseName || connection.connectionName}
+              {databaseName || activeConnection.connectionName}
             </div>
             <div className="flex gap-3">
               <Button

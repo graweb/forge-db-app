@@ -15,24 +15,8 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import type { QueryExecutionResult, SerializedValue } from "@/lib/connections"
-
-type QueryResultsProps = {
-  result: QueryExecutionResult | null
-}
-
-type SortDirection = "asc" | "desc"
-
-type SortState = {
-  column: string
-  direction: SortDirection
-}
-
-type ResizeState = {
-  column: string
-  startX: number
-  startWidth: number
-}
+import type { QueryExecutionResult, SerializedValue } from "@/types/connections"
+import type { QueryResultsProps, ResizeState, SortDirection, SortState } from "@/types/dashboard-editor"
 
 const DEFAULT_PAGE_SIZE = 10
 const PAGE_SIZE_OPTIONS = [10, 20, 50]

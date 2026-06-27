@@ -34,46 +34,13 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import { cn } from "@/lib/utils"
-import type { DatabaseType } from "@/lib/connections"
-
-type ConnectionForm = {
-  connectionName: string
-  databaseName: string
-  databaseFile: string
-  host: string
-  port: string
-  user: string
-  password: string
-  additional: string
-}
-
-type TestResult =
-  | {
-      status: "error"
-      message: string
-      details: string
-      durationMs: number
-    }
-  | {
-      status: "success"
-      message: string
-      details: string
-      durationMs: number
-    }
-
-type ConnectionModalProps = {
-  open?: boolean
-  defaultOpen?: boolean
-  onOpenChange?: (open: boolean) => void
-  mode?: "create" | "edit"
-  connectionId?: string
-  initialValues?: Partial<ConnectionForm> & {
-    databaseType?: DatabaseType
-    useSsl?: boolean
-  }
-  onSaved?: () => void | Promise<void>
-}
+import { cn } from "@/helpers/utils"
+import type {
+  ConnectionForm,
+  ConnectionModalProps,
+  DatabaseType,
+  TestResult,
+} from "@/types/connections"
 
 const databaseOptions: Array<{
   id: DatabaseType

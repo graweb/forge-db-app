@@ -15,13 +15,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { cn } from "@/lib/utils"
+import { cn } from "@/helpers/utils"
 import type {
   DatabaseStructure,
   DatabaseStructureDatabase,
   QueryExecutionResult,
   SavedConnection,
-} from "@/lib/connections"
+} from "@/types/connections"
+import type {
+  AutocompleteContext,
+  AutocompleteObject,
+  DashboardEditorWorkspaceHandle,
+  DashboardEditorWorkspaceProps,
+  ExecuteSqlOptions,
+  ParsedAutocompleteSource,
+  QueryExecutionTab,
+  QueryTabStatus,
+  SqlAutocompleteSuggestion,
+  SqlStatementBlock,
+  StatementExecutionPlan,
+} from "@/types/dashboard-editor"
 
 import { QueryResults } from "./query-results"
 
@@ -43,38 +56,6 @@ const AUTOCOMPLETE_KIND = {
   function: 1,
   column: 3,
 } as const
-
-type DashboardEditorWorkspaceProps = {
-  connection: SavedConnection
-  databaseStructure: DatabaseStructure
-}
-
-export type DashboardEditorWorkspaceHandle = {
-  insertText: (text: string) => void
-  executeSqlText: (
-    sql: string,
-    options?: {
-      title?: string
-      databaseName?: string
-      insertIntoEditor?: boolean
-    }
-  ) => Promise<void>
-  previewTable: (tablePath: string) => Promise<void>
-  executeTable: (tablePath: string) => Promise<void>
-  runTableQuery: (tablePath: string) => Promise<void>
-}
-
-type QueryTabStatus = "success" | "error"
-
-type QueryExecutionTab = {
-  id: string
-  title: string
-  sql: string
-  status: QueryTabStatus
-  message: string
-  durationMs: number
-  result: QueryExecutionResult | null
-}
 
 function getDefaultQuery(databaseType: SavedConnection["databaseType"]) {
   if (databaseType === "sqlite") {
@@ -203,13 +184,6 @@ function getSelectedDatabase(
   )
 }
 
-type SqlAutocompleteSuggestion = {
-  label: string
-  insertText: string
-  detail: string
-  kind: Monaco.languages.CompletionItemKind
-}
-
 function getAutocompleteSuggestions(
   connection: SavedConnection,
   database: DatabaseStructureDatabase | undefined,
@@ -252,20 +226,6 @@ function getAutocompleteSuggestions(
   }
 
   return dedupeAutocompleteSuggestions(suggestions)
-}
-
-type AutocompleteContext = {
-  mode: "objects" | "columns"
-  sourceReference: string | null
-}
-
-type AutocompleteObject = {
-  reference: string
-  leafName: string
-  alias: string | null
-  detail: string
-  kind: Monaco.languages.CompletionItemKind
-  columns: string[]
 }
 
 function getAutocompleteContext(
@@ -323,7 +283,13 @@ function getAutocompleteObjects(
 ): AutocompleteObject[] {
   const objects: AutocompleteObject[] = []
 
-  for (const schema of database.schemas) {
+  const schemaSources = database.schemas.length
+    ? database.schemas
+    : connection.databaseType === "mysql" || connection.databaseType === "mariadb"
+      ? [{ name: database.name, groups: database.groups }]
+      : [{ name: database.name, groups: database.groups }]
+
+  for (const schema of schemaSources) {
     for (const group of schema.groups) {
       const groupKind = getAutocompleteKindForGroup(group.label)
       if (groupKind === null) {
@@ -480,11 +446,6 @@ function getIdentifierLeaf(identifier: string) {
   return parts.at(-1) ?? ""
 }
 
-type ParsedAutocompleteSource = {
-  reference: string
-  alias: string | null
-}
-
 function parseAutocompleteSources(statementText: string) {
   const compactSql = statementText.replace(/\s+/g, " ")
   const sourcePattern =
@@ -551,12 +512,6 @@ function isSqlClauseKeyword(value: string) {
     default:
       return false
   }
-}
-
-type ExecuteSqlOptions = {
-  title?: string
-  insertIntoEditor?: boolean
-  databaseName?: string
 }
 
 export const DashboardEditorWorkspace = forwardRef<
@@ -1381,11 +1336,6 @@ function upsertExecutionTabs(
   }
 }
 
-type StatementExecutionPlan = {
-  text: string
-  block: SqlStatementBlock
-}
-
 function getExecutionPlan(
   mode: "full" | "cursor",
   editor: Monaco.editor.IStandaloneCodeEditor | null,
@@ -1427,12 +1377,6 @@ function getExecutionPlan(
         },
       ]
     : []
-}
-
-type SqlStatementBlock = {
-  startLine: number
-  endLine: number
-  text: string
 }
 
 function pickSqlStatementBlock(statements: SqlStatementBlock[], cursorLine: number) {

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 
 import { createTable, getConnectionById } from "@/lib/connections"
+import type { CreateTableInput } from "@/types/connections"
 
 export const runtime = "nodejs"
 
@@ -23,21 +24,8 @@ export async function POST(
       )
     }
 
-    const body = (await request.json()) as {
-      databaseName?: string
-      schemaName?: string
-      tableName?: string
-      comment?: string
-      columns?: Array<{
-        name?: string
-        dataType?: string
-        size?: string
-        notNull?: boolean
-        primaryKey?: boolean
-        autoIncrement?: boolean
-        defaultValue?: string
-        comment?: string
-      }>
+    const body = (await request.json()) as Partial<CreateTableInput> & {
+      columns?: Array<Partial<CreateTableInput["columns"][number]>>
     }
 
     const result = await createTable(connection, {
@@ -45,7 +33,16 @@ export async function POST(
       schemaName: body.schemaName ?? "",
       tableName: body.tableName ?? "",
       comment: body.comment ?? "",
-      columns: body.columns ?? [],
+      columns: (body.columns ?? []).map((column) => ({
+        name: column?.name ?? "",
+        dataType: column?.dataType ?? "",
+        size: column?.size ?? "",
+        notNull: Boolean(column?.notNull),
+        primaryKey: Boolean(column?.primaryKey),
+        autoIncrement: Boolean(column?.autoIncrement),
+        defaultValue: column?.defaultValue ?? "",
+        comment: column?.comment ?? "",
+      })),
     })
 
     return NextResponse.json({

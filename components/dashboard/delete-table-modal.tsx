@@ -11,17 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import type { DatabaseStructureDatabase, SavedConnection } from "@/lib/connections"
-
-type DeleteTableModalProps = {
-  open: boolean
-  connection: SavedConnection | null
-  database: DatabaseStructureDatabase | null
-  schemaName?: string
-  tableName?: string
-  onOpenChange: (open: boolean) => void
-  onDeleted: () => void | Promise<void>
-}
+import type { DeleteTableModalProps } from "@/types/dashboard-modals"
 
 export function DeleteTableModal({
   open,
@@ -38,6 +28,16 @@ export function DeleteTableModal({
   if (!connection || !database || !tableName) {
     return null
   }
+  const activeConnection = connection
+  const activeDatabase = database
+  const activeTableName = tableName
+  const resolvedSchemaName = schemaName || "public"
+  const resolvedDatabaseName =
+    activeConnection.databaseType === "mysql" || activeConnection.databaseType === "mariadb"
+      ? activeDatabase.name
+      : activeConnection.databaseType === "sqlserver"
+        ? activeDatabase.name
+        : activeConnection.databaseName
 
   async function handleDelete() {
     setSaving(true)
@@ -45,9 +45,9 @@ export function DeleteTableModal({
 
     try {
       const response = await fetch(
-        `/api/connections/${connection.id}/tables/${encodeURIComponent(tableName)}?databaseName=${encodeURIComponent(
-          connection.databaseType === "sqlserver" ? database.name : connection.databaseName
-        )}&schemaName=${encodeURIComponent(schemaName || "public")}`,
+        `/api/connections/${activeConnection.id}/tables/${encodeURIComponent(activeTableName)}?databaseName=${encodeURIComponent(
+          resolvedDatabaseName
+        )}&schemaName=${encodeURIComponent(resolvedSchemaName)}`,
         {
           method: "DELETE",
           headers: {
@@ -85,7 +85,7 @@ export function DeleteTableModal({
               <DialogTitle>Excluir tabela</DialogTitle>
               <DialogDescription>
                 Essa ação não pode ser desfeita. A tabela {tableName} será removida da conexão{" "}
-                {connection.connectionName}.
+                {activeConnection.connectionName}.
               </DialogDescription>
             </DialogHeader>
           </div>

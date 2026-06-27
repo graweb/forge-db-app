@@ -3,33 +3,10 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { useState } from "react"
-import type * as React from "react"
 
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu"
-import { cn } from "@/lib/utils"
-
-export type TreeViewNode = {
-  id: string
-  label: string
-  subtitle?: string
-  icon?: LucideIcon
-  badge?: React.ReactNode
-  actions?: React.ReactNode
-  contextActions?: React.ReactNode
-  children?: TreeViewNode[]
-  defaultExpanded?: boolean
-  isLeaf?: boolean
-  expandOnClick?: boolean
-  unavailable?: boolean
-  selected?: boolean
-  onSelect?: () => void
-  onDoubleClick?: () => void
-}
-
-type TreeViewProps = {
-  nodes: TreeViewNode[]
-  className?: string
-}
+import { cn } from "@/helpers/utils"
+import type { TreeViewNode, TreeViewProps } from "@/types/ui"
 
 export function TreeView({ nodes, className }: TreeViewProps) {
   return (

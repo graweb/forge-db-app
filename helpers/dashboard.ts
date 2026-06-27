@@ -8,7 +8,7 @@ import {
   type LucideIcon,
 } from "lucide-react"
 
-import type { DatabaseType, SavedConnection } from "@/lib/connections"
+import type { DatabaseType, SavedConnection } from "@/types/connections"
 
 export const databaseIcons: Record<DatabaseType, LucideIcon> = {
   mysql: Database,

@@ -2,12 +2,8 @@
 
 import * as React from "react"
 
-import { cn } from "@/lib/utils"
-
-type TabsContextValue = {
-  value: string
-  setValue: (value: string) => void
-}
+import { cn } from "@/helpers/utils"
+import type { TabsContextValue } from "@/types/ui"
 
 const TabsContext = React.createContext<TabsContextValue | null>(null)
 

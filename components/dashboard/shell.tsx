@@ -9,53 +9,34 @@ import type {
   DatabaseStructure,
   DatabaseStructureDatabase,
   SavedConnection,
-} from "@/lib/connections"
+} from "@/types/connections"
+import type {
+  DashboardEditorWorkspaceHandle,
+} from "@/types/dashboard-editor"
+import type { DashboardShellProps, ShellNotice, TableTarget } from "@/types/dashboard-shell"
 
 import { ConnectionModal } from "@/components/connections/connection-modal"
 import { CreateDatabaseModal } from "./create-database-modal"
 import { CreateTableModal } from "./create-table-modal"
 import { DeleteTableModal } from "./delete-table-modal"
 import { DeleteDatabaseModal } from "./delete-database-modal"
-import {
-  DashboardEditorWorkspace,
-  type DashboardEditorWorkspaceHandle,
-} from "./editor-workspace"
+import { DashboardEditorWorkspace } from "./editor-workspace"
 import { DashboardSidebar } from "./sidebar"
 import { DashboardStatusbar } from "./statusbar"
 
-type DashboardShellProps = {
-  connection: SavedConnection | null
-  connections: SavedConnection[]
-  connectionAvailabilityById: Record<string, ConnectionAvailability>
-  databaseStructure?: DatabaseStructure
-  databaseStructuresById: Record<string, DatabaseStructure>
-}
-
-type ShellNotice = {
-  title: string
-  message: string
-}
-
-type TableTarget = {
-  connection: SavedConnection
+function getEffectiveTableDatabaseName(
+  connection: SavedConnection,
   database: DatabaseStructureDatabase
-  schemaName: string
-  tableName: string
-  comment: string
-  columns: Array<{
-    name: string
-    dataType: string
-    size: string
-    notNull: boolean
-    primaryKey: boolean
-    autoIncrement: boolean
-    defaultValue: string
-    comment: string
-  }>
-  foreignKeys: string[]
-  indexes: string[]
-  triggers: string[]
-  functions: string[]
+) {
+  if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
+    return database.name
+  }
+
+  if (connection.databaseType === "sqlserver") {
+    return database.name
+  }
+
+  return connection.databaseName || database.name
 }
 
 export function DashboardShell({
@@ -197,10 +178,7 @@ export function DashboardShell({
                 setIsTableModalOpen(true)
               }}
               onEditTable={async (connectionToUse, databaseToUse, schemaName, tableName) => {
-                const databaseName =
-                  connectionToUse.databaseType === "sqlserver"
-                    ? databaseToUse.name
-                    : connectionToUse.databaseName
+                const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
 
                 setActivePane("editor")
                 setTableModalMode("edit")
@@ -284,10 +262,7 @@ export function DashboardShell({
                 setIsDeleteTableModalOpen(true)
               }}
               onSelect100Rows={(connectionToUse, databaseToUse, schemaName, tableName) => {
-                const databaseName =
-                  connectionToUse.databaseType === "sqlserver"
-                    ? databaseToUse.name
-                    : connectionToUse.databaseName
+                const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
 
                 const tablePath =
                   connectionToUse.databaseType === "sqlserver"
@@ -482,6 +457,10 @@ export function DashboardShell({
                 tableName: tableTarget.tableName,
                 comment: tableTarget.comment,
                 columns: tableTarget.columns,
+                foreignKeys: tableTarget.foreignKeys,
+                indexes: tableTarget.indexes,
+                triggers: tableTarget.triggers,
+                functions: tableTarget.functions,
               }
             : null
         }

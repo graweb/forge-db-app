@@ -2,8 +2,8 @@ import { DashboardShell } from "@/components/dashboard/shell"
 import {
   getDatabaseStructureLoadResult,
   listConnections,
-  type ConnectionAvailability,
 } from "@/lib/connections"
+import type { ConnectionAvailability } from "@/types/connections"
 
 export const runtime = "nodejs"
 
