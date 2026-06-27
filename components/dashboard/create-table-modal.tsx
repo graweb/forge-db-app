@@ -36,14 +36,36 @@ import type { SavedConnection, TableDetails } from "@/types/connections"
 const typeOptions = [
   { value: "INTEGER", label: "integer" },
   { value: "INT", label: "int" },
+  { value: "SMALLINT", label: "smallint" },
+  { value: "TINYINT", label: "tinyint" },
   { value: "BIGINT", label: "bigint" },
   { value: "VARCHAR", label: "varchar" },
   { value: "TEXT", label: "text" },
+  { value: "ENUM", label: "enum" },
   { value: "TIMESTAMP", label: "timestamp" },
   { value: "BOOLEAN", label: "boolean" },
   { value: "DECIMAL", label: "decimal" },
   { value: "DATE", label: "date" },
 ]
+
+function createColumnDraft(partial?: Partial<CreateTableColumnDraft>): CreateTableColumnDraft {
+  return {
+    id:
+      partial?.id ||
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`),
+    sourceName: partial?.sourceName,
+    name: partial?.name ?? "",
+    dataType: partial?.dataType ?? "VARCHAR",
+    size: partial?.size ?? "",
+    notNull: partial?.notNull ?? false,
+    primaryKey: partial?.primaryKey ?? false,
+    autoIncrement: partial?.autoIncrement ?? false,
+    defaultValue: partial?.defaultValue ?? "",
+    comment: partial?.comment ?? "",
+  }
+}
 
 function getDefaultColumn(databaseType: Exclude<SavedConnection["databaseType"], "sqlite"> | "sqlite") {
   switch (databaseType) {
@@ -107,8 +129,8 @@ function getInitialDraft(
       tableName: table.tableName,
       comment: table.comment || "",
       columns: table.columns.length
-        ? table.columns.map((column) => ({ ...column, sourceName: column.name }))
-        : [getDefaultColumn(connection.databaseType)],
+        ? table.columns.map((column) => createColumnDraft({ ...column, id: column.name, sourceName: column.name }))
+        : [createColumnDraft(getDefaultColumn(connection.databaseType))],
     }
   }
 
@@ -119,7 +141,7 @@ function getInitialDraft(
     schemaName: defaultSchema,
     tableName: "",
     comment: "",
-    columns: [getDefaultColumn(connection.databaseType)],
+    columns: [createColumnDraft(getDefaultColumn(connection.databaseType))],
   }
 }
 
@@ -149,7 +171,7 @@ function createEmptyDraft(
     schemaName: defaultSchema,
     tableName: "",
     comment: "",
-    columns: [getDefaultColumn(connection.databaseType)],
+    columns: [createColumnDraft(getDefaultColumn(connection.databaseType))],
   }
 }
 
@@ -331,24 +353,78 @@ function buildEditPreviewStatements(
 ) {
   const originalTableName = table?.tableName || form.tableName
   const originalSchemaName = table?.schemaName || form.schemaName
-  const tempTableName = `${form.tableName || originalTableName}__forge_tmp`
   const originalQualified = buildQualifiedTableName(
     connection,
     originalSchemaName,
     originalTableName,
     databaseName
   )
+  const nextQualified = buildQualifiedTableName(
+    connection,
+    form.schemaName,
+    form.tableName,
+    databaseName
+  )
+  const addedColumns = form.columns.filter(
+    (column) => column.name.trim() && !(column.sourceName || "").trim()
+  )
+  const commentChanged = form.comment.trim() !== (table?.comment ?? "").trim()
+  const tableNameChanged = form.tableName.trim() !== originalTableName.trim()
+  const requiresRebuild = hasRebuildSensitiveChanges(form, table)
+
+  if (!requiresRebuild) {
+    const statements: string[] = []
+    const statementsTarget = originalQualified
+
+    if (connection.databaseType === "sqlserver") {
+      const dbName = quotePreviewIdentifier(connection, databaseName || connection.databaseName)
+      statements.push(`USE ${dbName};`, "GO")
+    }
+
+    for (const column of addedColumns) {
+      const addColumnSql =
+        connection.databaseType === "sqlserver"
+          ? `ALTER TABLE ${statementsTarget} ADD ${buildColumnPreview(connection, column)};`
+          : `ALTER TABLE ${statementsTarget} ADD COLUMN ${buildColumnPreview(connection, column)};`
+      statements.push(addColumnSql)
+    }
+
+    if (commentChanged) {
+      if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
+        statements.push(`ALTER TABLE ${statementsTarget} COMMENT=${quotePreviewSqlLiteral(form.comment)};`)
+      } else if (connection.databaseType === "postgresql") {
+        statements.push(`COMMENT ON TABLE ${statementsTarget} IS ${quotePreviewSqlLiteral(form.comment)};`)
+      }
+    }
+
+    if (tableNameChanged) {
+      if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
+        statements.push(`RENAME TABLE ${originalQualified} TO ${nextQualified};`)
+      } else if (connection.databaseType === "sqlserver") {
+        statements.push(
+          `EXEC sp_rename ${quotePreviewSqlLiteral(`${originalSchemaName}.${originalTableName}`)}, ${quotePreviewSqlLiteral(
+            form.tableName
+          )};`
+        )
+      } else {
+        statements.push(`ALTER TABLE ${originalQualified} RENAME TO ${quotePreviewIdentifier(connection, form.tableName)};`)
+      }
+    }
+
+    return statements.length ? statements : ["-- Nenhuma alteração detectada."]
+  }
+
+  const tempTableName = `${form.tableName || originalTableName}__forge_tmp`
   const tempQualified = buildQualifiedTableName(connection, form.schemaName, tempTableName, databaseName)
   const targetColumns = form.columns.filter((column) => column.name.trim())
   const columns = targetColumns.map((column) => `  ${buildColumnPreview(connection, column)}`)
-  const insertTargetColumns = targetColumns
-    .map((column) => quotePreviewIdentifier(connection, column.name))
-    .join(", ")
-  const insertSourceColumns = targetColumns
+  const copyColumns = targetColumns.filter((column) => (column.sourceName || "").trim())
+  const insertTargetColumns = copyColumns.map((column) => quotePreviewIdentifier(connection, column.name)).join(", ")
+  const insertSourceColumns = copyColumns
     .map((column) => quotePreviewIdentifier(connection, column.sourceName || column.name))
     .join(", ")
   const statements: string[] = [
-    `-- A edição recria a tabela e copia os dados compatíveis`,
+    `-- A edição ainda precisa recriar a tabela para algumas alterações estruturais`,
   ]
 
   if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
@@ -365,7 +441,7 @@ function buildEditPreviewStatements(
       )
     }
     statements.push(`DROP TABLE ${originalQualified};`)
-    statements.push(`RENAME TABLE ${tempQualified} TO ${buildQualifiedTableName(connection, form.schemaName, form.tableName, databaseName)};`)
+    statements.push(`RENAME TABLE ${tempQualified} TO ${nextQualified};`)
     return statements
   }
 
@@ -452,27 +528,24 @@ function hasRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails
     return false
   }
 
-  if (form.tableName.trim() !== table.tableName.trim()) {
-    return true
-  }
+  const originalColumnsByName = new Map(
+    table.columns.map((column) => [column.name.trim(), column] as const)
+  )
+  const seenColumns = new Set<string>()
 
-  if (form.schemaName.trim() !== table.schemaName.trim()) {
-    return true
-  }
+  return form.columns.some((column) => {
+    const sourceName = (column.sourceName || "").trim()
 
-  if (form.comment.trim() !== table.comment.trim()) {
-    return true
-  }
+    if (!sourceName) {
+      return false
+    }
 
-  if (form.columns.length !== table.columns.length) {
-    return true
-  }
-
-  return form.columns.some((column, index) => {
-    const original = table.columns[index]
+    const original = originalColumnsByName.get(sourceName)
     if (!original) {
       return true
     }
+
+    seenColumns.add(sourceName)
 
     return (
       column.name.trim() !== original.name.trim() ||
@@ -484,7 +557,7 @@ function hasRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails
       column.defaultValue.trim() !== original.defaultValue.trim() ||
       column.comment.trim() !== original.comment.trim()
     )
-  })
+  }) || seenColumns.size !== table.columns.length
 }
 
 export function CreateTableModal({
@@ -545,17 +618,7 @@ export function CreateTableModal({
       ...current,
       columns: [
         ...current.columns,
-        {
-          sourceName: undefined,
-          name: "",
-          dataType: "VARCHAR",
-          size: "",
-          notNull: false,
-          primaryKey: false,
-          autoIncrement: false,
-          defaultValue: "",
-          comment: "",
-        },
+        createColumnDraft(),
       ],
     }))
   }
@@ -714,9 +777,9 @@ export function CreateTableModal({
 
                 {isEditMode ? (
                   <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-50">
-                    As alterações nesta tela são aplicadas por recriação da tabela e cópia dos dados
-                    compatíveis. Alterações em colunas, tipos, nomes ou ordem podem exigir revisão
-                    manual.
+                    Alterações simples como renomear a tabela ou adicionar novas colunas são
+                    aplicadas diretamente. Mudanças em colunas existentes ainda podem exigir
+                    recriação da tabela e cópia dos dados compatíveis.
                   </div>
                 ) : null}
 
@@ -769,7 +832,7 @@ export function CreateTableModal({
                           </TableHeader>
                           <TableBody>
                             {form.columns.map((column, index) => (
-                              <TableRow key={`${column.name || "column"}-${index}`} className="h-12">
+                              <TableRow key={column.id ?? column.sourceName ?? `${index}`} className="h-12">
                                 <TableCell className="py-1.5 font-medium text-white/55">{index + 1}</TableCell>
                                 <TableCell>
                                   <Input
@@ -944,7 +1007,7 @@ export function CreateTableModal({
                         <CardTitle className="text-base">SQL Preview</CardTitle>
                         <CardDescription>
                           {isEditMode
-                            ? "Prévia da recriação da tabela com a estrutura atual do formulário."
+                            ? "Prévia da atualização da tabela com a estrutura atual do formulário."
                             : "Pré-visualização do comando final será exibida aqui."}
                         </CardDescription>
                       </CardHeader>

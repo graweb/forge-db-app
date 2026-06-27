@@ -37,6 +37,14 @@ export type DatabaseStructureGroup = {
   label: string
   items: string[]
   columnsByItem?: Record<string, string[]>
+  columnsDetailsByItem?: Record<
+    string,
+    Array<{
+      name: string
+      dataType: string
+      size: string
+    }>
+  >
 }
 
 export type DatabaseStructureSchema = {

@@ -1,5 +1,11 @@
 import type { DatabaseStructureGroup } from "@/types/connections"
 
+export type ColumnDetails = {
+  name: string
+  dataType: string
+  size: string
+}
+
 export function normalizeColumnSize(length?: unknown, precision?: unknown, scale?: unknown) {
   const normalizedLength = Number(length)
   const normalizedPrecision = Number(precision)
@@ -21,9 +27,20 @@ export function normalizeColumnSize(length?: unknown, precision?: unknown, scale
 export function createGroup(
   label: string,
   items: string[],
-  columnsByItem?: Record<string, string[]>
+  columnsByItem?: Record<string, string[]>,
+  columnsDetailsByItem?: Record<string, ColumnDetails[]>
 ): DatabaseStructureGroup {
-  return columnsByItem ? { label, items, columnsByItem } : { label, items }
+  const group: DatabaseStructureGroup = { label, items }
+
+  if (columnsByItem) {
+    group.columnsByItem = columnsByItem
+  }
+
+  if (columnsDetailsByItem) {
+    group.columnsDetailsByItem = columnsDetailsByItem
+  }
+
+  return group
 }
 
 export function extractNames(rows: Array<Record<string, unknown>>) {
@@ -56,6 +73,37 @@ export function buildColumnsMap(
     }
 
     result[objectName].push(columnName)
+  }
+
+  return result
+}
+
+export function buildColumnsDetailsMap(
+  rows: Array<Record<string, unknown>>,
+  objectNames: string[],
+  objectKey: string,
+  columnKey: string,
+  dataTypeKey: string,
+  sizeKey?: string
+) {
+  const allowedObjects = new Set(objectNames)
+  const result: Record<string, ColumnDetails[]> = {}
+
+  for (const row of rows) {
+    const objectName = String(row[objectKey] ?? row[objectKey.toUpperCase()] ?? "").trim()
+    const name = String(row[columnKey] ?? row[columnKey.toUpperCase()] ?? "").trim()
+    const dataType = String(row[dataTypeKey] ?? row[dataTypeKey.toUpperCase()] ?? "").trim().toUpperCase()
+    const size = sizeKey ? String(row[sizeKey] ?? row[sizeKey.toUpperCase()] ?? "").trim() : ""
+
+    if (!objectName || !name || !allowedObjects.has(objectName)) {
+      continue
+    }
+
+    if (!result[objectName]) {
+      result[objectName] = []
+    }
+
+    result[objectName].push({ name, dataType, size })
   }
 
   return result

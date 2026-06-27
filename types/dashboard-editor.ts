@@ -13,6 +13,7 @@ export type DashboardEditorWorkspaceProps = {
 
 export type DashboardEditorWorkspaceHandle = {
   insertText: (text: string) => void
+  openSqlInNewTab: (sql: string, options?: { title?: string; databaseName?: string }) => void
   executeSqlText: (
     sql: string,
     options?: {
@@ -68,6 +69,11 @@ export type ExecuteSqlOptions = {
   title?: string
   databaseName?: string
   insertIntoEditor?: boolean
+}
+
+export type OpenSqlTabOptions = {
+  title?: string
+  databaseName?: string
 }
 
 export type StatementExecutionPlan = {

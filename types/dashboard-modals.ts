@@ -5,6 +5,7 @@ import type {
 } from "@/types/connections"
 
 export type CreateTableColumnDraft = {
+  id?: string
   sourceName?: string
   name: string
   dataType: string

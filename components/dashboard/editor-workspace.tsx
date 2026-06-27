@@ -1,9 +1,9 @@
 "use client"
 
 import dynamic from "next/dynamic"
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react"
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
 import type { ReactNode } from "react"
-import { Brackets, Filter, Play, Settings2, Sparkles, X } from "lucide-react"
+import { Plus, Filter, Play, Settings2, Sparkles, X } from "lucide-react"
 import type * as Monaco from "monaco-editor"
 
 import { Button } from "@/components/ui/button"
@@ -30,7 +30,6 @@ import type {
   ExecuteSqlOptions,
   ParsedAutocompleteSource,
   QueryExecutionTab,
-  QueryTabStatus,
   SqlAutocompleteSuggestion,
   SqlStatementBlock,
   StatementExecutionPlan,
@@ -56,6 +55,16 @@ const AUTOCOMPLETE_KIND = {
   function: 1,
   column: 3,
 } as const
+
+type EditorTab = {
+  id: string
+  title: string
+  sql: string
+}
+
+function createEditorTabId() {
+  return `editor-tab-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
 
 function getDefaultQuery(databaseType: SavedConnection["databaseType"]) {
   if (databaseType === "sqlite") {
@@ -518,7 +527,14 @@ export const DashboardEditorWorkspace = forwardRef<
   DashboardEditorWorkspaceHandle,
   DashboardEditorWorkspaceProps
 >(function DashboardEditorWorkspace({ connection, databaseStructure }, ref) {
-  const [sqlText, setSqlText] = useState(() => getDefaultQuery(connection.databaseType))
+  const [activeEditorTabId, setActiveEditorTabId] = useState(() => createEditorTabId())
+  const [editorTabs, setEditorTabs] = useState<EditorTab[]>(() => [
+    {
+      id: activeEditorTabId,
+      title: "Query 1.sql",
+      sql: getDefaultQuery(connection.databaseType),
+    },
+  ])
   const [queryTabs, setQueryTabs] = useState<QueryExecutionTab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [executionSummary, setExecutionSummary] = useState(
@@ -539,6 +555,9 @@ export const DashboardEditorWorkspace = forwardRef<
     databaseStructure,
     effectiveSelectedDatabaseName
   )
+  const activeEditorTab =
+    editorTabs.find((tab) => tab.id === activeEditorTabId) ?? editorTabs[0] ?? null
+  const activeEditorSql = activeEditorTab?.sql ?? getDefaultQuery(connection.databaseType)
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const highlightDecorationIdsRef = useRef<string[]>([])
   const executeSqlTextRef = useRef<
@@ -548,6 +567,33 @@ export const DashboardEditorWorkspace = forwardRef<
     connection,
     database: selectedDatabase,
   })
+
+  const syncEditorSql = useCallback((nextSql: string) => {
+    setEditorTabs((current) => {
+      if (!current.length) {
+        return current
+      }
+
+      return current.map((tab) =>
+        tab.id === activeEditorTabId ? { ...tab, sql: nextSql } : tab
+      )
+    })
+  }, [activeEditorTabId])
+
+  const openSqlInNewEditorTab = useCallback((nextSql: string, title?: string) => {
+    const statement = nextSql.trim()
+    if (!statement) {
+      return
+    }
+
+    const tabId = createEditorTabId()
+
+    setEditorTabs((current) => {
+      const nextTitle = title || `Query ${current.length + 1}.sql`
+      return [...current, { id: tabId, title: nextTitle, sql: statement }]
+    })
+    setActiveEditorTabId(tabId)
+  }, [])
 
   useEffect(() => {
     autocompleteContextRef.current = {
@@ -567,11 +613,7 @@ export const DashboardEditorWorkspace = forwardRef<
       }
 
       if (options?.insertIntoEditor) {
-        const editor = editorRef.current
-        if (editor) {
-          editor.setValue(statement)
-          setSqlText(statement)
-        }
+        syncEditorSql(statement)
       }
 
       setExecuting(true)
@@ -652,7 +694,7 @@ export const DashboardEditorWorkspace = forwardRef<
         setExecuting(false)
       }
     }
-  }, [connection.id, effectiveSelectedDatabaseName])
+  }, [connection.id, effectiveSelectedDatabaseName, activeEditorTabId, syncEditorSql])
 
   useImperativeHandle(
     ref,
@@ -664,8 +706,11 @@ export const DashboardEditorWorkspace = forwardRef<
         }
 
         insertTextIntoEditor(editor, text)
-        setSqlText(editor.getValue())
+        syncEditorSql(editor.getValue())
         editor.focus()
+      },
+      openSqlInNewTab: (sql: string, options?: { title?: string; databaseName?: string }) => {
+        openSqlInNewEditorTab(sql, options?.title)
       },
       executeSqlText: async (sql: string, options) => {
         await executeSqlTextRef.current(sql, options)
@@ -692,7 +737,7 @@ export const DashboardEditorWorkspace = forwardRef<
         })
       },
     }),
-    [effectiveSelectedDatabaseName]
+    [effectiveSelectedDatabaseName, openSqlInNewEditorTab, syncEditorSql]
   )
 
   const activeTab = queryTabs.find((tab) => tab.id === activeTabId) ?? queryTabs[0] ?? null
@@ -714,7 +759,7 @@ export const DashboardEditorWorkspace = forwardRef<
 
   const handleExecute = async (mode: "full" | "cursor" = "cursor") => {
     const editor = editorRef.current
-    const executionPlan = getExecutionPlan(mode, editor, sqlText)
+    const executionPlan = getExecutionPlan(mode, editor, activeEditorSql)
     const statements = executionPlan.map((item) => item.text)
 
     if (!statements.length) {
@@ -1041,15 +1086,40 @@ export const DashboardEditorWorkspace = forwardRef<
 
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="border-b border-white/10 px-4 pt-3">
-          <div className="flex items-center gap-2">
-            <div className="rounded-t-xl border border-b-0 border-white/10 bg-white/8 px-4 py-2 text-sm text-white">
-              Query 1.sql
-            </div>
-            <div className="rounded-t-xl border border-white/10 bg-white/4 px-3 py-2 text-white/40">
-              <Brackets className="size-4" />
-            </div>
+          <div className="flex items-center gap-2 overflow-x-auto">
+            {editorTabs.map((tab) => (
+              <Tab
+                key={tab.id}
+                active={tab.id === activeEditorTabId}
+                onClick={() => setActiveEditorTabId(tab.id)}
+                onClose={
+                  editorTabs.length > 1
+                    ? () => {
+                        setEditorTabs((current) => {
+                          const nextTabs = current.filter((item) => item.id !== tab.id)
+                          if (activeEditorTabId === tab.id) {
+                            const nextActive = nextTabs[nextTabs.length - 1] ?? nextTabs[0] ?? null
+                            setActiveEditorTabId(nextActive?.id ?? "")
+                          }
+                          return nextTabs
+                        })
+                      }
+                    : undefined
+                }
+              >
+                <span className="truncate">{tab.title}</span>
+              </Tab>
+            ))}
+            <button
+              type="button"
+              onClick={() => openSqlInNewEditorTab("SELECT 1;", `Query ${editorTabs.length + 1}.sql`)}
+              className="inline-flex h-9 items-center justify-center rounded-t-xl border border-white/10 bg-white/4 px-3 text-white/45 transition-colors hover:bg-white/10 hover:text-white"
+              aria-label="Nova tab"
+            >
+              <Plus className="size-4" />
+            </button>
             <div className="ml-auto text-xs text-white/45">
-              {sqlText.length.toLocaleString("pt-BR")} caracteres
+              {activeEditorSql.length.toLocaleString("pt-BR")} caracteres
             </div>
           </div>
         </div>
@@ -1059,8 +1129,8 @@ export const DashboardEditorWorkspace = forwardRef<
             <div className="h-56 min-h-0 rounded-2xl border border-white/10 bg-[#07111d] p-3 shadow-[0_16px_50px_-34px_rgba(0,0,0,0.95)]">
               <div className="h-full min-h-0 overflow-hidden rounded-xl border border-white/10 bg-[#050913]">
                 <MonacoEditor
-                  value={sqlText}
-                  onChange={(value) => setSqlText(value ?? "")}
+                  value={activeEditorSql}
+                  onChange={(value) => syncEditorSql(value ?? "")}
                   defaultLanguage="sql"
                   language="sql"
                   theme="vs-dark"

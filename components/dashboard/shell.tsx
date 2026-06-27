@@ -4,12 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { AlertTriangle } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 
-import type {
-  ConnectionAvailability,
-  DatabaseStructure,
-  DatabaseStructureDatabase,
-  SavedConnection,
-} from "@/types/connections"
+import type { DatabaseStructureDatabase, SavedConnection } from "@/types/connections"
 import type {
   DashboardEditorWorkspaceHandle,
 } from "@/types/dashboard-editor"
@@ -330,6 +325,10 @@ export function DashboardShell({
                   title: "Estrutura atualizada",
                   message: "Tabelas, campos, views e procedures foram recarregados.",
                 })
+              }}
+              onOpenSqlInNewTab={(sql, title) => {
+                setActivePane("editor")
+                editorWorkspaceRef.current?.openSqlInNewTab(sql, { title })
               }}
               onRefreshDatabaseStructure={() => {
                 router.refresh()

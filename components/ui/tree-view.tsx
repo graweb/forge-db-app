@@ -1,7 +1,6 @@
 "use client"
 
 import { ChevronDown, ChevronRight } from "lucide-react"
-import type { LucideIcon } from "lucide-react"
 import { useEffect, useState } from "react"
 
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu"
@@ -19,27 +18,23 @@ export function TreeView({ nodes, className }: TreeViewProps) {
 }
 
 function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
-  const [open, setOpen] = useState(Boolean(node.defaultExpanded))
+  const [open, setOpen] = useState(() => {
+    if (typeof window === "undefined") {
+      return Boolean(node.defaultExpanded)
+    }
+
+    const storedValue = window.sessionStorage.getItem(`forge-db:tree:${node.id}`)
+    if (storedValue === null) {
+      return Boolean(node.defaultExpanded)
+    }
+
+    return storedValue === "1"
+  })
   const hasChildren = Boolean(node.children?.length)
   const Icon = node.icon
   const canExpandOnClick = node.expandOnClick !== false
   const isUnavailable = node.unavailable === true
   const storageKey = `forge-db:tree:${node.id}`
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return
-    }
-
-    const storedValue = window.sessionStorage.getItem(storageKey)
-
-    if (storedValue === null) {
-      setOpen(Boolean(node.defaultExpanded))
-      return
-    }
-
-    setOpen(storedValue === "1")
-  }, [node.defaultExpanded, storageKey])
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -71,10 +66,13 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
   const trigger = (
     <div
       className={cn(
-        "flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-lg px-3 py-2 text-left text-sm transition-colors",
+        "flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors",
         level === 0 ? "text-white/80" : "text-white/72",
+        node.isLeaf ? "py-1.5" : "py-2",
         isUnavailable ? "cursor-not-allowed text-white/55" : "",
-        hasChildren && !node.isLeaf && canExpandOnClick
+        node.isLeaf
+          ? "cursor-pointer hover:bg-white/5 hover:text-white"
+          : hasChildren && !node.isLeaf && canExpandOnClick
           ? "hover:bg-white/5 hover:text-white"
           : isUnavailable
             ? "hover:bg-white/4 hover:text-white/75"
@@ -94,11 +92,11 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
         }}
         className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-left"
       >
-        {Icon ? <Icon className="size-4 shrink-0 text-sky-300/90" /> : null}
+        {Icon ? <Icon className="size-4 shrink-0 text-sky-300/90 transition-colors group-hover:text-sky-200" /> : null}
         <span className="min-w-0 flex-1 overflow-hidden">
           <span className="block truncate">{node.label}</span>
           {node.subtitle ? (
-            <span className="block truncate text-[11px] leading-4 text-white/40">
+            <span className="block truncate text-[11px] leading-4 text-white/40 transition-colors group-hover:text-white/65">
               {node.subtitle}
             </span>
           ) : null}
@@ -110,7 +108,7 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
 
   return (
     <div>
-      <div className="relative flex items-center gap-1">
+      <div className="group relative flex items-center gap-1">
         {node.contextActions ? (
           <ContextMenu>
             <ContextMenuTrigger asChild>{trigger}</ContextMenuTrigger>
@@ -123,7 +121,7 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
       </div>
 
       {hasChildren && open ? (
-        <div className="mt-1 space-y-1 border-l border-white/8">
+        <div className="mt-0.5 space-y-0.5 border-l border-white/8">
           {node.children?.map((child) => (
             <TreeNode key={child.id} node={child} level={level + 1} />
           ))}

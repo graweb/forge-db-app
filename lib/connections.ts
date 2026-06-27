@@ -62,7 +62,10 @@ import { buildMySqlLikeCreateTableSql } from "@/helpers/create-table/mysql"
 import { buildPostgreSqlCreateTableSql } from "@/helpers/create-table/postgres"
 import { buildSqlServerCreateTableSql } from "@/helpers/create-table/sqlserver"
 import { buildSqliteCreateTableSql } from "@/helpers/create-table/sqlite"
-import type { CreateTableColumnSpec } from "@/helpers/create-table/shared"
+import {
+  buildCreateTableColumnDefinition,
+  type CreateTableColumnSpec,
+} from "@/helpers/create-table/shared"
 import {
   createGroup,
   extractNames,
@@ -74,6 +77,7 @@ import { getPostgreSqlColumnsByItem } from "@/helpers/metadata/postgres"
 import { getSqliteColumnsByItem } from "@/helpers/metadata/sqlite"
 import {
   extractColumnsByObjectForSchema,
+  extractColumnsDetailsByObjectForSchema,
   extractNamesForSchema,
   extractSchemaNames,
 } from "@/helpers/metadata/sqlserver"
@@ -312,7 +316,6 @@ export async function createDatabase(
 ): Promise<CreateDatabaseResult> {
   const databaseName = sanitizeDatabaseIdentifier(input.databaseName)
   const charset = sanitizeCharset(input.charset) || "utf8mb4"
-  const useSsl = Boolean(connection.useSsl)
 
   if (!databaseName) {
     throw new Error("Informe um nome válido para o banco de dados.")
@@ -578,7 +581,7 @@ export async function updateTable(
   const nextTableName = sanitizeDatabaseIdentifier(input.nextTableName)
   const normalizedColumns = input.columns
     .map((column) => ({
-      sourceName: sanitizeDatabaseIdentifier(column.sourceName ?? column.name) || column.name,
+      sourceName: column.sourceName ? sanitizeDatabaseIdentifier(column.sourceName) || undefined : undefined,
       name: sanitizeDatabaseIdentifier(column.name),
       dataType: sanitizeText(column.dataType).toUpperCase(),
       size: sanitizeText(column.size),
@@ -600,6 +603,188 @@ export async function updateTable(
 
   if (!normalizedColumns.length) {
     throw new Error("Informe ao menos uma coluna válida para atualizar a tabela.")
+  }
+
+  const originalTableDetails = await getTableDetails(
+    connection,
+    normalizedDatabase,
+    normalizedSchema,
+    originalTableName
+  )
+  const originalColumnsByName = new Map(
+    originalTableDetails.columns.map((column) => [column.name.trim(), column] as const)
+  )
+  const seenColumns = new Set<string>()
+  const requiresRebuild = normalizedColumns.some((column) => {
+    const sourceName = (column.sourceName || "").trim()
+
+    if (!sourceName) {
+      return false
+    }
+
+    const original = originalColumnsByName.get(sourceName)
+    if (!original) {
+      return true
+    }
+
+    seenColumns.add(sourceName)
+
+    return (
+      column.name.trim() !== original.name.trim() ||
+      column.dataType.trim().toUpperCase() !== original.dataType.trim().toUpperCase() ||
+      column.size.trim() !== original.size.trim() ||
+      column.notNull !== original.notNull ||
+      column.primaryKey !== original.primaryKey ||
+      column.autoIncrement !== original.autoIncrement ||
+      column.defaultValue.trim() !== original.defaultValue.trim() ||
+      column.comment.trim() !== original.comment.trim()
+    )
+  }) || seenColumns.size !== originalTableDetails.columns.length
+
+  const hasTableNameChange = nextTableName !== originalTableName
+  const hasCommentChange = input.comment.trim() !== originalTableDetails.comment.trim()
+  const addedColumns = normalizedColumns.filter((column) => !column.sourceName)
+
+  if (!requiresRebuild) {
+    switch (connection.databaseType) {
+      case "mysql":
+      case "mariadb": {
+        return withMySqlLikeClient(connection, normalizedDatabase, async (client) => {
+          const qualifiedOriginal = `${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+            connection.databaseType,
+            originalTableName
+          )}`
+          const qualifiedNext = `${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+            connection.databaseType,
+            nextTableName
+          )}`
+
+          for (const column of addedColumns) {
+            await client.query(
+              `ALTER TABLE ${qualifiedOriginal} ADD COLUMN ${buildCreateTableColumnDefinition(connection, column)}`
+            )
+          }
+
+          if (hasCommentChange) {
+            await client.query(
+              `ALTER TABLE ${qualifiedOriginal} COMMENT=${quoteSqlLiteral(input.comment.trim())}`
+            )
+          }
+
+          if (hasTableNameChange) {
+            await client.query(`RENAME TABLE ${qualifiedOriginal} TO ${qualifiedNext}`)
+          }
+
+          return {
+            message: "Tabela atualizada com sucesso.",
+            details:
+              hasTableNameChange && !hasCommentChange && !addedColumns.length
+                ? `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`
+                : `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`,
+            tableName: nextTableName,
+            schemaName: normalizedSchema,
+          }
+        })
+      }
+
+      case "postgresql": {
+        return withPostgresClient(connection, normalizedDatabase || "postgres", async (client) => {
+          const qualifiedOriginal = `${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
+            "postgresql",
+            originalTableName
+          )}`
+          const quotedNextTableName = quoteIdentifier("postgresql", nextTableName)
+
+          for (const column of addedColumns) {
+            await client.query(
+              `ALTER TABLE ${qualifiedOriginal} ADD COLUMN ${buildCreateTableColumnDefinition(
+                connection,
+                column
+              )}`
+            )
+          }
+
+          if (hasCommentChange) {
+            await client.query(
+              `COMMENT ON TABLE ${qualifiedOriginal} IS ${quoteSqlLiteral(input.comment.trim())}`
+            )
+          }
+
+          if (hasTableNameChange) {
+            await client.query(`ALTER TABLE ${qualifiedOriginal} RENAME TO ${quotedNextTableName}`)
+          }
+
+          return {
+            message: "Tabela atualizada com sucesso.",
+            details:
+              hasTableNameChange && !hasCommentChange && !addedColumns.length
+                ? `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`
+                : `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`,
+            tableName: nextTableName,
+            schemaName: normalizedSchema,
+          }
+        })
+      }
+
+      case "sqlserver": {
+        return withSqlServerPool(connection, normalizedDatabase || "master", async (pool) => {
+          const qualifiedOriginal = `${quoteSqlServerIdentifier(normalizedSchema)}.${quoteSqlServerIdentifier(
+            originalTableName
+          )}`
+
+          for (const column of addedColumns) {
+            await pool.request().query(
+              `ALTER TABLE ${qualifiedOriginal} ADD ${buildCreateTableColumnDefinition(connection, column)}`
+            )
+          }
+
+          if (hasTableNameChange) {
+            await pool.request().query(
+              `EXEC sp_rename ${quoteSqlLiteral(`${normalizedSchema}.${originalTableName}`)}, ${quoteSqlLiteral(
+                nextTableName
+              )}`
+            )
+          }
+
+          return {
+            message: "Tabela atualizada com sucesso.",
+            details:
+              hasTableNameChange && !addedColumns.length
+                ? `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`
+                : `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`,
+            tableName: nextTableName,
+            schemaName: normalizedSchema,
+          }
+        })
+      }
+
+      case "sqlite": {
+        return withSqliteDatabase(connection, async (db) => {
+          const qualifiedOriginal = quoteIdentifier("sqlite", originalTableName)
+
+          for (const column of addedColumns) {
+            db.exec(`ALTER TABLE ${qualifiedOriginal} ADD COLUMN ${buildCreateTableColumnDefinition(connection, column)}`)
+          }
+
+          if (hasTableNameChange) {
+            db.exec(`ALTER TABLE ${qualifiedOriginal} RENAME TO ${quoteIdentifier("sqlite", nextTableName)}`)
+          }
+
+          return {
+            message: "Tabela atualizada com sucesso.",
+            details:
+              hasTableNameChange && !addedColumns.length
+                ? `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`
+                : `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`,
+            tableName: nextTableName,
+            schemaName: "main",
+          }
+        })
+      }
+
+      default:
+        throw new Error("Tipo de banco não suportado.")
+    }
   }
 
   switch (connection.databaseType) {
@@ -624,10 +809,9 @@ export async function updateTable(
           normalizedColumns
         )
 
-        const targetColumns = normalizedColumns.map((column) =>
-          quoteIdentifier(connection.databaseType, column.name)
-        )
-        const sourceColumns = normalizedColumns.map((column) =>
+        const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
+        const targetColumns = copyColumns.map((column) => quoteIdentifier(connection.databaseType, column.name))
+        const sourceColumns = copyColumns.map((column) =>
           quoteIdentifier(connection.databaseType, column.sourceName || column.name)
         )
 
@@ -683,8 +867,9 @@ export async function updateTable(
 
         await createPostgreSqlTable(connection, normalizedSchema, tempTableName, input.comment, normalizedColumns)
 
-        const targetColumns = normalizedColumns.map((column) => quoteIdentifier("postgresql", column.name))
-        const sourceColumns = normalizedColumns.map((column) =>
+        const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
+        const targetColumns = copyColumns.map((column) => quoteIdentifier("postgresql", column.name))
+        const sourceColumns = copyColumns.map((column) =>
           quoteIdentifier("postgresql", column.sourceName || column.name)
         )
 
@@ -732,8 +917,9 @@ export async function updateTable(
           normalizedColumns
         )
 
-        const targetColumns = normalizedColumns.map((column) => quoteSqlServerIdentifier(column.name))
-        const sourceColumns = normalizedColumns.map((column) =>
+        const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
+        const targetColumns = copyColumns.map((column) => quoteSqlServerIdentifier(column.name))
+        const sourceColumns = copyColumns.map((column) =>
           quoteSqlServerIdentifier(column.sourceName || column.name)
         )
 
@@ -784,8 +970,9 @@ export async function updateTable(
 
         await createSqliteTable(connection, tempTableName, input.comment, normalizedColumns)
 
-        const targetColumns = normalizedColumns.map((column) => quoteIdentifier("sqlite", column.name))
-        const sourceColumns = normalizedColumns.map((column) =>
+        const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
+        const targetColumns = copyColumns.map((column) => quoteIdentifier("sqlite", column.name))
+        const sourceColumns = copyColumns.map((column) =>
           quoteIdentifier("sqlite", column.sourceName || column.name)
         )
 
@@ -1541,8 +1728,13 @@ async function getSqliteStructure(connection: SavedConnection): Promise<Database
     const tableColumnsByItem = await getSqliteColumnsByItem(db, tables)
     const viewColumnsByItem = await getSqliteColumnsByItem(db, views)
     const groups = [
-      createGroup("Tabelas", tables, tableColumnsByItem),
-      createGroup("Views", views, viewColumnsByItem),
+      createGroup(
+        "Tabelas",
+        tables,
+        tableColumnsByItem.columnsByItem,
+        tableColumnsByItem.columnsDetailsByItem
+      ),
+      createGroup("Views", views, viewColumnsByItem.columnsByItem, viewColumnsByItem.columnsDetailsByItem),
       createGroup("Índices", rows.filter((row) => row.type === "index").map((row) => row.name)),
       createGroup("Funções", []),
       createGroup("Procedures", []),
@@ -1737,17 +1929,11 @@ async function buildMySqlLikeDatabaseStructure(
 
   const tableNames = extractNames(tables)
   const viewNames = extractNames(views)
+  const tableColumnsByItem = await getMySqlLikeColumnsByItem(client, databaseType, databaseName, tableNames)
+  const viewColumnsByItem = await getMySqlLikeColumnsByItem(client, databaseType, databaseName, viewNames)
   const groups = [
-    createGroup(
-      "Tabelas",
-      tableNames,
-      await getMySqlLikeColumnsByItem(client, databaseType, databaseName, tableNames)
-    ),
-    createGroup(
-      "Views",
-      viewNames,
-      await getMySqlLikeColumnsByItem(client, databaseType, databaseName, viewNames)
-    ),
+    createGroup("Tabelas", tableNames, tableColumnsByItem.columnsByItem, tableColumnsByItem.columnsDetailsByItem),
+    createGroup("Views", viewNames, viewColumnsByItem.columnsByItem, viewColumnsByItem.columnsDetailsByItem),
     createGroup("Índices", extractNames(indexes)),
     createGroup("Funções", extractNames(functions)),
     createGroup("Procedures", extractNames(procedures)),
@@ -1848,17 +2034,11 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
 
     const tableNames = extractNames(tables.rows)
     const viewNames = extractNames(views.rows)
+    const tableColumnsByItem = await getPostgreSqlColumnsByItem(client, schemaName, tableNames)
+    const viewColumnsByItem = await getPostgreSqlColumnsByItem(client, schemaName, viewNames)
     const groups = [
-      createGroup(
-        "Tabelas",
-        tableNames,
-        await getPostgreSqlColumnsByItem(client, schemaName, tableNames)
-      ),
-      createGroup(
-        "Views",
-        viewNames,
-        await getPostgreSqlColumnsByItem(client, schemaName, viewNames)
-      ),
+      createGroup("Tabelas", tableNames, tableColumnsByItem.columnsByItem, tableColumnsByItem.columnsDetailsByItem),
+      createGroup("Views", viewNames, viewColumnsByItem.columnsByItem, viewColumnsByItem.columnsDetailsByItem),
       createGroup("Índices", extractNames(indexes.rows)),
       createGroup("Funções", extractNames(functions.rows)),
       createGroup("Procedures", extractNames(procedures.rows)),
@@ -2013,9 +2193,20 @@ async function getSqlServerDatabaseStructure(
       SELECT
         s.name AS schema_name,
         o.name AS object_name,
-        c.name AS column_name
+        c.name AS column_name,
+        UPPER(t.name) AS data_type,
+        CASE
+          WHEN t.name IN ('varchar', 'nvarchar', 'char', 'nchar', 'varbinary', 'binary') AND c.max_length > 0
+            THEN CAST(CASE WHEN t.name IN ('nvarchar', 'nchar') THEN c.max_length / 2 ELSE c.max_length END AS varchar(20))
+          WHEN t.name IN ('decimal', 'numeric')
+            THEN CAST(c.precision AS varchar(20)) + ',' + CAST(c.scale AS varchar(20))
+          WHEN c.max_length > 0
+            THEN CAST(c.max_length AS varchar(20))
+          ELSE ''
+        END AS column_size
       FROM ${quotedDatabase}.sys.columns c
       INNER JOIN ${quotedDatabase}.sys.objects o ON c.object_id = o.object_id
+      INNER JOIN ${quotedDatabase}.sys.types t ON c.user_type_id = t.user_type_id
       INNER JOIN ${quotedDatabase}.sys.schemas s ON o.schema_id = s.schema_id
       WHERE o.type IN ('U', 'V')
       ORDER BY s.name, o.name, c.column_id
@@ -2037,11 +2228,13 @@ async function getSqlServerDatabaseStructure(
           label: "Tabelas",
           items: extractNamesForSchema(tables.recordset, schemaName),
           columnsByItem: extractColumnsByObjectForSchema(columns.recordset, schemaName),
+          columnsDetailsByItem: extractColumnsDetailsByObjectForSchema(columns.recordset, schemaName),
         },
         {
           label: "Views",
           items: extractNamesForSchema(views.recordset, schemaName),
           columnsByItem: extractColumnsByObjectForSchema(columns.recordset, schemaName),
+          columnsDetailsByItem: extractColumnsDetailsByObjectForSchema(columns.recordset, schemaName),
         },
         { label: "Índices", items: extractNamesForSchema(indexes.recordset, schemaName) },
         { label: "Funções", items: extractNamesForSchema(functions.recordset, schemaName) },

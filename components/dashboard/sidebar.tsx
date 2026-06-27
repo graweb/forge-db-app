@@ -3,11 +3,12 @@
 import {
   Eye,
   Database,
-  FileCode2,
   FolderGit2,
+  Hash,
   Layers3,
   Plus,
   Sigma,
+  Table,
   Table2,
   Wrench,
 } from "lucide-react"
@@ -17,12 +18,15 @@ import { Badge } from "@/components/ui/badge"
 import {
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
 } from "@/components/ui/context-menu"
 import { TreeView } from "@/components/ui/tree-view"
 
 import { getDatabaseLabel } from "@/helpers/dashboard"
+import { quoteIdentifier } from "@/helpers/connections"
 import type {
-  ConnectionAvailability,
   DatabaseStructure,
   DatabaseStructureDatabase,
   DatabaseStructureGroup,
@@ -32,7 +36,7 @@ import type { DashboardSidebarActions, DashboardSidebarProps } from "@/types/das
 import type { TreeViewNode } from "@/types/ui"
 
 const sectionIcons = {
-  Tabelas: Table2,
+  Tabelas: Table,
   Views: Eye,
   Índices: Table2,
   Procedures: Wrench,
@@ -58,6 +62,7 @@ export function DashboardSidebar({
   onRefreshStructure,
   onRefreshDatabaseStructure,
   onInsertText,
+  onOpenSqlInNewTab,
   onPreviewTable,
   onExecuteTable,
   onRunTableQuery,
@@ -77,6 +82,7 @@ export function DashboardSidebar({
     onRefreshStructure,
     onRefreshDatabaseStructure,
     onInsertText,
+    onOpenSqlInNewTab,
     onPreviewTable,
     onExecuteTable,
     onRunTableQuery,
@@ -123,16 +129,13 @@ function buildTreeNodes(
       schemas: [],
       groups: [],
     }
-    const firstDatabase: any = databaseStructure.databases[0]
+    const firstDatabase: DatabaseStructureDatabase | undefined = databaseStructure.databases[0]
     const primaryDatabase =
       firstDatabase ??
       ({
         name: getDatabaseNodeLabel(connection),
         schemas: databaseStructure.schemas,
         groups: databaseStructure.groups,
-        charset: firstDatabase?.charset,
-        collation: firstDatabase?.collation,
-        encoding: firstDatabase?.encoding,
       } as DatabaseStructureDatabase)
     const availability = actions.connectionAvailabilityById[connection.id]
     const isAvailable = availability?.available !== false
@@ -400,25 +403,62 @@ function buildGroupNode(
       )
       const tableSchemaName = connection.databaseType === "sqlite" ? "main" : schemaName
       const tableName = item
+      const columnDetails = group.columnsDetailsByItem?.[item] ?? []
+      const renderTableItemContextMenu = () => (
+        <TableItemContextMenu
+          onCreateTable={() => actions.onCreateTable(connection, database, schemaName)}
+          onEditTable={() => actions.onEditTable(connection, database, tableSchemaName, tableName)}
+          onDeleteTable={() =>
+            actions.onDeleteTable(connection, database, tableSchemaName, tableName)
+          }
+          onSelect100Rows={() =>
+            actions.onSelect100Rows(connection, database, tableSchemaName, tableName)
+          }
+          onGenerateSelectSql={() =>
+            actions.onOpenSqlInNewTab(
+              generateTableSql(connection, "select", tableReference, columnDetails),
+              `SELECT ${tableName}`
+            )
+          }
+          onGenerateInsertSql={() =>
+            actions.onOpenSqlInNewTab(
+              generateTableSql(connection, "insert", tableReference, columnDetails),
+              `INSERT ${tableName}`
+            )
+          }
+          onGenerateUpdateSql={() =>
+            actions.onOpenSqlInNewTab(
+              generateTableSql(connection, "update", tableReference, columnDetails),
+              `UPDATE ${tableName}`
+            )
+          }
+          onGenerateDeleteSql={() =>
+            actions.onOpenSqlInNewTab(
+              generateTableSql(connection, "delete", tableReference, columnDetails),
+              `DELETE ${tableName}`
+            )
+          }
+        />
+      )
+      const columnChildren =
+        isTableGroup && columnDetails.length
+          ? columnDetails.map((column) => ({
+              id: `${connection.id}-${schemaName}-${group.label}-${item}-column-${column.name}`,
+              label: column.name,
+              subtitle: `${column.dataType.toLowerCase()}${column.size ? `(${column.size})` : ""}`,
+              icon: Hash,
+              isLeaf: true,
+              contextActions: renderTableItemContextMenu(),
+            }))
+          : undefined
 
       return {
         id: `${connection.id}-${schemaName}-${group.label}-${item}`,
         label: item,
-        icon: FileCode2,
-        isLeaf: true,
+        icon: Table2,
+        children: columnChildren,
         onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
-        contextActions: isTableGroup ? (
-          <TableItemContextMenu
-            onCreateTable={() => actions.onCreateTable(connection, database, schemaName)}
-            onEditTable={() => actions.onEditTable(connection, database, tableSchemaName, tableName)}
-            onDeleteTable={() =>
-              actions.onDeleteTable(connection, database, tableSchemaName, tableName)
-            }
-            onSelect100Rows={() =>
-              actions.onSelect100Rows(connection, database, tableSchemaName, tableName)
-            }
-          />
-        ) : (
+        contextActions: isTableGroup ? renderTableItemContextMenu() : (
           <TreeContextMenu
             objectPath={tableReference}
             onInsertText={() => actions.onInsertText(`SELECT *\nFROM ${tableReference};`)}
@@ -463,11 +503,19 @@ function TableItemContextMenu({
   onEditTable,
   onDeleteTable,
   onSelect100Rows,
+  onGenerateSelectSql,
+  onGenerateInsertSql,
+  onGenerateUpdateSql,
+  onGenerateDeleteSql,
 }: {
   onCreateTable: () => void
   onEditTable: () => void
   onDeleteTable: () => void
   onSelect100Rows: () => void
+  onGenerateSelectSql: () => void
+  onGenerateInsertSql: () => void
+  onGenerateUpdateSql: () => void
+  onGenerateDeleteSql: () => void
 }) {
   return (
     <div className="min-w-52 p-1">
@@ -476,6 +524,15 @@ function TableItemContextMenu({
       <ContextMenuItem onSelect={onDeleteTable}>Excluir tabela</ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={onSelect100Rows}>Selecionar 100 linhas</ContextMenuItem>
+      <ContextMenuSub>
+        <ContextMenuSubTrigger>Gerar SQL</ContextMenuSubTrigger>
+        <ContextMenuSubContent>
+          <ContextMenuItem onSelect={onGenerateSelectSql}>select</ContextMenuItem>
+          <ContextMenuItem onSelect={onGenerateInsertSql}>insert</ContextMenuItem>
+          <ContextMenuItem onSelect={onGenerateUpdateSql}>update</ContextMenuItem>
+          <ContextMenuItem onSelect={onGenerateDeleteSql}>delete</ContextMenuItem>
+        </ContextMenuSubContent>
+      </ContextMenuSub>
     </div>
   )
 }
@@ -569,6 +626,30 @@ function getTableReference(
   }
 
   return `${normalizedSchema}.${normalizedTable}`
+}
+
+function generateTableSql(
+  connection: SavedConnection,
+  action: "select" | "insert" | "update" | "delete",
+  tableReference: string,
+  columns: Array<{ name: string; dataType: string; size: string }>
+) {
+  const columnNames = columns.map((column) => quoteIdentifier(connection.databaseType, column.name))
+
+  switch (action) {
+    case "select":
+      return `SELECT ${columnNames.length ? columnNames.join(", ") : "*"}\nFROM ${tableReference};`
+    case "insert":
+      return `INSERT INTO ${tableReference} (${columnNames.join(", ")})\nVALUES (${columns
+        .map((_, index) => `value${index + 1}`)
+        .join(", ")});`
+    case "update":
+      return `UPDATE ${tableReference}\nSET ${columnNames
+        .map((name, index) => `${name} = value${index + 1}`)
+        .join(", ")}\nWHERE condition;`
+    case "delete":
+      return `DELETE FROM ${tableReference}\nWHERE condition;`
+  }
 }
 
 function formatSqlServerIdentifier(value: string) {

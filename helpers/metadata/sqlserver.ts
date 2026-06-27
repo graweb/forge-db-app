@@ -47,3 +47,39 @@ export function extractColumnsByObjectForSchema(rows: Array<Record<string, unkno
 
   return result
 }
+
+export function extractColumnsDetailsByObjectForSchema(
+  rows: Array<Record<string, unknown>>,
+  schemaName: string
+) {
+  const result: Record<string, Array<{ name: string; dataType: string; size: string }>> = {}
+
+  for (const row of rows) {
+    const rowSchema = String(
+      row.schema_name ?? row.SCHEMA_NAME ?? row.table_schema ?? row.TABLE_SCHEMA ?? ""
+    )
+    if (rowSchema !== schemaName) {
+      continue
+    }
+
+    const objectName = String(
+      row.object_name ?? row.OBJECT_NAME ?? row.table_name ?? row.TABLE_NAME ?? ""
+    )
+    const columnName = String(row.column_name ?? row.COLUMN_NAME ?? row.name ?? row.NAME ?? "").trim()
+    const dataType = String(row.data_type ?? row.DATA_TYPE ?? "").trim().toUpperCase()
+    const size = String(row.column_size ?? row.COLUMN_SIZE ?? row.max_length ?? row.MAX_LENGTH ?? "")
+      .trim()
+
+    if (!objectName || !columnName) {
+      continue
+    }
+
+    if (!result[objectName]) {
+      result[objectName] = []
+    }
+
+    result[objectName].push({ name: columnName, dataType, size })
+  }
+
+  return result
+}
