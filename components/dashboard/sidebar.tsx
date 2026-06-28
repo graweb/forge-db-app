@@ -34,6 +34,7 @@ import type {
 } from "@/types/connections"
 import type { DashboardSidebarActions, DashboardSidebarProps } from "@/types/dashboard-sidebar"
 import type { TreeViewNode } from "@/types/ui"
+import { cn } from "@/helpers/utils"
 
 const sectionIcons = {
   Tabelas: Table,
@@ -92,21 +93,24 @@ export function DashboardSidebar({
     <aside className="flex h-full min-h-0 flex-col overflow-hidden border-r border-white/10 bg-[#07111d]/95">
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
         <section className="space-y-3">
-          <Button
-            type="button"
-            size="sm"
-            onClick={onAddConnection}
-            className="w-full justify-start gap-2 border border-white/10 bg-white/4 text-white hover:bg-white/8"
-            variant="outline"
-          >
-            <Plus className="size-4" />
-            Adicionar conexão
-          </Button>
+          
 
           <div className="flex items-center justify-between text-xs uppercase tracking-[0.24em] text-white/40">
-            <span>Estrutura</span>
-            <Badge className="border-white/10 bg-white/5 text-white/65">live</Badge>
+            <span>Conexões</span>
+            <Badge className="border-white/10 bg-white/5 text-white/65">Forge DB</Badge>
           </div>
+
+          <Button
+            type="button"
+            onClick={onAddConnection}
+            className={cn(
+              "group flex w-full min-h-16 flex-col items-center justify-center rounded-xl border bg-white/3 px-3 py-4 text-white transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/6",
+              "border-white/10"
+            )}
+          >
+            <Plus className="size-6" />
+            Adicionar conexão
+          </Button>
 
           <div className="rounded-2xl border border-white/8 bg-white/2 p-2">
             <TreeView nodes={treeNodes} />
