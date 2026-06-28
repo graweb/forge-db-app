@@ -46,7 +46,12 @@ function TreeNode({
   level: number
   resetToken: number
 }) {
+  const isUnavailable = node.unavailable === true
   const [open, setOpen] = useState(() => {
+    if (isUnavailable) {
+      return false
+    }
+
     if (typeof window === "undefined") {
       return Boolean(node.defaultExpanded)
     }
@@ -61,7 +66,6 @@ function TreeNode({
   const hasChildren = Boolean(node.children?.length)
   const Icon = node.icon
   const canExpandOnClick = node.expandOnClick !== false
-  const isUnavailable = node.unavailable === true
   const storageKey = `forge-db:tree:${node.id}`
   const previousResetToken = useRef(resetToken)
 
@@ -70,8 +74,8 @@ function TreeNode({
       return
     }
 
-    window.sessionStorage.setItem(storageKey, open ? "1" : "0")
-  }, [open, storageKey])
+    window.sessionStorage.setItem(storageKey, !isUnavailable && open ? "1" : "0")
+  }, [isUnavailable, open, storageKey])
 
   useEffect(() => {
     if (previousResetToken.current === resetToken) {
@@ -82,21 +86,32 @@ function TreeNode({
     previousResetToken.current = resetToken
   }, [node.defaultExpanded, resetToken])
 
-  const chevron = hasChildren && !node.isLeaf && !isUnavailable ? (
-    <button
-      type="button"
-      aria-label={open ? "Recolher item" : "Expandir item"}
-      onClick={(event) => {
-        event.stopPropagation()
+  const effectiveOpen = !isUnavailable && open
 
-        if (canExpandOnClick) {
-          setOpen((current) => !current)
-        }
-      }}
-      className="flex size-4 items-center justify-center rounded text-white/40 transition-colors hover:text-white"
-    >
-      {open ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-    </button>
+  const chevron = hasChildren && !node.isLeaf ? (
+    isUnavailable ? (
+      <span
+        aria-hidden="true"
+        className="pointer-events-none flex size-4 items-center justify-center rounded text-white/20"
+      >
+        <ChevronRight className="size-4" />
+      </span>
+    ) : (
+      <button
+        type="button"
+        aria-label={effectiveOpen ? "Recolher item" : "Expandir item"}
+        onClick={(event) => {
+          event.stopPropagation()
+
+          if (canExpandOnClick) {
+            setOpen((current) => !current)
+          }
+        }}
+        className="flex size-4 items-center justify-center rounded text-white/40 transition-colors hover:text-white"
+      >
+        {effectiveOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+      </button>
+    )
   ) : (
     <span className="flex size-4 items-center justify-center text-white/40" />
   )
@@ -107,7 +122,7 @@ function TreeNode({
         "flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors",
         level === 0 ? "text-white/80" : "text-white/72",
         node.isLeaf ? "py-1.5" : "py-2",
-        isUnavailable ? "cursor-not-allowed text-white/55" : "",
+        isUnavailable ? "cursor-not-allowed select-none text-white/55" : "",
         node.isLeaf
           ? "cursor-pointer hover:bg-white/5 hover:text-white"
           : hasChildren && !node.isLeaf && canExpandOnClick
@@ -158,7 +173,7 @@ function TreeNode({
         {node.actions ? <div className="ml-auto flex items-center gap-1">{node.actions}</div> : null}
       </div>
 
-      {hasChildren && open ? (
+      {hasChildren && effectiveOpen ? (
         <div className="mt-0.5 space-y-0.5 border-l border-white/8">
           {node.children?.map((child) => (
             <TreeNode key={child.id} node={child} level={level + 1} resetToken={resetToken} />

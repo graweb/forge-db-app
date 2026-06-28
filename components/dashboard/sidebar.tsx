@@ -8,9 +8,9 @@ import {
   Layers3,
   Plus,
   RefreshCw,
+  FileCode,
   Sigma,
   Table,
-  Table2,
   Wrench,
 } from "lucide-react"
 
@@ -40,7 +40,7 @@ import { cn } from "@/helpers/utils"
 const sectionIcons = {
   Tabelas: Table,
   Views: Eye,
-  Índices: Table2,
+  Índices: FileCode,
   Procedures: Wrench,
   Funções: Sigma,
 }
@@ -396,7 +396,7 @@ function buildGroupNode(
   schemaName: string,
   isAvailable = actions.connectionAvailabilityById[connection.id]?.available !== false
 ): TreeViewNode {
-  const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? Table2
+  const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? FileCode
   const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
   const isTableGroup = group.label === "Tabelas"
 
@@ -474,7 +474,7 @@ function buildGroupNode(
       return {
         id: `${connection.id}-${schemaName}-${group.label}-${item}`,
         label: item,
-        icon: Table2,
+        icon: FileCode,
         children: columnChildren,
         onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
         contextActions: isTableGroup ? renderTableItemContextMenu() : (
