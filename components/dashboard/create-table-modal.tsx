@@ -42,11 +42,46 @@ const typeOptions = [
   { value: "VARCHAR", label: "varchar" },
   { value: "TEXT", label: "text" },
   { value: "ENUM", label: "enum" },
+  { value: "JSON", label: "json" },
+  { value: "BLOB", label: "blob" },
   { value: "TIMESTAMP", label: "timestamp" },
   { value: "BOOLEAN", label: "boolean" },
   { value: "DECIMAL", label: "decimal" },
+  { value: "FLOAT", label: "float" },
+  { value: "DOUBLE", label: "double" },
   { value: "DATE", label: "date" },
 ]
+
+function getColumnSizeConfig(dataType: string) {
+  switch (dataType.trim().toUpperCase()) {
+    case "ENUM":
+      return {
+        placeholder: "'ativo', 'inativo'",
+        defaultValue: "",
+        disabled: false,
+      }
+    case "DECIMAL":
+    case "FLOAT":
+    case "DOUBLE":
+      return {
+        placeholder: "10,2",
+        defaultValue: "10,2",
+        disabled: false,
+      }
+    case "BOOLEAN":
+      return {
+        placeholder: "",
+        defaultValue: "",
+        disabled: true,
+      }
+    default:
+      return {
+        placeholder: "100",
+        defaultValue: "",
+        disabled: false,
+      }
+  }
+}
 
 function createColumnDraft(partial?: Partial<CreateTableColumnDraft>): CreateTableColumnDraft {
   return {
@@ -228,7 +263,10 @@ function quotePreviewSqlLiteral(value: string) {
 function buildColumnPreview(connection: SavedConnection, column: CreateTableColumnDraft) {
   const parts = [quotePreviewIdentifier(connection, column.name)]
   const typeWithSize =
-    column.size && /^(CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER)$/.test(column.dataType)
+    column.size &&
+    /^(CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER|ENUM|FLOAT|DOUBLE)$/.test(
+      column.dataType
+    )
       ? `${column.dataType}(${column.size})`
       : column.dataType
 
@@ -659,7 +697,15 @@ export function CreateTableModal({
     setForm((current) => ({
       ...current,
       columns: current.columns.map((column, currentIndex) =>
-        currentIndex === index ? { ...column, [field]: value } : column
+        currentIndex === index
+          ? {
+              ...column,
+              [field]: value,
+              ...(field === "dataType" && typeof value === "string"
+                ? { size: getColumnSizeConfig(value).defaultValue }
+                : {}),
+            }
+          : column
       ),
     }))
   }
@@ -771,7 +817,7 @@ export function CreateTableModal({
           <div className="flex-1 overflow-y-auto px-6 py-5">
             <Card className="border-white/10 bg-white/5">
               <CardHeader className="pb-4">
-                <CardTitle className="text-base">Detalhes da tabela</CardTitle>
+                <CardTitle className="text-base text-white">Detalhes da tabela</CardTitle>
                 <CardDescription>Defina schema, nome e comentário antes de montar as colunas.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -863,7 +909,7 @@ export function CreateTableModal({
                   <TabsContent value="columns">
                     <Card className="border-white/10 bg-white/5">
                       <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Colunas da Tabela</CardTitle>
+                        <CardTitle className="text-base text-white">Colunas da Tabela</CardTitle>
                         <CardDescription>
                           Estruture os campos principais antes de salvar a nova tabela.
                         </CardDescription>
@@ -885,104 +931,111 @@ export function CreateTableModal({
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {form.columns.map((column, index) => (
-                              <TableRow key={column.id ?? column.sourceName ?? `${index}`} className="h-12">
-                                <TableCell className="py-1.5 font-medium text-white/55">{index + 1}</TableCell>
-                                <TableCell>
-                                  <Input
-                                    value={column.name}
-                                    onChange={(event) => updateColumn(index, "name", event.target.value)}
-                                    placeholder="nome"
-                                    className="h-9 w-full"
-                                  />
-                                </TableCell>
-                                <TableCell>
-                                  <Select
-                                    value={column.dataType}
-                                    onValueChange={(value) => updateColumn(index, "dataType", value)}
-                                  >
-                                    <SelectTrigger className="h-9 w-32 shrink-0">
-                                      <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectGroup>
-                                        {typeOptions.map((option) => (
-                                          <SelectItem key={option.value} value={option.value}>
-                                            {option.label}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectGroup>
-                                    </SelectContent>
-                                  </Select>
-                                </TableCell>
-                                <TableCell>
-                                  <Input
-                                    value={column.size}
-                                    onChange={(event) => updateColumn(index, "size", event.target.value)}
-                                    placeholder="100"
-                                    className="h-9"
-                                  />
-                                </TableCell>
-                                <TableCell>
-                                  <Input
-                                    value={column.defaultValue}
-                                    onChange={(event) =>
-                                      updateColumn(index, "defaultValue", event.target.value)
-                                    }
-                                    placeholder="default"
-                                    className="h-9"
-                                  />
-                                </TableCell>
-                                <TableCell>
-                                  <Input
-                                    value={column.comment}
-                                    onChange={(event) => updateColumn(index, "comment", event.target.value)}
-                                    placeholder="Comentário"
-                                    className="h-9 w-full"
-                                  />
-                                </TableCell>
-                                <TableCell className="text-center">
-                                  <div className="flex justify-center">
-                                    <Checkbox
-                                      checked={column.notNull}
-                                      onChange={(event) =>
-                                        updateColumn(index, "notNull", event.currentTarget.checked)
-                                      }
+                            {form.columns.map((column, index) => {
+                              const sizeConfig = getColumnSizeConfig(column.dataType)
+
+                              return (
+                                <TableRow key={column.id ?? column.sourceName ?? `${index}`} className="h-12">
+                                  <TableCell className="py-1.5 font-medium text-white/55">
+                                    {index + 1}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Input
+                                      value={column.name}
+                                      onChange={(event) => updateColumn(index, "name", event.target.value)}
+                                      placeholder="nome"
+                                      className="h-9 w-full"
                                     />
-                                  </div>
-                                </TableCell>
-                                <TableCell className="text-center">
-                                  <div className="flex justify-center">
-                                    <Checkbox
-                                      checked={column.primaryKey}
-                                      onChange={(event) =>
-                                        updateColumn(index, "primaryKey", event.currentTarget.checked)
-                                      }
+                                  </TableCell>
+                                  <TableCell>
+                                    <Select
+                                      value={column.dataType}
+                                      onValueChange={(value) => updateColumn(index, "dataType", value)}
+                                    >
+                                      <SelectTrigger className="h-9 w-32 shrink-0">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectGroup>
+                                          {typeOptions.map((option) => (
+                                            <SelectItem key={option.value} value={option.value}>
+                                              {option.label}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectGroup>
+                                      </SelectContent>
+                                    </Select>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Input
+                                      value={column.size}
+                                      onChange={(event) => updateColumn(index, "size", event.target.value)}
+                                      placeholder={sizeConfig.placeholder}
+                                      disabled={sizeConfig.disabled}
+                                      className="h-9"
                                     />
-                                  </div>
-                                </TableCell>
-                                <TableCell className="text-center">
-                                  <div className="flex justify-center">
-                                    <Checkbox
-                                      checked={column.autoIncrement}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Input
+                                      value={column.defaultValue}
                                       onChange={(event) =>
-                                        updateColumn(index, "autoIncrement", event.currentTarget.checked)
+                                        updateColumn(index, "defaultValue", event.target.value)
                                       }
+                                      placeholder="default"
+                                      className="h-9"
                                     />
-                                  </div>
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  <button
-                                    type="button"
-                                    onClick={() => removeColumn(index)}
-                                    className="inline-flex size-8 items-center justify-center rounded-lg text-white/40 transition-colors hover:bg-white/5 hover:text-rose-300"
-                                    aria-label="Remover coluna"
-                                  >
-                                    <Trash2 className="size-4" />
-                                  </button>
-                                </TableCell>
-                              </TableRow>
-                            ))}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Input
+                                      value={column.comment}
+                                      onChange={(event) => updateColumn(index, "comment", event.target.value)}
+                                      placeholder="Comentário"
+                                      className="h-9 w-full"
+                                    />
+                                  </TableCell>
+                                  <TableCell className="text-center">
+                                    <div className="flex justify-center">
+                                      <Checkbox
+                                        checked={column.notNull}
+                                        onChange={(event) =>
+                                          updateColumn(index, "notNull", event.currentTarget.checked)
+                                        }
+                                      />
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-center">
+                                    <div className="flex justify-center">
+                                      <Checkbox
+                                        checked={column.primaryKey}
+                                        onChange={(event) =>
+                                          updateColumn(index, "primaryKey", event.currentTarget.checked)
+                                        }
+                                      />
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-center">
+                                    <div className="flex justify-center">
+                                      <Checkbox
+                                        checked={column.autoIncrement}
+                                        onChange={(event) =>
+                                          updateColumn(index, "autoIncrement", event.currentTarget.checked)
+                                        }
+                                      />
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => removeColumn(index)}
+                                      className="inline-flex size-8 items-center justify-center rounded-lg text-white/40 transition-colors hover:bg-white/5 hover:text-rose-300"
+                                      aria-label="Remover coluna"
+                                    >
+                                      <Trash2 className="size-4" />
+                                    </button>
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })}
                           </TableBody>
                         </Table>
                       </CardContent>

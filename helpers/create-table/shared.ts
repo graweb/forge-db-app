@@ -33,7 +33,8 @@ export function buildCreateTableColumnDefinition(
   const parts = [columnName]
   const baseType = column.dataType
   const typeWithSize =
-    column.size && /^(CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER)$/.test(baseType)
+    column.size &&
+    /^(CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER|ENUM|FLOAT|DOUBLE)$/.test(baseType)
       ? `${baseType}(${column.size})`
       : baseType
 
