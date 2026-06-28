@@ -11,6 +11,7 @@ import {
   FileCode,
   Sigma,
   Table,
+  Table2,
   Wrench,
 } from "lucide-react"
 
@@ -474,7 +475,7 @@ function buildGroupNode(
       return {
         id: `${connection.id}-${schemaName}-${group.label}-${item}`,
         label: item,
-        icon: FileCode,
+        icon: Table2,
         children: columnChildren,
         onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
         contextActions: isTableGroup ? renderTableItemContextMenu() : (

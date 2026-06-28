@@ -615,7 +615,7 @@ export async function updateTable(
     originalTableDetails.columns.map((column) => [column.name.trim(), column] as const)
   )
   const seenColumns = new Set<string>()
-  const requiresRebuild = normalizedColumns.some((column) => {
+  const changedColumns = normalizedColumns.some((column) => {
     const sourceName = (column.sourceName || "").trim()
 
     if (!sourceName) {
@@ -639,7 +639,13 @@ export async function updateTable(
       column.defaultValue.trim() !== original.defaultValue.trim() ||
       column.comment.trim() !== original.comment.trim()
     )
-  }) || seenColumns.size !== originalTableDetails.columns.length
+  })
+  const removedColumns = originalTableDetails.columns.filter(
+    (column) => !seenColumns.has(column.name.trim())
+  )
+  const requiresRebuild =
+    changedColumns ||
+    (connection.databaseType === "sqlite" && removedColumns.length > 0)
 
   const hasTableNameChange = nextTableName !== originalTableName
   const hasCommentChange = input.comment.trim() !== originalTableDetails.comment.trim()
@@ -658,6 +664,15 @@ export async function updateTable(
             connection.databaseType,
             nextTableName
           )}`
+
+          for (const column of removedColumns) {
+            await client.query(
+              `ALTER TABLE ${qualifiedOriginal} DROP COLUMN ${quoteIdentifier(
+                connection.databaseType,
+                column.name
+              )}`
+            )
+          }
 
           for (const column of addedColumns) {
             await client.query(
@@ -695,6 +710,15 @@ export async function updateTable(
           )}`
           const quotedNextTableName = quoteIdentifier("postgresql", nextTableName)
 
+          for (const column of removedColumns) {
+            await client.query(
+              `ALTER TABLE ${qualifiedOriginal} DROP COLUMN ${quoteIdentifier(
+                "postgresql",
+                column.name
+              )}`
+            )
+          }
+
           for (const column of addedColumns) {
             await client.query(
               `ALTER TABLE ${qualifiedOriginal} ADD COLUMN ${buildCreateTableColumnDefinition(
@@ -731,6 +755,16 @@ export async function updateTable(
           const qualifiedOriginal = `${quoteSqlServerIdentifier(normalizedSchema)}.${quoteSqlServerIdentifier(
             originalTableName
           )}`
+
+          if (removedColumns.length) {
+            await pool
+              .request()
+              .query(
+                `ALTER TABLE ${qualifiedOriginal} DROP COLUMN ${removedColumns
+                  .map((column) => quoteSqlServerIdentifier(column.name))
+                  .join(", ")}`
+              )
+          }
 
           for (const column of addedColumns) {
             await pool.request().query(

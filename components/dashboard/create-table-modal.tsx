@@ -370,7 +370,18 @@ function buildEditPreviewStatements(
   )
   const commentChanged = form.comment.trim() !== (table?.comment ?? "").trim()
   const tableNameChanged = form.tableName.trim() !== originalTableName.trim()
-  const requiresRebuild = hasRebuildSensitiveChanges(form, table)
+  const removedColumns = table
+    ? table.columns.filter(
+        (column) =>
+          !form.columns.some(
+            (nextColumn) => (nextColumn.sourceName || "").trim() === column.name.trim()
+          )
+      )
+    : []
+  const rebuildSensitiveChanges = hasRebuildSensitiveChanges(form, table)
+  const requiresRebuild =
+    rebuildSensitiveChanges &&
+    !(removedColumns.length > 0 && !hasOnlyRebuildSensitiveChanges(form, table))
 
   if (!requiresRebuild) {
     const statements: string[] = []
@@ -395,6 +406,12 @@ function buildEditPreviewStatements(
       } else if (connection.databaseType === "postgresql") {
         statements.push(`COMMENT ON TABLE ${statementsTarget} IS ${quotePreviewSqlLiteral(form.comment)};`)
       }
+    }
+
+    for (const column of removedColumns) {
+      statements.push(
+        `ALTER TABLE ${statementsTarget} DROP COLUMN ${quotePreviewIdentifier(connection, column.name)};`
+      )
     }
 
     if (tableNameChanged) {
@@ -558,6 +575,40 @@ function hasRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails
       column.comment.trim() !== original.comment.trim()
     )
   }) || seenColumns.size !== table.columns.length
+}
+
+function hasOnlyRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails | null) {
+  if (!table) {
+    return false
+  }
+
+  const originalColumnsByName = new Map(
+    table.columns.map((column) => [column.name.trim(), column] as const)
+  )
+
+  return form.columns.some((column) => {
+    const sourceName = (column.sourceName || "").trim()
+
+    if (!sourceName) {
+      return false
+    }
+
+    const original = originalColumnsByName.get(sourceName)
+    if (!original) {
+      return false
+    }
+
+    return (
+      column.name.trim() !== original.name.trim() ||
+      column.dataType.trim().toUpperCase() !== original.dataType.trim().toUpperCase() ||
+      column.size.trim() !== original.size.trim() ||
+      column.notNull !== original.notNull ||
+      column.primaryKey !== original.primaryKey ||
+      column.autoIncrement !== original.autoIncrement ||
+      column.defaultValue.trim() !== original.defaultValue.trim() ||
+      column.comment.trim() !== original.comment.trim()
+    )
+  })
 }
 
 export function CreateTableModal({
@@ -819,14 +870,14 @@ export function CreateTableModal({
                           <TableHeader>
                             <TableRow>
                               <TableHead className="w-12">#</TableHead>
-                              <TableHead>Nome da Coluna</TableHead>
-                              <TableHead>Tipo de Dados</TableHead>
+                              <TableHead>Nome</TableHead>
+                              <TableHead>Tipo</TableHead>
                               <TableHead className="w-32">Tamanho</TableHead>
                               <TableHead className="w-36">Default</TableHead>
                               <TableHead className="w-[18rem]">Comentário</TableHead>
                               <TableHead className="w-24 text-center">Not Null</TableHead>
                               <TableHead className="w-20 text-center">PK</TableHead>
-                              <TableHead className="w-28 text-center">Auto Increment</TableHead>
+                              <TableHead className="w-28 text-center">AI</TableHead>
                               <TableHead className="w-14" />
                             </TableRow>
                           </TableHeader>
@@ -839,7 +890,7 @@ export function CreateTableModal({
                                     value={column.name}
                                     onChange={(event) => updateColumn(index, "name", event.target.value)}
                                     placeholder="nome"
-                                    className="h-9"
+                                    className="h-9 w-36"
                                   />
                                 </TableCell>
                                 <TableCell>
