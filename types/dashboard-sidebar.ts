@@ -11,6 +11,8 @@ export type DashboardSidebarProps = {
   connectionAvailabilityById: Record<string, ConnectionAvailability>
   databaseStructuresById: Record<string, DatabaseStructure>
   onAddConnection: () => void
+  onRefreshConnections: () => void
+  treeResetToken: number
   onCreateDatabase: (connection: SavedConnection) => void
   onCreateTable: (
     connection: SavedConnection,

@@ -7,6 +7,7 @@ import {
   Hash,
   Layers3,
   Plus,
+  RefreshCw,
   Sigma,
   Table,
   Table2,
@@ -50,6 +51,8 @@ export function DashboardSidebar({
   connectionAvailabilityById,
   databaseStructuresById,
   onAddConnection,
+  onRefreshConnections,
+  treeResetToken,
   onCreateDatabase,
   onCreateTable,
   onEditTable,
@@ -112,8 +115,20 @@ export function DashboardSidebar({
             Adicionar conexão
           </Button>
 
+          <Button
+            type="button"
+            onClick={onRefreshConnections}
+            className={cn(
+              "group flex w-full min-h-14 items-center justify-center gap-2 rounded-xl border bg-white/2 px-3 py-3 text-sm text-white/85 transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/5 hover:text-white",
+              "border-white/10"
+            )}
+          >
+            <RefreshCw className="size-4 transition-transform duration-300 group-hover:rotate-180" />
+            Atualizar conexões
+          </Button>
+
           <div className="rounded-2xl border border-white/8 bg-white/2 p-2">
-            <TreeView nodes={treeNodes} />
+            <TreeView nodes={treeNodes} resetToken={treeResetToken} />
           </div>
         </section>
       </div>

@@ -1,23 +1,51 @@
 "use client"
 
 import { ChevronDown, ChevronRight } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { cn } from "@/helpers/utils"
 import type { TreeViewNode, TreeViewProps } from "@/types/ui"
 
-export function TreeView({ nodes, className }: TreeViewProps) {
+export function TreeView({ nodes, className, resetToken = 0 }: TreeViewProps) {
+  const previousResetToken = useRef(resetToken)
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    if (previousResetToken.current !== resetToken) {
+      for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
+        const key = window.sessionStorage.key(index)
+
+        if (key?.startsWith("forge-db:tree:")) {
+          window.sessionStorage.removeItem(key)
+        }
+      }
+
+      previousResetToken.current = resetToken
+    }
+  }, [resetToken])
+
   return (
     <div className={cn("space-y-1", className)}>
       {nodes.map((node) => (
-        <TreeNode key={node.id} node={node} level={0} />
+        <TreeNode key={node.id} node={node} level={0} resetToken={resetToken} />
       ))}
     </div>
   )
 }
 
-function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
+function TreeNode({
+  node,
+  level,
+  resetToken,
+}: {
+  node: TreeViewNode
+  level: number
+  resetToken: number
+}) {
   const [open, setOpen] = useState(() => {
     if (typeof window === "undefined") {
       return Boolean(node.defaultExpanded)
@@ -35,6 +63,7 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
   const canExpandOnClick = node.expandOnClick !== false
   const isUnavailable = node.unavailable === true
   const storageKey = `forge-db:tree:${node.id}`
+  const previousResetToken = useRef(resetToken)
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -43,6 +72,15 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
 
     window.sessionStorage.setItem(storageKey, open ? "1" : "0")
   }, [open, storageKey])
+
+  useEffect(() => {
+    if (previousResetToken.current === resetToken) {
+      return
+    }
+
+    setOpen(Boolean(node.defaultExpanded))
+    previousResetToken.current = resetToken
+  }, [node.defaultExpanded, resetToken])
 
   const chevron = hasChildren && !node.isLeaf && !isUnavailable ? (
     <button
@@ -123,7 +161,7 @@ function TreeNode({ node, level }: { node: TreeViewNode; level: number }) {
       {hasChildren && open ? (
         <div className="mt-0.5 space-y-0.5 border-l border-white/8">
           {node.children?.map((child) => (
-            <TreeNode key={child.id} node={child} level={level + 1} />
+            <TreeNode key={child.id} node={child} level={level + 1} resetToken={resetToken} />
           ))}
         </div>
       ) : null}

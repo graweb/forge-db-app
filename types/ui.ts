@@ -27,4 +27,5 @@ export type TreeViewNode = {
 export type TreeViewProps = {
   nodes: TreeViewNode[]
   className?: string
+  resetToken?: number
 }

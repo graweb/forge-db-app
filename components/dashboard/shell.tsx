@@ -69,6 +69,7 @@ export function DashboardShell({
   )
   const [isDeleteDatabaseModalOpen, setIsDeleteDatabaseModalOpen] = useState(false)
   const [workspaceSessionKey, setWorkspaceSessionKey] = useState(0)
+  const [treeResetToken, setTreeResetToken] = useState(0)
   const [notice, setNotice] = useState<ShellNotice | null>(null)
   const editorWorkspaceRef = useRef<DashboardEditorWorkspaceHandle | null>(null)
   const noticeTimerRef = useRef<number | null>(null)
@@ -153,9 +154,17 @@ export function DashboardShell({
               connections={connections}
               connectionAvailabilityById={connectionAvailabilityById}
               databaseStructuresById={databaseStructuresById}
+              treeResetToken={treeResetToken}
               onAddConnection={() => {
                 setEditingConnection(null)
                 setIsConnectionModalOpen(true)
+              }}
+              onRefreshConnections={() => {
+                router.refresh()
+                showNotice({
+                  title: "Conexões atualizadas",
+                  message: "A lista de conexões existentes foi recarregada.",
+                })
               }}
               onCreateDatabase={(connectionToUse) => {
                 setDatabaseModalMode("create")
@@ -287,6 +296,7 @@ export function DashboardShell({
                 setIsDeleteDatabaseModalOpen(true)
               }}
               onDisconnectConnection={() => {
+                setTreeResetToken((current) => current + 1)
                 setActivePane("editor")
                 setIsConnectionModalOpen(false)
                 setEditingConnection(null)

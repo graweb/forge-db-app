@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic"
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
 import type { ReactNode } from "react"
-import { Plus, Filter, Play, Settings2, Sparkles, X } from "lucide-react"
+import { Filter, Play, Plus, Settings2, Sparkles, X } from "lucide-react"
 import type * as Monaco from "monaco-editor"
 
 import { Button } from "@/components/ui/button"
@@ -35,6 +35,7 @@ import type {
   StatementExecutionPlan,
 } from "@/types/dashboard-editor"
 
+import { QueryResultsLoading } from "./query-results-loading"
 import { QueryResults } from "./query-results"
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
@@ -1189,7 +1190,9 @@ export const DashboardEditorWorkspace = forwardRef<
             </div>
 
             <div className="min-h-0 flex-1 overflow-hidden p-4">
-              {activeTab ? (
+              {executing ? (
+                <QueryResultsLoading />
+              ) : activeTab ? (
                 <QueryTabPanel tab={activeTab} />
               ) : (
                 <div className="flex h-full min-h-0 items-center justify-center rounded-2xl border border-dashed border-white/10 bg-[#07111d] px-6 py-8 text-sm text-white/50">
