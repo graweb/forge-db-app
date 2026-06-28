@@ -1045,7 +1045,7 @@ export function CreateTableModal({
                   <TabsContent value="foreign-keys">
                     <Card className="border-white/10 bg-white/5">
                       <CardHeader>
-                        <CardTitle className="text-base">Chaves Estrangeiras</CardTitle>
+                        <CardTitle className="text-base text-white">Chaves Estrangeiras</CardTitle>
                         <CardDescription>Relacionamentos detectados na tabela selecionada.</CardDescription>
                       </CardHeader>
                       <CardContent>
@@ -1060,7 +1060,7 @@ export function CreateTableModal({
                   <TabsContent value="indexes">
                     <Card className="border-white/10 bg-white/5">
                       <CardHeader>
-                        <CardTitle className="text-base">Índices</CardTitle>
+                        <CardTitle className="text-base text-white">Índices</CardTitle>
                         <CardDescription>Índices já existentes nesta tabela.</CardDescription>
                       </CardHeader>
                       <CardContent>
@@ -1072,7 +1072,7 @@ export function CreateTableModal({
                   <TabsContent value="triggers">
                     <Card className="border-white/10 bg-white/5">
                       <CardHeader>
-                        <CardTitle className="text-base">Triggers</CardTitle>
+                        <CardTitle className="text-base text-white">Triggers</CardTitle>
                         <CardDescription>Triggers já cadastradas para a tabela.</CardDescription>
                       </CardHeader>
                       <CardContent>
@@ -1087,7 +1087,7 @@ export function CreateTableModal({
                   <TabsContent value="functions">
                     <Card className="border-white/10 bg-white/5">
                       <CardHeader>
-                        <CardTitle className="text-base">Functions</CardTitle>
+                        <CardTitle className="text-base text-white">Functions</CardTitle>
                         <CardDescription>Funções disponíveis no mesmo schema.</CardDescription>
                       </CardHeader>
                       <CardContent>
@@ -1102,7 +1102,7 @@ export function CreateTableModal({
                   <TabsContent value="advanced">
                     <Card className="border-white/10 bg-white/5">
                       <CardHeader>
-                        <CardTitle className="text-base">Avançado</CardTitle>
+                        <CardTitle className="text-base text-white">Avançado</CardTitle>
                         <CardDescription>Opções avançadas da criação de tabela.</CardDescription>
                       </CardHeader>
                     </Card>
@@ -1111,7 +1111,7 @@ export function CreateTableModal({
                   <TabsContent value="sql-preview">
                     <Card className="border-white/10 bg-white/5">
                       <CardHeader>
-                        <CardTitle className="text-base">SQL Preview</CardTitle>
+                        <CardTitle className="text-base text-white">SQL Preview</CardTitle>
                         <CardDescription>
                           {isEditMode
                             ? "Prévia da atualização da tabela com a estrutura atual do formulário."
