@@ -97,7 +97,7 @@ export function DashboardSidebar({
 
           <div className="flex items-center justify-between text-xs uppercase tracking-[0.24em] text-white/40">
             <span>Conexões</span>
-            <Badge className="border-white/10 bg-white/5 text-white/65">Forge DB</Badge>
+            <Badge className="border-sky-400/35 bg-white/5 text-white/65">Forge DB</Badge>
           </div>
 
           <Button
