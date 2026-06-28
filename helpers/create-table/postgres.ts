@@ -2,14 +2,20 @@ import type { SavedConnection } from "@/types/connections"
 
 import { quoteIdentifier, quoteSqlLiteral } from "@/helpers/connections"
 
-import { buildCreateTableColumnDefinition, type CreateTableColumnSpec } from "./shared"
+import {
+  buildCreateTableColumnDefinition,
+  buildCreateTableForeignKeyDefinition,
+  type CreateTableColumnSpec,
+  type CreateTableForeignKeySpec,
+} from "./shared"
 
 export function buildPostgreSqlCreateTableSql(
   connection: SavedConnection,
   schemaName: string,
   tableName: string,
   comment: string,
-  columns: CreateTableColumnSpec[]
+  columns: CreateTableColumnSpec[],
+  foreignKeys: CreateTableForeignKeySpec[] = []
 ) {
   const createSchemaSql =
     schemaName && schemaName !== "public"
@@ -18,7 +24,13 @@ export function buildPostgreSqlCreateTableSql(
   const quotedSchema = quoteIdentifier("postgresql", schemaName)
   const quotedTable = quoteIdentifier("postgresql", tableName)
   const columnDefinitions = columns.map((column) => buildCreateTableColumnDefinition(connection, column))
-  const createTableSql = `CREATE TABLE IF NOT EXISTS ${quotedSchema}.${quotedTable} (\n  ${columnDefinitions.join(",\n  ")}\n)`
+  const foreignKeyDefinitions = foreignKeys.map((foreignKey, index) =>
+    buildCreateTableForeignKeyDefinition(connection, tableName, foreignKey, index, schemaName)
+  )
+  const createTableSql = `CREATE TABLE IF NOT EXISTS ${quotedSchema}.${quotedTable} (\n  ${[
+    ...columnDefinitions,
+    ...foreignKeyDefinitions,
+  ].join(",\n  ")}\n)`
   const commentSql = comment
     ? `COMMENT ON TABLE ${quotedSchema}.${quotedTable} IS ${quoteSqlLiteral(comment)}`
     : null

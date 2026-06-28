@@ -91,6 +91,14 @@ export async function PUT(
         defaultValue: string
         comment: string
       }>
+      foreignKeys?: Array<{
+        sourceColumn: string
+        referencedSchemaName?: string
+        referencedTableName: string
+        referencedColumnName: string
+        onDelete?: string
+        onUpdate?: string
+      }>
     }
     const result = await updateTable(connection, {
       databaseName,
@@ -99,6 +107,7 @@ export async function PUT(
       nextTableName: body.nextTableName ?? "",
       comment: body.comment ?? "",
       columns: body.columns ?? [],
+      foreignKeys: body.foreignKeys ?? [],
     })
 
     return NextResponse.json({

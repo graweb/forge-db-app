@@ -52,7 +52,10 @@ export function extractColumnsDetailsByObjectForSchema(
   rows: Array<Record<string, unknown>>,
   schemaName: string
 ) {
-  const result: Record<string, Array<{ name: string; dataType: string; size: string }>> = {}
+  const result: Record<
+    string,
+    Array<{ name: string; dataType: string; size: string; primaryKey?: boolean }>
+  > = {}
 
   for (const row of rows) {
     const rowSchema = String(
@@ -69,6 +72,7 @@ export function extractColumnsDetailsByObjectForSchema(
     const dataType = String(row.data_type ?? row.DATA_TYPE ?? "").trim().toUpperCase()
     const size = String(row.column_size ?? row.COLUMN_SIZE ?? row.max_length ?? row.MAX_LENGTH ?? "")
       .trim()
+    const primaryKey = Boolean(row.primary_key ?? row.PRIMARY_KEY ?? false)
 
     if (!objectName || !columnName) {
       continue
@@ -79,6 +83,7 @@ export function extractColumnsDetailsByObjectForSchema(
     }
 
     result[objectName].push({ name: columnName, dataType, size })
+    result[objectName][result[objectName].length - 1].primaryKey = primaryKey
   }
 
   return result

@@ -27,6 +27,7 @@ import type {
   CreateDatabaseResult,
   CreateTableInput,
   CreateTableResult,
+  CreateTableForeignKeyInput,
   DatabaseStructure,
   DatabaseStructureDatabase,
   DatabaseStructureLoadResult,
@@ -58,13 +59,17 @@ import {
   sanitizeSqlType,
   sanitizeText,
 } from "@/helpers/connections"
-import { buildMySqlLikeCreateTableSql } from "@/helpers/create-table/mysql"
+import {
+  buildMySqlLikeAddForeignKeySql,
+  buildMySqlLikeCreateTableSql,
+} from "@/helpers/create-table/mysql"
 import { buildPostgreSqlCreateTableSql } from "@/helpers/create-table/postgres"
 import { buildSqlServerCreateTableSql } from "@/helpers/create-table/sqlserver"
 import { buildSqliteCreateTableSql } from "@/helpers/create-table/sqlite"
 import {
   buildCreateTableColumnDefinition,
   type CreateTableColumnSpec,
+  type CreateTableForeignKeySpec,
 } from "@/helpers/create-table/shared"
 import {
   createGroup,
@@ -579,6 +584,7 @@ export async function updateTable(
   const normalizedSchema = sanitizeDatabaseIdentifier(input.schemaName) || getFallbackSchemaName(connection)
   const originalTableName = sanitizeDatabaseIdentifier(input.tableName)
   const nextTableName = sanitizeDatabaseIdentifier(input.nextTableName)
+  const normalizedForeignKeys = normalizeForeignKeysInput(input.foreignKeys, normalizedSchema)
   const normalizedColumns = input.columns
     .map((column) => ({
       sourceName: column.sourceName ? sanitizeDatabaseIdentifier(column.sourceName) || undefined : undefined,
@@ -615,6 +621,11 @@ export async function updateTable(
     originalTableDetails.columns.map((column) => [column.name.trim(), column] as const)
   )
   const seenColumns = new Set<string>()
+  const originalForeignKeys = originalTableDetails.foreignKeys
+    .map((foreignKey) => parseForeignKeySummary(foreignKey, normalizedSchema))
+    .filter((foreignKey): foreignKey is CreateTableForeignKeySpec => Boolean(foreignKey))
+  const originalForeignKeyKeys = buildForeignKeyComparisonKeys(originalForeignKeys, normalizedSchema)
+  const nextForeignKeyKeys = buildForeignKeyComparisonKeys(normalizedForeignKeys, normalizedSchema)
   const changedColumns = normalizedColumns.some((column) => {
     const sourceName = (column.sourceName || "").trim()
 
@@ -643,9 +654,13 @@ export async function updateTable(
   const removedColumns = originalTableDetails.columns.filter(
     (column) => !seenColumns.has(column.name.trim())
   )
+  const foreignKeyChanged =
+    originalForeignKeyKeys.length !== nextForeignKeyKeys.length ||
+    originalForeignKeyKeys.some((key, index) => key !== nextForeignKeyKeys[index])
   const requiresRebuild =
     changedColumns ||
-    (connection.databaseType === "sqlite" && removedColumns.length > 0)
+    (connection.databaseType === "sqlite" && removedColumns.length > 0) ||
+    foreignKeyChanged
 
   const hasTableNameChange = nextTableName !== originalTableName
   const hasCommentChange = input.comment.trim() !== originalTableDetails.comment.trim()
@@ -840,7 +855,8 @@ export async function updateTable(
           normalizedSchema,
           tempTableName,
           input.comment,
-          normalizedColumns
+          normalizedColumns,
+          normalizedForeignKeys
         )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
@@ -855,6 +871,15 @@ export async function updateTable(
               ", "
             )} FROM ${qualifiedOriginal}`
           )
+        }
+
+        for (const statement of buildMySqlLikeAddForeignKeySql(
+          connection,
+          normalizedSchema,
+          tempTableName,
+          normalizedForeignKeys
+        )) {
+          await client.query(statement)
         }
 
         await client.query(`DROP TABLE ${qualifiedOriginal}`)
@@ -1163,6 +1188,83 @@ export async function deleteTable(
   }
 }
 
+function normalizeForeignKeysInput(
+  foreignKeys: Array<CreateTableForeignKeyInput | undefined> | undefined,
+  defaultSchemaName: string
+): CreateTableForeignKeySpec[] {
+  return (foreignKeys ?? [])
+    .map((foreignKey) => ({
+      sourceColumn: sanitizeDatabaseIdentifier(foreignKey?.sourceColumn),
+      referencedSchemaName:
+        sanitizeDatabaseIdentifier(foreignKey?.referencedSchemaName) || defaultSchemaName,
+      referencedTableName: sanitizeDatabaseIdentifier(foreignKey?.referencedTableName),
+      referencedColumnName: sanitizeDatabaseIdentifier(foreignKey?.referencedColumnName),
+      onDelete: normalizeForeignKeyAction(foreignKey?.onDelete),
+      onUpdate: normalizeForeignKeyAction(foreignKey?.onUpdate),
+    }))
+    .filter(
+      (foreignKey) =>
+        foreignKey.sourceColumn && foreignKey.referencedTableName && foreignKey.referencedColumnName
+    )
+}
+
+function normalizeForeignKeyAction(value?: string) {
+  const normalized = sanitizeText(value).toUpperCase()
+  return ["CASCADE", "RESTRICT", "NO ACTION", "SET NULL", "SET DEFAULT"].includes(normalized)
+    ? normalized
+    : ""
+}
+
+function parseForeignKeySummary(
+  value: string,
+  defaultSchemaName: string
+): CreateTableForeignKeySpec | null {
+  const match = value.trim().match(/^(?:(.+?):\s*)?(.+?)\s*->\s*(.+)$/)
+
+  if (!match) {
+    return null
+  }
+
+  const referenced = match[3].trim()
+  const lastDot = referenced.lastIndexOf(".")
+  const referencedTableName = lastDot >= 0 ? referenced.slice(0, lastDot) : referenced
+  const referencedColumnName = lastDot >= 0 ? referenced.slice(lastDot + 1) : ""
+
+  return {
+    sourceColumn: sanitizeDatabaseIdentifier(match[2]),
+    referencedSchemaName: defaultSchemaName,
+    referencedTableName: sanitizeDatabaseIdentifier(referencedTableName),
+    referencedColumnName: sanitizeDatabaseIdentifier(referencedColumnName),
+    onDelete: "",
+    onUpdate: "",
+  }
+}
+
+function normalizeForeignKeyKey(foreignKey: CreateTableForeignKeySpec) {
+  return [
+    foreignKey.sourceColumn.trim().toLowerCase(),
+    foreignKey.referencedSchemaName?.trim().toLowerCase() ?? "",
+    foreignKey.referencedTableName.trim().toLowerCase(),
+    foreignKey.referencedColumnName.trim().toLowerCase(),
+    (foreignKey.onDelete ?? "").trim().toLowerCase(),
+    (foreignKey.onUpdate ?? "").trim().toLowerCase(),
+  ].join("|")
+}
+
+function buildForeignKeyComparisonKeys(
+  foreignKeys: CreateTableForeignKeySpec[],
+  defaultSchemaName: string
+) {
+  return foreignKeys
+    .map((foreignKey) =>
+    normalizeForeignKeyKey({
+      ...foreignKey,
+      referencedSchemaName: foreignKey.referencedSchemaName?.trim() || defaultSchemaName,
+    })
+    )
+    .sort()
+}
+
 export async function createTable(
   connection: SavedConnection,
   input: CreateTableInput
@@ -1183,6 +1285,7 @@ export async function createTable(
       comment: sanitizeSqlExpression(column.comment),
     }))
     .filter((column) => column.name && column.dataType)
+  const foreignKeys = normalizeForeignKeysInput(input.foreignKeys, schemaName)
 
   if (!tableName) {
     throw new Error("Informe um nome válido para a tabela.")
@@ -1200,11 +1303,12 @@ export async function createTable(
         schemaName,
         tableName,
         comment,
-        columns
+        columns,
+        foreignKeys
       )
 
     case "postgresql":
-      return createPostgreSqlTable(connection, schemaName, tableName, comment, columns)
+      return createPostgreSqlTable(connection, schemaName, tableName, comment, columns, foreignKeys)
 
     case "sqlserver":
       return createSqlServerTable(
@@ -1213,11 +1317,12 @@ export async function createTable(
         schemaName,
         tableName,
         comment,
-        columns
+        columns,
+        foreignKeys
       )
 
     case "sqlite":
-      return createSqliteTable(connection, tableName, comment, columns)
+      return createSqliteTable(connection, tableName, comment, columns, foreignKeys)
 
     default:
       throw new Error("Tipo de banco não suportado.")
@@ -1229,7 +1334,8 @@ async function createSqlTableLike(
   schemaName: string,
   tableName: string,
   comment: string,
-  columns: CreateTableColumnSpec[]
+  columns: CreateTableColumnSpec[],
+  foreignKeys: CreateTableForeignKeySpec[] = []
 ): Promise<CreateTableResult> {
   return withMySqlLikeClient(connection, schemaName, async (client) => {
     const createTableSql = buildMySqlLikeCreateTableSql(
@@ -1241,6 +1347,9 @@ async function createSqlTableLike(
     )
 
     await client.query(createTableSql)
+    for (const statement of buildMySqlLikeAddForeignKeySql(connection, schemaName, tableName, foreignKeys)) {
+      await client.query(statement)
+    }
 
     return {
       message: "Tabela criada com sucesso.",
@@ -1256,7 +1365,8 @@ async function createPostgreSqlTable(
   schemaName: string,
   tableName: string,
   comment: string,
-  columns: CreateTableColumnSpec[]
+  columns: CreateTableColumnSpec[],
+  foreignKeys: CreateTableForeignKeySpec[] = []
 ): Promise<CreateTableResult> {
   return withPostgresClient(connection, connection.databaseName.trim() || "postgres", async (client) => {
     const { createSchemaSql, createTableSql, commentSql } = buildPostgreSqlCreateTableSql(
@@ -1264,7 +1374,8 @@ async function createPostgreSqlTable(
       schemaName,
       tableName,
       comment,
-      columns
+      columns,
+      foreignKeys
     )
 
     if (createSchemaSql) {
@@ -1292,7 +1403,8 @@ async function createSqlServerTable(
   schemaName: string,
   tableName: string,
   _comment: string,
-  columns: CreateTableColumnSpec[]
+  columns: CreateTableColumnSpec[],
+  foreignKeys: CreateTableForeignKeySpec[] = []
 ): Promise<CreateTableResult> {
   return withSqlServerPool(
     connection,
@@ -1302,7 +1414,8 @@ async function createSqlServerTable(
         connection,
         schemaName,
         tableName,
-        columns
+        columns,
+        foreignKeys
       )
 
       if (createSchemaSql) {
@@ -1325,10 +1438,16 @@ async function createSqliteTable(
   connection: SavedConnection,
   tableName: string,
   _comment: string,
-  columns: CreateTableColumnSpec[]
+  columns: CreateTableColumnSpec[],
+  foreignKeys: CreateTableForeignKeySpec[] = []
 ): Promise<CreateTableResult> {
   return withSqliteDatabase(connection, async (db) => {
-    const { tablePath, createTableSql } = buildSqliteCreateTableSql(connection, tableName, columns)
+    const { tablePath, createTableSql } = buildSqliteCreateTableSql(
+      connection,
+      tableName,
+      columns,
+      foreignKeys
+    )
     db.exec(createTableSql)
 
     return {
@@ -2223,7 +2342,7 @@ async function getSqlServerDatabaseStructure(
     ORDER BY s.name, o.name
   `)
 
-  const columns = await pool.request().query(`
+    const columns = await pool.request().query(`
       SELECT
         s.name AS schema_name,
         o.name AS object_name,
@@ -2237,7 +2356,21 @@ async function getSqlServerDatabaseStructure(
           WHEN c.max_length > 0
             THEN CAST(c.max_length AS varchar(20))
           ELSE ''
-        END AS column_size
+        END AS column_size,
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM ${quotedDatabase}.sys.indexes i
+            INNER JOIN ${quotedDatabase}.sys.index_columns ic
+              ON i.object_id = ic.object_id
+             AND i.index_id = ic.index_id
+            WHERE i.is_primary_key = 1
+              AND i.object_id = c.object_id
+              AND ic.column_id = c.column_id
+          )
+          THEN 1
+          ELSE 0
+        END AS primary_key
       FROM ${quotedDatabase}.sys.columns c
       INNER JOIN ${quotedDatabase}.sys.objects o ON c.object_id = o.object_id
       INNER JOIN ${quotedDatabase}.sys.types t ON c.user_type_id = t.user_type_id

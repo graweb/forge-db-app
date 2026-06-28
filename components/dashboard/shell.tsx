@@ -463,6 +463,7 @@ export function DashboardShell({
         open={isTableModalOpen}
         connection={tableTargetConnection}
         databaseName={tableTargetDatabase?.name}
+        database={tableTargetDatabase}
         schemaName={tableTargetSchema}
         schemaOptions={tableTargetDatabase?.schemas.map((schema) => schema.name) ?? []}
         mode={tableModalMode}

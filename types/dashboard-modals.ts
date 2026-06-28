@@ -17,11 +17,22 @@ export type CreateTableColumnDraft = {
   comment: string
 }
 
+export type CreateTableForeignKeyDraft = {
+  id?: string
+  sourceColumn: string
+  referencedSchemaName: string
+  referencedTableName: string
+  referencedColumnName: string
+  onDelete: string
+  onUpdate: string
+}
+
 export type CreateTableDraft = {
   schemaName: string
   tableName: string
   comment: string
   columns: CreateTableColumnDraft[]
+  foreignKeys: CreateTableForeignKeyDraft[]
 }
 
 export type CreateTableModalProps = {
@@ -31,6 +42,7 @@ export type CreateTableModalProps = {
   databaseName?: string
   schemaName?: string
   schemaOptions?: string[]
+  database?: DatabaseStructureDatabase | null
   table?: TableDetails | null
   onOpenChange: (open: boolean) => void
   onSaved: (details: { message: string; details: string }) => void | Promise<void>

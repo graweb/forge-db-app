@@ -9,12 +9,22 @@ export type CreateTableColumnInput = {
   comment: string
 }
 
+export type CreateTableForeignKeyInput = {
+  sourceColumn: string
+  referencedSchemaName?: string
+  referencedTableName: string
+  referencedColumnName: string
+  onDelete?: string
+  onUpdate?: string
+}
+
 export type CreateTableInput = {
   databaseName: string
   schemaName: string
   tableName: string
   comment: string
   columns: CreateTableColumnInput[]
+  foreignKeys?: CreateTableForeignKeyInput[]
 }
 
 export type CreateTableResult = {
@@ -54,6 +64,7 @@ export type UpdateTableInput = {
   nextTableName: string
   columns: Array<TableColumnDefinition & { sourceName?: string }>
   comment: string
+  foreignKeys?: CreateTableForeignKeyInput[]
 }
 
 export type UpdateTableResult = {

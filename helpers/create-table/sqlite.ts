@@ -2,12 +2,18 @@ import type { SavedConnection } from "@/types/connections"
 
 import { quoteIdentifier, sanitizeDatabaseIdentifier } from "@/helpers/connections"
 
-import { buildCreateTableColumnDefinition, type CreateTableColumnSpec } from "./shared"
+import {
+  buildCreateTableColumnDefinition,
+  buildCreateTableForeignKeyDefinition,
+  type CreateTableColumnSpec,
+  type CreateTableForeignKeySpec,
+} from "./shared"
 
 export function buildSqliteCreateTableSql(
   connection: SavedConnection,
   tableName: string,
-  columns: CreateTableColumnSpec[]
+  columns: CreateTableColumnSpec[],
+  foreignKeys: CreateTableForeignKeySpec[] = []
 ) {
   const tablePath = sanitizeDatabaseIdentifier(tableName)
 
@@ -16,7 +22,13 @@ export function buildSqliteCreateTableSql(
   }
 
   const columnDefinitions = columns.map((column) => buildCreateTableColumnDefinition(connection, column))
-  const createTableSql = `CREATE TABLE IF NOT EXISTS ${quoteIdentifier("sqlite", tablePath)} (\n  ${columnDefinitions.join(",\n  ")}\n)`
+  const foreignKeyDefinitions = foreignKeys.map((foreignKey, index) =>
+    buildCreateTableForeignKeyDefinition(connection, tableName, foreignKey, index, "")
+  )
+  const createTableSql = `CREATE TABLE IF NOT EXISTS ${quoteIdentifier("sqlite", tablePath)} (\n  ${[
+    ...columnDefinitions,
+    ...foreignKeyDefinitions,
+  ].join(",\n  ")}\n)`
 
   return {
     tablePath,

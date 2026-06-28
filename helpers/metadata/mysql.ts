@@ -62,16 +62,47 @@ export async function getMySqlLikeColumnsByItem(
     `,
     [schemaName]
   )
+  const primaryKeyRows = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT
+        TABLE_NAME AS object_name,
+        COLUMN_NAME AS column_name
+      FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+      WHERE TABLE_SCHEMA = COALESCE(NULLIF(DATABASE(), ''), ?)
+        AND CONSTRAINT_NAME = 'PRIMARY'
+      ORDER BY TABLE_NAME, ORDINAL_POSITION
+    `,
+    [schemaName]
+  )
+  const primaryKeySet = new Set(
+    primaryKeyRows.map(
+      (row) =>
+        `${String(row.object_name ?? row.TABLE_NAME ?? "").trim()}::${String(
+          row.column_name ?? row.COLUMN_NAME ?? ""
+        ).trim()}`
+    )
+  )
+  const detailsRowsWithPrimaryKey = detailsRows.map((row) => ({
+    ...row,
+    primary_key: primaryKeySet.has(
+      `${String(row.object_name ?? row.TABLE_NAME ?? "").trim()}::${String(
+        row.column_name ?? row.COLUMN_NAME ?? ""
+      ).trim()}`
+    ),
+  }))
 
   return {
     columnsByItem: buildColumnsMap(rows, schemaName, objectNames, "object_name", "column_name"),
     columnsDetailsByItem: buildColumnsDetailsMap(
-      detailsRows,
+      detailsRowsWithPrimaryKey,
       objectNames,
       "object_name",
       "column_name",
       "data_type",
-      "column_size"
+      "column_size",
+      "primary_key"
     ),
   }
 }

@@ -2,7 +2,12 @@ import type { SavedConnection } from "@/types/connections"
 
 import { quoteIdentifier, quoteSqlLiteral } from "@/helpers/connections"
 
-import { buildCreateTableColumnDefinition, type CreateTableColumnSpec } from "./shared"
+import {
+  buildCreateTableColumnDefinition,
+  buildCreateTableForeignKeyDefinition,
+  type CreateTableColumnSpec,
+  type CreateTableForeignKeySpec,
+} from "./shared"
 
 export function buildMySqlLikeCreateTableSql(
   connection: SavedConnection,
@@ -20,4 +25,28 @@ export function buildMySqlLikeCreateTableSql(
       : ""
 
   return `CREATE TABLE IF NOT EXISTS ${quotedSchema}.${quotedTable} (\n  ${columnDefinitions.join(",\n  ")}\n)${tableCommentClause}`
+}
+
+export function buildMySqlLikeAddForeignKeySql(
+  connection: SavedConnection,
+  schemaName: string,
+  tableName: string,
+  foreignKeys: CreateTableForeignKeySpec[]
+) {
+  const qualifiedTable = `${quoteIdentifier(connection.databaseType, schemaName)}.${quoteIdentifier(
+    connection.databaseType,
+    tableName
+  )}`
+
+  return foreignKeys.map((foreignKey, index) => {
+    const definition = buildCreateTableForeignKeyDefinition(
+      connection,
+      tableName,
+      foreignKey,
+      index,
+      schemaName
+    )
+
+    return `ALTER TABLE ${qualifiedTable} ADD ${definition}`
+  })
 }

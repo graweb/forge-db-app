@@ -39,16 +39,49 @@ export async function getPostgreSqlColumnsByItem(
     `,
     [schemaName]
   )
+  const pkResult = await client.query(
+    `
+      SELECT
+        kcu.table_name AS object_name,
+        kcu.column_name AS column_name
+      FROM information_schema.table_constraints tc
+      INNER JOIN information_schema.key_column_usage kcu
+        ON tc.constraint_name = kcu.constraint_name
+       AND tc.table_schema = kcu.table_schema
+       AND tc.table_name = kcu.table_name
+      WHERE tc.constraint_type = 'PRIMARY KEY'
+        AND tc.table_schema = $1
+      ORDER BY kcu.table_name, kcu.ordinal_position
+    `,
+    [schemaName]
+  )
+  const primaryKeySet = new Set(
+    pkResult.rows.map(
+      (row) =>
+        `${String(row.object_name ?? row.TABLE_NAME ?? "").trim()}::${String(
+          row.column_name ?? row.COLUMN_NAME ?? ""
+        ).trim()}`
+    )
+  )
+  const detailsRowsWithPrimaryKey = detailsResult.rows.map((row) => ({
+    ...row,
+    primary_key: primaryKeySet.has(
+      `${String(row.object_name ?? row.TABLE_NAME ?? "").trim()}::${String(
+        row.column_name ?? row.COLUMN_NAME ?? ""
+      ).trim()}`
+    ),
+  }))
 
   return {
     columnsByItem: buildColumnsMap(result.rows, schemaName, objectNames, "object_name", "column_name"),
     columnsDetailsByItem: buildColumnsDetailsMap(
-      detailsResult.rows,
+      detailsRowsWithPrimaryKey,
       objectNames,
       "object_name",
       "column_name",
       "data_type",
-      "column_size"
+      "column_size",
+      "primary_key"
     ),
   }
 }

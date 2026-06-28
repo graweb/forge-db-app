@@ -15,7 +15,7 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import type { QueryExecutionResult, SerializedValue } from "@/types/connections"
+import type { SerializedValue } from "@/types/connections"
 import type { QueryResultsProps, ResizeState, SortDirection, SortState } from "@/types/dashboard-editor"
 
 const DEFAULT_PAGE_SIZE = 10

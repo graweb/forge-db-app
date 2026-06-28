@@ -7,7 +7,10 @@ export async function getSqliteColumnsByItem(
   objectNames: string[]
 ) {
   const result: Record<string, string[]> = {}
-  const detailsResult: Record<string, Array<{ name: string; dataType: string; size: string }>> = {}
+  const detailsResult: Record<
+    string,
+    Array<{ name: string; dataType: string; size: string; primaryKey?: boolean }>
+  > = {}
 
   for (const objectName of objectNames) {
     const pragmaRows = db.prepare(`PRAGMA table_info('${objectName.replace(/'/g, "''")}')`).all() as
@@ -25,6 +28,7 @@ export async function getSqliteColumnsByItem(
           name: String(row.name ?? "").trim(),
           dataType: sizeMatch ? sizeMatch[1].trim().toUpperCase() : type,
           size: sizeMatch ? sizeMatch[2].trim() : "",
+          primaryKey: Boolean((row as { pk?: number }).pk),
         }
       })
       .filter((row) => row.name)

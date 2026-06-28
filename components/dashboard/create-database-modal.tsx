@@ -162,24 +162,24 @@ export function CreateDatabaseModal({
 }: DatabaseModalProps) {
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [form, setForm] = useState<DatabaseDraft>(() =>
+    connection && connection.databaseType !== "sqlite"
+      ? getInitialDraft(mode, connection.databaseType, database ?? null)
+      : {
+          name: "",
+          charset: "",
+        }
+  )
 
-  if (!connection) {
+  if (!connection || connection.databaseType === "sqlite") {
     return null
   }
 
   const databaseType = connection.databaseType
-  if (databaseType === "sqlite") {
-    return null
-  }
-
   const currentDatabase = database ?? null
   const activeConnection = connection
   const canEditName = mode === "create" || databaseType === "postgresql" || databaseType === "sqlserver"
   const canEditCharset = mode === "create" || databaseType === "mysql" || databaseType === "mariadb"
-
-  const [form, setForm] = useState<DatabaseDraft>(() =>
-    getInitialDraft(mode, databaseType, currentDatabase)
-  )
 
   function updateForm(field: keyof DatabaseDraft, value: string) {
     setForm((current) => ({ ...current, [field]: value }))

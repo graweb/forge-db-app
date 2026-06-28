@@ -12,6 +12,15 @@ export type CreateTableColumnSpec = {
   comment: string
 }
 
+export type CreateTableForeignKeySpec = {
+  sourceColumn: string
+  referencedSchemaName?: string
+  referencedTableName: string
+  referencedColumnName: string
+  onDelete?: string
+  onUpdate?: string
+}
+
 export function normalizeDefaultValue(value: string) {
   const trimmed = value.trim()
 
@@ -71,4 +80,55 @@ export function buildCreateTableColumnDefinition(
   }
 
   return parts.join(" ")
+}
+
+function buildForeignKeyConstraintName(
+  connection: SavedConnection,
+  tableName: string,
+  foreignKey: CreateTableForeignKeySpec,
+  index: number
+) {
+  const suffix = `${tableName}_${foreignKey.sourceColumn}_${foreignKey.referencedTableName}_${foreignKey.referencedColumnName}_${index}`
+    .replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+
+  if (connection.databaseType === "sqlserver") {
+    return `[fk_${suffix}]`
+  }
+
+  if (connection.databaseType === "postgresql") {
+    return `"fk_${suffix.replace(/"/g, '""')}"`
+  }
+
+  return `\`fk_${suffix.replace(/`/g, "``")}\``
+}
+
+export function buildCreateTableForeignKeyDefinition(
+  connection: SavedConnection,
+  tableName: string,
+  foreignKey: CreateTableForeignKeySpec,
+  index: number,
+  defaultSchemaName: string
+) {
+  const sourceColumn = quoteIdentifier(connection.databaseType, foreignKey.sourceColumn)
+  const referencedSchemaName = foreignKey.referencedSchemaName?.trim() || defaultSchemaName
+  const referencedTable = quoteIdentifier(connection.databaseType, foreignKey.referencedTableName)
+  const referencedColumn = quoteIdentifier(connection.databaseType, foreignKey.referencedColumnName)
+  const referencedQualifiedTable =
+    connection.databaseType === "sqlite"
+      ? referencedTable
+      : `${quoteIdentifier(connection.databaseType, referencedSchemaName)}.${referencedTable}`
+  const actions = [foreignKey.onDelete?.trim(), foreignKey.onUpdate?.trim()]
+    .map((action, actionIndex) => {
+      if (!action) {
+        return null
+      }
+
+      return `${actionIndex === 0 ? "ON DELETE" : "ON UPDATE"} ${action}`
+    })
+    .filter(Boolean)
+    .join(" ")
+
+  return `CONSTRAINT ${buildForeignKeyConstraintName(connection, tableName, foreignKey, index)} FOREIGN KEY (${sourceColumn}) REFERENCES ${referencedQualifiedTable} (${referencedColumn})${actions ? ` ${actions}` : ""}`
 }

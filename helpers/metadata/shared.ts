@@ -4,6 +4,7 @@ export type ColumnDetails = {
   name: string
   dataType: string
   size: string
+  primaryKey?: boolean
 }
 
 export function normalizeColumnSize(length?: unknown, precision?: unknown, scale?: unknown) {
@@ -84,7 +85,8 @@ export function buildColumnsDetailsMap(
   objectKey: string,
   columnKey: string,
   dataTypeKey: string,
-  sizeKey?: string
+  sizeKey?: string,
+  primaryKeyKey?: string
 ) {
   const allowedObjects = new Set(objectNames)
   const result: Record<string, ColumnDetails[]> = {}
@@ -94,6 +96,9 @@ export function buildColumnsDetailsMap(
     const name = String(row[columnKey] ?? row[columnKey.toUpperCase()] ?? "").trim()
     const dataType = String(row[dataTypeKey] ?? row[dataTypeKey.toUpperCase()] ?? "").trim().toUpperCase()
     const size = sizeKey ? String(row[sizeKey] ?? row[sizeKey.toUpperCase()] ?? "").trim() : ""
+    const primaryKey = primaryKeyKey
+      ? Boolean(row[primaryKeyKey] ?? row[primaryKeyKey.toUpperCase()] ?? false)
+      : undefined
 
     if (!objectName || !name || !allowedObjects.has(objectName)) {
       continue
@@ -103,7 +108,12 @@ export function buildColumnsDetailsMap(
       result[objectName] = []
     }
 
-    result[objectName].push({ name, dataType, size })
+    result[objectName].push({
+      name,
+      dataType,
+      size,
+      ...(primaryKey !== undefined ? { primaryKey } : {}),
+    })
   }
 
   return result
