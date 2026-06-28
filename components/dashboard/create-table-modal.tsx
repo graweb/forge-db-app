@@ -26,6 +26,7 @@ import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/helpers/utils"
+import { buildForeignKeyConstraintName } from "@/helpers/create-table/shared"
 import type {
   CreateTableColumnDraft,
   CreateTableDraft,
@@ -55,6 +56,12 @@ const typeOptions = [
 
 function getColumnSizeConfig(dataType: string) {
   switch (dataType.trim().toUpperCase()) {
+    case "BIGINT":
+      return {
+        placeholder: "20",
+        defaultValue: "20",
+        disabled: false,
+      }
     case "ENUM":
       return {
         placeholder: "'ativo', 'inativo'",
@@ -95,6 +102,7 @@ function createColumnDraft(partial?: Partial<CreateTableColumnDraft>): CreateTab
     name: partial?.name ?? "",
     dataType: partial?.dataType ?? "VARCHAR",
     size: partial?.size ?? "",
+    unsigned: partial?.unsigned ?? false,
     notNull: partial?.notNull ?? false,
     primaryKey: partial?.primaryKey ?? false,
     autoIncrement: partial?.autoIncrement ?? false,
@@ -175,6 +183,63 @@ type ReferenceTableOption = {
   tableName: string
   label: string
   primaryKeyColumns: string[]
+  primaryKeyColumnDetails: Record<string, { dataType: string; size: string; unsigned?: boolean }>
+}
+
+type ColumnTypeSignature = {
+  dataType: string
+  size: string
+  unsigned?: boolean
+}
+
+function normalizeColumnTypeSignature(column?: ColumnTypeSignature | null) {
+  const dataType = column?.dataType.trim().toUpperCase() || ""
+  const unsigned = Boolean(column?.unsigned)
+
+  switch (dataType) {
+    case "INTEGER":
+      return {
+        dataType: "INT",
+        size: column?.size.trim() ?? "",
+        unsigned,
+      }
+    case "NUMERIC":
+      return {
+        dataType: "DECIMAL",
+        size: column?.size.trim() ?? "",
+        unsigned,
+      }
+    default:
+      return {
+        dataType,
+        size: column?.size.trim() ?? "",
+        unsigned,
+      }
+  }
+}
+
+function formatColumnTypeSignature(column?: ColumnTypeSignature | null) {
+  if (!column) {
+    return ""
+  }
+
+  const normalized = normalizeColumnTypeSignature(column)
+  const type = normalized.size ? `${normalized.dataType}(${normalized.size})` : normalized.dataType
+  return `${type}${normalized.unsigned ? " UNSIGNED" : ""}`
+}
+
+function areForeignKeyColumnTypesCompatible(
+  source?: ColumnTypeSignature | null,
+  referenced?: ColumnTypeSignature | null
+) {
+  const normalizedSource = normalizeColumnTypeSignature(source)
+  const normalizedReferenced = normalizeColumnTypeSignature(referenced)
+
+  return Boolean(
+    normalizedSource.dataType &&
+      normalizedSource.dataType === normalizedReferenced.dataType &&
+      normalizedSource.unsigned === normalizedReferenced.unsigned
+  )
 }
 
 function getReferenceTableOptions(
@@ -205,6 +270,18 @@ function getReferenceTableOptions(
       const primaryKeyColumns = columnDetails
         .filter((column) => Boolean(column.primaryKey))
         .map((column) => column.name)
+      const primaryKeyColumnDetails = Object.fromEntries(
+        columnDetails
+          .filter((column) => Boolean(column.primaryKey))
+          .map((column) => [
+            column.name,
+            {
+              dataType: column.dataType,
+              size: column.size,
+              unsigned: column.unsigned,
+            },
+          ])
+      )
 
       if (!primaryKeyColumns.length) {
         continue
@@ -218,6 +295,7 @@ function getReferenceTableOptions(
             ? `${schemaName}.${tableName}`
             : tableName,
         primaryKeyColumns,
+        primaryKeyColumnDetails,
       })
     }
   }
@@ -233,6 +311,126 @@ function getReferenceTableOptions(
   return options
 }
 
+function getForeignKeyCompatibilityError(
+  form: CreateTableDraft,
+  database?: DatabaseStructureDatabase | null
+) {
+  if (!database) {
+    return null
+  }
+
+  const referenceTables = getReferenceTableOptions(database, form.schemaName, form.tableName)
+  const columnsByName = new Map(
+    form.columns.map((column) => [column.name.trim(), column] as const).filter(([name]) => Boolean(name))
+  )
+
+  for (const foreignKey of form.foreignKeys) {
+    const sourceColumnName = foreignKey.sourceColumn.trim()
+
+    if (!sourceColumnName || !foreignKey.referencedTableName.trim() || !foreignKey.referencedColumnName.trim()) {
+      continue
+    }
+
+    const sourceColumn = columnsByName.get(sourceColumnName)
+    if (!sourceColumn) {
+      continue
+    }
+
+    const referenceTable = referenceTables.find(
+      (option) =>
+        option.schemaName === (foreignKey.referencedSchemaName.trim() || form.schemaName) &&
+        option.tableName === foreignKey.referencedTableName.trim()
+    )
+    const referencedColumn = referenceTable?.primaryKeyColumnDetails[foreignKey.referencedColumnName.trim()]
+
+    if (
+      referenceTable &&
+      referencedColumn &&
+      !areForeignKeyColumnTypesCompatible(sourceColumn, referencedColumn)
+    ) {
+      return `A chave estrangeira ${sourceColumnName} -> ${referenceTable.label}.${foreignKey.referencedColumnName.trim()} não pode ser criada porque ${formatColumnTypeSignature(sourceColumn)} é incompatível com ${formatColumnTypeSignature(referencedColumn)}. Ajuste o tipo da coluna de origem para ser igual ao da coluna referenciada.`
+    }
+  }
+
+  return null
+}
+
+function getReferenceColumnType(
+  referenceTable: ReferenceTableOption | undefined,
+  referencedColumnName: string
+) {
+  if (!referenceTable) {
+    return null
+  }
+
+  const columnDetails = referenceTable.primaryKeyColumnDetails[referencedColumnName.trim()]
+  if (!columnDetails) {
+    return null
+  }
+
+  return {
+    dataType: columnDetails.dataType,
+    size: columnDetails.size,
+    unsigned: columnDetails.unsigned,
+  }
+}
+
+function applyForeignKeySourceColumnSuggestion(
+  columns: CreateTableColumnDraft[],
+  foreignKey: CreateTableForeignKeyDraft,
+  referenceTable: ReferenceTableOption | undefined
+) {
+  const sourceColumnName = foreignKey.sourceColumn.trim()
+  const referencedColumnType = getReferenceColumnType(referenceTable, foreignKey.referencedColumnName)
+
+  if (!sourceColumnName || !referencedColumnType) {
+    return columns
+  }
+
+  return columns.map((column) =>
+    column.name.trim() === sourceColumnName
+      ? {
+          ...column,
+          dataType: referencedColumnType.dataType,
+          size: referencedColumnType.size,
+          unsigned: referencedColumnType.unsigned,
+        }
+      : column
+  )
+}
+
+function getCompatibleSourceColumnName(
+  columns: CreateTableColumnDraft[],
+  referenceTable: ReferenceTableOption | undefined,
+  referencedColumnName?: string,
+  currentSourceColumnName?: string
+) {
+  const currentSource = currentSourceColumnName?.trim() ?? ""
+  const referencedType = getReferenceColumnType(
+    referenceTable,
+    referencedColumnName ?? referenceTable?.primaryKeyColumns[0] ?? ""
+  )
+
+  if (!referencedType) {
+    return currentSource
+  }
+
+  const currentColumn = columns.find((column) => column.name.trim() === currentSource)
+  if (
+    currentColumn &&
+    areForeignKeyColumnTypesCompatible(currentColumn, referencedType)
+  ) {
+    return currentSource
+  }
+
+  const compatibleColumn = columns.find((column) =>
+    column.name.trim() &&
+    areForeignKeyColumnTypesCompatible(column, referencedType)
+  )
+
+  return compatibleColumn?.name.trim() ?? currentSource
+}
+
 function parseForeignKeySummary(value: string) {
   const match = value.trim().match(/^(?:(.+?):\s*)?(.+?)\s*->\s*(.+)$/)
 
@@ -240,13 +438,22 @@ function parseForeignKeySummary(value: string) {
     return null
   }
 
-  const referenced = match[3].trim()
+  const referencedWithActions = match[3].trim()
+  const actionIndex = referencedWithActions.search(/\s+ON\s+(DELETE|UPDATE)\s+/i)
+  const referenced = (actionIndex >= 0 ? referencedWithActions.slice(0, actionIndex) : referencedWithActions).trim()
+  const actions = actionIndex >= 0 ? referencedWithActions.slice(actionIndex).trim() : ""
   const lastDot = referenced.lastIndexOf(".")
+  const deleteMatch = actions.match(/\bON DELETE\s+(.+?)(?=\s+ON UPDATE\s+|$)/i)
+  const updateMatch = actions.match(/\bON UPDATE\s+(.+)$/i)
 
   return {
+    constraintName: match[1]?.trim() ?? "",
     sourceColumn: match[2].trim(),
+    referencedSchemaName: "",
     referencedTableName: lastDot >= 0 ? referenced.slice(0, lastDot).trim() : referenced,
     referencedColumnName: lastDot >= 0 ? referenced.slice(lastDot + 1).trim() : "",
+    onDelete: deleteMatch?.[1]?.trim() ?? "",
+    onUpdate: updateMatch?.[1]?.trim() ?? "",
   }
 }
 
@@ -278,6 +485,8 @@ function getInitialDraft(
           referencedColumnName: matchedReference
             ? foreignKey.referencedColumnName
             : foreignKey.referencedColumnName,
+          onDelete: foreignKey.onDelete,
+          onUpdate: foreignKey.onUpdate,
         })
       })
 
@@ -389,7 +598,7 @@ function buildColumnPreview(connection: SavedConnection, column: CreateTableColu
   const parts = [quotePreviewIdentifier(connection, column.name)]
   const typeWithSize =
     column.size &&
-    /^(CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER|ENUM|FLOAT|DOUBLE)$/.test(
+    /^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER|ENUM|FLOAT|DOUBLE)$/.test(
       column.dataType
     )
       ? `${column.dataType}(${column.size})`
@@ -400,6 +609,16 @@ function buildColumnPreview(connection: SavedConnection, column: CreateTableColu
   }
 
   parts.push(typeWithSize)
+
+  if (
+    column.unsigned &&
+    (connection.databaseType === "mysql" || connection.databaseType === "mariadb") &&
+    /^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|DECIMAL|NUMERIC|NUMBER|FLOAT|DOUBLE)$/i.test(
+      column.dataType
+    )
+  ) {
+    parts.push("UNSIGNED")
+  }
 
   if (column.autoIncrement) {
     if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
@@ -532,24 +751,6 @@ function normalizeForeignKeySet(
     .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
 }
 
-function getTableForeignKeys(table?: TableDetails | null) {
-  if (!table) {
-    return []
-  }
-
-  return table.foreignKeys
-    .map((value) => parseForeignKeySummary(value))
-    .filter(
-      (
-        foreignKey
-      ): foreignKey is {
-        sourceColumn: string
-        referencedTableName: string
-        referencedColumnName: string
-      } => Boolean(foreignKey)
-    )
-}
-
 const foreignKeyActionOptions = [
   { value: "", label: "Sem ação" },
   { value: "CASCADE", label: "CASCADE" },
@@ -565,17 +766,40 @@ function hasForeignKeyChanges(form: CreateTableDraft, table?: TableDetails | nul
   }
 
   const original = normalizeForeignKeySet(
-    getTableForeignKeys(table).map((foreignKey) => ({
-      sourceColumn: foreignKey.sourceColumn,
-      referencedSchemaName: table.schemaName,
-      referencedTableName: foreignKey.referencedTableName,
-      referencedColumnName: foreignKey.referencedColumnName,
-    })),
+    table.foreignKeys
+      .map((value) => parseForeignKeySummary(value))
+      .filter(
+        (
+          foreignKey
+        ): foreignKey is NonNullable<ReturnType<typeof parseForeignKeySummary>> => Boolean(foreignKey)
+      )
+      .map((foreignKey) => ({
+        sourceColumn: foreignKey.sourceColumn,
+        referencedSchemaName: table.schemaName,
+        referencedTableName: foreignKey.referencedTableName,
+        referencedColumnName: foreignKey.referencedColumnName,
+        onDelete: foreignKey.onDelete,
+        onUpdate: foreignKey.onUpdate,
+      })),
     table.schemaName
   )
   const next = normalizeForeignKeySet(normalizeForeignKeyDrafts(form), form.schemaName)
 
   return JSON.stringify(original) !== JSON.stringify(next)
+}
+
+function buildMySqlLikeAlterColumnPreview(
+  connection: SavedConnection,
+  column: CreateTableColumnDraft
+) {
+  const sourceName = (column.sourceName || "").trim()
+  const definition = buildColumnPreview(connection, column)
+
+  if (sourceName && sourceName !== column.name.trim()) {
+    return `CHANGE COLUMN ${quotePreviewIdentifier(connection, sourceName)} ${definition}`
+  }
+
+  return `MODIFY COLUMN ${definition}`
 }
 
 function buildCreatePreviewStatements(
@@ -673,12 +897,70 @@ function buildEditPreviewStatements(
           )
       )
     : []
+  const modifiedColumns = form.columns.filter((column) => {
+    const sourceName = (column.sourceName || "").trim()
+
+    if (!sourceName) {
+      return false
+    }
+
+    const originalColumn = table?.columns.find((item) => item.name.trim() === sourceName)
+
+    if (!originalColumn) {
+      return false
+    }
+
+    return (
+      column.name.trim() !== originalColumn.name.trim() ||
+      column.dataType.trim().toUpperCase() !== originalColumn.dataType.trim().toUpperCase() ||
+      column.size.trim() !== originalColumn.size.trim() ||
+      Boolean(column.unsigned) !== Boolean(originalColumn.unsigned) ||
+      column.notNull !== originalColumn.notNull ||
+      column.primaryKey !== originalColumn.primaryKey ||
+      column.autoIncrement !== originalColumn.autoIncrement ||
+      column.defaultValue.trim() !== originalColumn.defaultValue.trim() ||
+      column.comment.trim() !== originalColumn.comment.trim()
+    )
+  })
+  const originalForeignKeys = table
+    ? table.foreignKeys
+        .map((foreignKey) => parseForeignKeySummary(foreignKey))
+        .filter(
+          (foreignKey): foreignKey is NonNullable<ReturnType<typeof parseForeignKeySummary>> =>
+            Boolean(foreignKey)
+        )
+        .map((foreignKey) => ({
+          sourceColumn: foreignKey.sourceColumn,
+          referencedSchemaName: originalSchemaName,
+          referencedTableName: foreignKey.referencedTableName,
+          referencedColumnName: foreignKey.referencedColumnName,
+          onDelete: foreignKey.onDelete,
+          onUpdate: foreignKey.onUpdate,
+          constraintName: foreignKey.constraintName,
+        }))
+    : []
+  const nextForeignKeysDraft = normalizeForeignKeyDrafts(form)
+  const originalForeignKeyKeys = normalizeForeignKeySet(originalForeignKeys, originalSchemaName)
+  const nextForeignKeyKeys = normalizeForeignKeySet(nextForeignKeysDraft, form.schemaName)
+  const originalForeignKeyKeySet = new Set(originalForeignKeyKeys)
+  const foreignKeysToDrop = originalForeignKeys.filter((foreignKey) => {
+    const normalizedKey = normalizeForeignKeySet([foreignKey], originalSchemaName)[0]
+    return !nextForeignKeyKeys.includes(normalizedKey)
+  })
+  const foreignKeysToAdd = nextForeignKeysDraft.filter((foreignKey) => {
+    const normalizedKey = normalizeForeignKeySet([foreignKey], form.schemaName)[0]
+    return !originalForeignKeyKeySet.has(normalizedKey)
+  })
   const foreignKeyChanged = hasForeignKeyChanges(form, table)
   const rebuildSensitiveChanges = hasRebuildSensitiveChanges(form, table)
+  const isMySqlLike = connection.databaseType === "mysql" || connection.databaseType === "mariadb"
+  const foreignKeyCanAlter =
+    isMySqlLike && !rebuildSensitiveChanges && removedColumns.length === 0
   const requiresRebuild =
-    rebuildSensitiveChanges &&
-    !(removedColumns.length > 0 && !hasOnlyRebuildSensitiveChanges(form, table)) ||
-    foreignKeyChanged
+    !isMySqlLike &&
+    ((connection.databaseType === "sqlite" && removedColumns.length > 0) ||
+      rebuildSensitiveChanges ||
+      (foreignKeyChanged && !foreignKeyCanAlter))
 
   if (!requiresRebuild) {
     const statements: string[] = []
@@ -697,11 +979,73 @@ function buildEditPreviewStatements(
       statements.push(addColumnSql)
     }
 
+    if (isMySqlLike) {
+      for (const column of modifiedColumns) {
+        statements.push(
+          `ALTER TABLE ${statementsTarget} ${buildMySqlLikeAlterColumnPreview(connection, column)};`
+        )
+      }
+    }
+
     if (commentChanged) {
       if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
         statements.push(`ALTER TABLE ${statementsTarget} COMMENT=${quotePreviewSqlLiteral(form.comment)};`)
       } else if (connection.databaseType === "postgresql") {
         statements.push(`COMMENT ON TABLE ${statementsTarget} IS ${quotePreviewSqlLiteral(form.comment)};`)
+      }
+    }
+
+    if (isMySqlLike && modifiedColumns.length && originalForeignKeys.length) {
+      for (const foreignKey of originalForeignKeys) {
+        const constraintName =
+          foreignKey.constraintName ||
+          buildForeignKeyConstraintName(connection, originalTableName, foreignKey, 0)
+        statements.push(
+          `ALTER TABLE ${statementsTarget} DROP FOREIGN KEY ${quotePreviewIdentifier(
+            connection,
+            constraintName
+          )};`
+        )
+      }
+    } else if (foreignKeyCanAlter && foreignKeysToDrop.length) {
+      for (const foreignKey of foreignKeysToDrop) {
+        const constraintName =
+          foreignKey.constraintName ||
+          buildForeignKeyConstraintName(connection, originalTableName, foreignKey, 0)
+        statements.push(
+          `ALTER TABLE ${statementsTarget} DROP FOREIGN KEY ${quotePreviewIdentifier(
+            connection,
+            constraintName
+          )};`
+        )
+      }
+    }
+
+    if (isMySqlLike && modifiedColumns.length && nextForeignKeysDraft.length) {
+      for (let index = 0; index < nextForeignKeysDraft.length; index += 1) {
+        const foreignKey = nextForeignKeysDraft[index]
+        statements.push(
+          `ALTER TABLE ${statementsTarget} ADD ${buildForeignKeyPreviewDefinition(
+            connection,
+            originalTableName,
+            foreignKey,
+            index,
+            form.schemaName
+          )};`
+        )
+      }
+    } else if (foreignKeyCanAlter && foreignKeysToAdd.length) {
+      for (let index = 0; index < foreignKeysToAdd.length; index += 1) {
+        const foreignKey = foreignKeysToAdd[index]
+        statements.push(
+          `ALTER TABLE ${statementsTarget} ADD ${buildForeignKeyPreviewDefinition(
+            connection,
+            originalTableName,
+            foreignKey,
+            index,
+            form.schemaName
+          )};`
+        )
       }
     }
 
@@ -870,6 +1214,7 @@ function hasRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails
       column.name.trim() !== original.name.trim() ||
       column.dataType.trim().toUpperCase() !== original.dataType.trim().toUpperCase() ||
       column.size.trim() !== original.size.trim() ||
+      Boolean(column.unsigned) !== Boolean(original.unsigned) ||
       column.notNull !== original.notNull ||
       column.primaryKey !== original.primaryKey ||
       column.autoIncrement !== original.autoIncrement ||
@@ -877,40 +1222,6 @@ function hasRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails
       column.comment.trim() !== original.comment.trim()
     )
   }) || seenColumns.size !== table.columns.length
-}
-
-function hasOnlyRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails | null) {
-  if (!table) {
-    return false
-  }
-
-  const originalColumnsByName = new Map(
-    table.columns.map((column) => [column.name.trim(), column] as const)
-  )
-
-  return form.columns.some((column) => {
-    const sourceName = (column.sourceName || "").trim()
-
-    if (!sourceName) {
-      return false
-    }
-
-    const original = originalColumnsByName.get(sourceName)
-    if (!original) {
-      return false
-    }
-
-    return (
-      column.name.trim() !== original.name.trim() ||
-      column.dataType.trim().toUpperCase() !== original.dataType.trim().toUpperCase() ||
-      column.size.trim() !== original.size.trim() ||
-      column.notNull !== original.notNull ||
-      column.primaryKey !== original.primaryKey ||
-      column.autoIncrement !== original.autoIncrement ||
-      column.defaultValue.trim() !== original.defaultValue.trim() ||
-      column.comment.trim() !== original.comment.trim()
-    )
-  })
 }
 
 export function CreateTableModal({
@@ -946,6 +1257,34 @@ export function CreateTableModal({
   const isSingleSchema = availableSchemas.length === 1
   const isEditMode = mode === "edit"
   const referenceTableOptions = getReferenceTableOptions(database, form.schemaName, form.tableName)
+  const originalForeignKeysForPreview = table
+    ? table.foreignKeys
+        .map((value) => parseForeignKeySummary(value))
+        .filter(
+          (
+            foreignKey
+          ): foreignKey is NonNullable<ReturnType<typeof parseForeignKeySummary>> => Boolean(foreignKey)
+        )
+        .map((foreignKey) => ({
+          sourceColumn: foreignKey.sourceColumn,
+          referencedSchemaName: table.schemaName,
+          referencedTableName: foreignKey.referencedTableName,
+          referencedColumnName: foreignKey.referencedColumnName,
+          onDelete: foreignKey.onDelete,
+          onUpdate: foreignKey.onUpdate,
+        }))
+    : []
+  const nextForeignKeysForPreview = normalizeForeignKeyDrafts(form)
+  const originalForeignKeyKeysForPreview = normalizeForeignKeySet(
+    originalForeignKeysForPreview,
+    table?.schemaName || form.schemaName
+  )
+  const nextForeignKeyKeysForPreview = normalizeForeignKeySet(nextForeignKeysForPreview, form.schemaName)
+  const foreignKeyCanAlter =
+    (activeConnection.databaseType === "mysql" || activeConnection.databaseType === "mariadb") &&
+    !hasRebuildSensitiveChanges(form, table) &&
+    table &&
+    originalForeignKeyKeysForPreview.every((key) => nextForeignKeyKeysForPreview.includes(key))
   const sqlPreview = buildSqlPreview(
     activeConnection,
     form,
@@ -953,7 +1292,8 @@ export function CreateTableModal({
     table,
     databaseName || activeConnection.databaseName
   )
-  const rebuildSensitiveChanges = hasRebuildSensitiveChanges(form, table) || hasForeignKeyChanges(form, table)
+  const rebuildSensitiveChanges =
+    hasRebuildSensitiveChanges(form, table) || (hasForeignKeyChanges(form, table) && !foreignKeyCanAlter)
   const sourceColumnOptions = form.columns
     .filter((column) => column.name.trim())
     .map((column) => column.name.trim())
@@ -1001,18 +1341,105 @@ export function CreateTableModal({
     field: keyof CreateTableForeignKeyDraft,
     value: string
   ) {
-    setForm((current) => ({
-      ...current,
-      foreignKeys: current.foreignKeys.map((foreignKey, currentIndex) =>
+    setForm((current) => {
+      const nextForeignKeys = current.foreignKeys.map((foreignKey, currentIndex) =>
         currentIndex === index ? { ...foreignKey, [field]: value } : foreignKey
-      ),
-    }))
+      )
+      const nextForeignKey = nextForeignKeys[index]
+      const nextReference = referenceTableOptions.find(
+        (option) =>
+          option.schemaName ===
+            (nextForeignKey?.referencedSchemaName.trim() || current.schemaName) &&
+          option.tableName === (nextForeignKey?.referencedTableName.trim() || "")
+      )
+      const nextSourceColumnName =
+        getCompatibleSourceColumnName(
+          current.columns,
+          nextReference,
+          nextForeignKey?.referencedColumnName,
+          nextForeignKey?.sourceColumn
+        )
+      const normalizedForeignKeys = nextForeignKeys.map((foreignKey, currentIndex) =>
+        currentIndex === index
+          ? {
+              ...foreignKey,
+              sourceColumn: nextSourceColumnName,
+            }
+          : foreignKey
+      )
+
+      return {
+        ...current,
+        foreignKeys: normalizedForeignKeys,
+        columns: applyForeignKeySourceColumnSuggestion(
+          current.columns,
+          {
+            ...nextForeignKey,
+            sourceColumn: nextSourceColumnName,
+          },
+          nextReference
+        ),
+      }
+    })
+  }
+
+  function updateForeignKeyReference(index: number, value: string) {
+    const [nextSchemaName, nextTableName] = value.split("::")
+    const nextReference = referenceTableOptions.find(
+      (option) => option.schemaName === nextSchemaName && option.tableName === nextTableName
+    )
+
+    setForm((current) => {
+      const nextForeignKeys = current.foreignKeys.map((foreignKey, currentIndex) =>
+        currentIndex === index
+          ? {
+              ...foreignKey,
+              referencedSchemaName: nextReference?.schemaName ?? foreignKey.referencedSchemaName,
+              referencedTableName: nextReference?.tableName ?? foreignKey.referencedTableName,
+              referencedColumnName:
+                nextReference?.primaryKeyColumns[0] ?? foreignKey.referencedColumnName,
+            }
+          : foreignKey
+      )
+      const nextForeignKey = nextForeignKeys[index]
+      const nextSourceColumnName = getCompatibleSourceColumnName(
+        current.columns,
+        nextReference,
+        nextForeignKey?.referencedColumnName,
+        nextForeignKey?.sourceColumn
+      )
+
+      return {
+        ...current,
+        foreignKeys: nextForeignKeys.map((foreignKey, currentIndex) =>
+          currentIndex === index
+            ? {
+                ...foreignKey,
+                sourceColumn: nextSourceColumnName,
+              }
+            : foreignKey
+        ),
+        columns: applyForeignKeySourceColumnSuggestion(
+          current.columns,
+          {
+            ...nextForeignKey,
+            sourceColumn: nextSourceColumnName,
+          },
+          nextReference
+        ),
+      }
+    })
   }
 
   function addForeignKey() {
     const referenceTables = getReferenceTableOptions(database, form.schemaName, form.tableName)
-    const firstSourceColumn = form.columns.find((column) => column.name.trim())?.name ?? ""
     const firstReference = referenceTables[0]
+    const firstSourceColumn = getCompatibleSourceColumnName(
+      form.columns,
+      firstReference,
+      firstReference?.primaryKeyColumns[0],
+      ""
+    )
 
     setForm((current) => ({
       ...current,
@@ -1043,6 +1470,26 @@ export function CreateTableModal({
 
     if (!form.columns.some((column) => column.name.trim())) {
       setErrorMessage("Adicione pelo menos uma coluna com nome válido.")
+      return
+    }
+
+    const columnNames = new Set(
+      form.columns.map((column) => column.name.trim().toLowerCase()).filter(Boolean)
+    )
+    if (
+      form.foreignKeys.some(
+        (foreignKey) =>
+          foreignKey.sourceColumn.trim() &&
+          !columnNames.has(foreignKey.sourceColumn.trim().toLowerCase())
+      )
+    ) {
+      setErrorMessage("A coluna de origem da chave estrangeira precisa existir na lista de colunas.")
+      return
+    }
+
+    const foreignKeyCompatibilityError = getForeignKeyCompatibilityError(form, database)
+    if (foreignKeyCompatibilityError) {
+      setErrorMessage(foreignKeyCompatibilityError)
       return
     }
 
@@ -1252,13 +1699,13 @@ export function CreateTableModal({
                             <TableRow>
                               <TableHead className="w-12">#</TableHead>
                               <TableHead className="w-80">Nome</TableHead>
-                              <TableHead className="w-32">Tipo</TableHead>
+                              <TableHead className="w-40">Tipos de dado</TableHead>
                               <TableHead className="w-32">Tamanho</TableHead>
                               <TableHead className="w-80">Default</TableHead>
                               <TableHead>Comentário</TableHead>
                               <TableHead className="w-24 text-center">Not Null</TableHead>
-                              <TableHead className="w-20 text-center">PK</TableHead>
-                              <TableHead className="w-28 text-center">AI</TableHead>
+                              <TableHead className="w-40 text-center">Chave primária</TableHead>
+                              <TableHead className="w-36 text-center">Auto increment</TableHead>
                               <TableHead className="w-14" />
                             </TableRow>
                           </TableHeader>
@@ -1377,10 +1824,24 @@ export function CreateTableModal({
                   <TabsContent value="foreign-keys">
                     <Card className="border-white/10 bg-white/5">
                       <CardHeader className="pb-3">
-                        <CardTitle className="text-base text-white">Chaves Estrangeiras</CardTitle>
-                        <CardDescription>
-                          Associe uma coluna da tabela atual às chaves primárias de outras tabelas.
-                        </CardDescription>
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <CardTitle className="text-base text-white">Chaves Estrangeiras</CardTitle>
+                            <CardDescription>
+                              Associe uma coluna da tabela atual às chaves primárias de outras tabelas.
+                            </CardDescription>
+                          </div>
+                          <Button
+                            type="button"
+                            onClick={addForeignKey}
+                            variant="outline"
+                            className="border-white/10 bg-white/5 text-white hover:bg-white/10"
+                            disabled={!sourceColumnOptions.length || !referenceTableOptions.length}
+                          >
+                            <Plus className="size-4" />
+                            Adicionar relacionamento
+                          </Button>
+                        </div>
                       </CardHeader>
                       <CardContent className="space-y-4 pt-0">
                         {referenceTableOptions.length ? (
@@ -1443,31 +1904,7 @@ export function CreateTableModal({
                                     <TableCell>
                                       <Select
                                         value={selectedReferenceValue}
-                                        onValueChange={(value) => {
-                                          const [nextSchemaName, nextTableName] = value.split("::")
-                                          const nextReference = referenceTableOptions.find(
-                                            (option) =>
-                                              option.schemaName === nextSchemaName &&
-                                              option.tableName === nextTableName
-                                          )
-                                          setForm((current) => ({
-                                            ...current,
-                                            foreignKeys: current.foreignKeys.map((item, currentIndex) =>
-                                              currentIndex === index
-                                                ? {
-                                                    ...item,
-                                                    referencedSchemaName:
-                                                      nextReference?.schemaName ?? item.referencedSchemaName,
-                                                    referencedTableName:
-                                                      nextReference?.tableName ?? item.referencedTableName,
-                                                    referencedColumnName:
-                                                      nextReference?.primaryKeyColumns[0] ??
-                                                      item.referencedColumnName,
-                                                  }
-                                                : item
-                                            ),
-                                          }))
-                                        }}
+                                        onValueChange={(value) => updateForeignKeyReference(index, value)}
                                       >
                                         <SelectTrigger className="h-9 w-full">
                                           <SelectValue placeholder="Selecione a tabela" />
@@ -1567,22 +2004,9 @@ export function CreateTableModal({
                             Nenhuma chave estrangeira configurada.
                           </div>
                         )}
-
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="text-xs text-white/45">
-                            Selecione uma coluna local e a PK da tabela alvo para criar o relacionamento.
-                          </p>
-                          <Button
-                            type="button"
-                            onClick={addForeignKey}
-                            variant="outline"
-                            className="border-white/10 bg-white/5 text-white hover:bg-white/10"
-                            disabled={!sourceColumnOptions.length || !referenceTableOptions.length}
-                          >
-                            <Plus className="size-4" />
-                            Adicionar relacionamento
-                          </Button>
-                        </div>
+                        <p className="text-xs text-white/45">
+                          Selecione uma coluna local e a PK da tabela alvo para criar o relacionamento.
+                        </p>
                       </CardContent>
                     </Card>
                   </TabsContent>

@@ -10,6 +10,7 @@ export type CreateTableColumnDraft = {
   name: string
   dataType: string
   size: string
+  unsigned?: boolean
   notNull: boolean
   primaryKey: boolean
   autoIncrement: boolean

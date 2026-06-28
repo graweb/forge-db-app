@@ -38,6 +38,7 @@ export async function POST(
         name: column?.name ?? "",
         dataType: column?.dataType ?? "",
         size: column?.size ?? "",
+        unsigned: Boolean(column?.unsigned),
         notNull: Boolean(column?.notNull),
         primaryKey: Boolean(column?.primaryKey),
         autoIncrement: Boolean(column?.autoIncrement),

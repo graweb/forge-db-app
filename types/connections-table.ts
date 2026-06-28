@@ -2,6 +2,7 @@ export type CreateTableColumnInput = {
   name: string
   dataType: string
   size: string
+  unsigned?: boolean
   notNull: boolean
   primaryKey: boolean
   autoIncrement: boolean
@@ -38,6 +39,7 @@ export type TableColumnDefinition = {
   name: string
   dataType: string
   size: string
+  unsigned?: boolean
   notNull: boolean
   primaryKey: boolean
   autoIncrement: boolean

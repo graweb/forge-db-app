@@ -81,6 +81,7 @@ export async function getPostgreSqlColumnsByItem(
       "column_name",
       "data_type",
       "column_size",
+      undefined,
       "primary_key"
     ),
   }

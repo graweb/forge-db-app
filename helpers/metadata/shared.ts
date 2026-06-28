@@ -4,6 +4,7 @@ export type ColumnDetails = {
   name: string
   dataType: string
   size: string
+  unsigned?: boolean
   primaryKey?: boolean
 }
 
@@ -86,6 +87,7 @@ export function buildColumnsDetailsMap(
   columnKey: string,
   dataTypeKey: string,
   sizeKey?: string,
+  unsignedKey?: string,
   primaryKeyKey?: string
 ) {
   const allowedObjects = new Set(objectNames)
@@ -96,6 +98,9 @@ export function buildColumnsDetailsMap(
     const name = String(row[columnKey] ?? row[columnKey.toUpperCase()] ?? "").trim()
     const dataType = String(row[dataTypeKey] ?? row[dataTypeKey.toUpperCase()] ?? "").trim().toUpperCase()
     const size = sizeKey ? String(row[sizeKey] ?? row[sizeKey.toUpperCase()] ?? "").trim() : ""
+    const unsigned = unsignedKey
+      ? Boolean(row[unsignedKey] ?? row[unsignedKey.toUpperCase()] ?? false)
+      : undefined
     const primaryKey = primaryKeyKey
       ? Boolean(row[primaryKeyKey] ?? row[primaryKeyKey.toUpperCase()] ?? false)
       : undefined
@@ -112,6 +117,7 @@ export function buildColumnsDetailsMap(
       name,
       dataType,
       size,
+      ...(unsigned !== undefined ? { unsigned } : {}),
       ...(primaryKey !== undefined ? { primaryKey } : {}),
     })
   }

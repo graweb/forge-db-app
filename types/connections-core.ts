@@ -43,6 +43,7 @@ export type DatabaseStructureGroup = {
       name: string
       dataType: string
       size: string
+      unsigned?: boolean
       primaryKey?: boolean
     }>
   >

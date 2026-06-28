@@ -50,3 +50,20 @@ export function buildMySqlLikeAddForeignKeySql(
     return `ALTER TABLE ${qualifiedTable} ADD ${definition}`
   })
 }
+
+export function buildMySqlLikeDropForeignKeySql(
+  connection: SavedConnection,
+  schemaName: string,
+  tableName: string,
+  constraintName: string
+) {
+  const qualifiedTable = `${quoteIdentifier(connection.databaseType, schemaName)}.${quoteIdentifier(
+    connection.databaseType,
+    tableName
+  )}`
+
+  return `ALTER TABLE ${qualifiedTable} DROP FOREIGN KEY ${quoteIdentifier(
+    connection.databaseType,
+    constraintName
+  )}`
+}

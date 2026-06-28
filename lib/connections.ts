@@ -61,6 +61,7 @@ import {
 } from "@/helpers/connections"
 import {
   buildMySqlLikeAddForeignKeySql,
+  buildMySqlLikeDropForeignKeySql,
   buildMySqlLikeCreateTableSql,
 } from "@/helpers/create-table/mysql"
 import { buildPostgreSqlCreateTableSql } from "@/helpers/create-table/postgres"
@@ -68,6 +69,8 @@ import { buildSqlServerCreateTableSql } from "@/helpers/create-table/sqlserver"
 import { buildSqliteCreateTableSql } from "@/helpers/create-table/sqlite"
 import {
   buildCreateTableColumnDefinition,
+  buildCreateTableForeignKeyDefinition,
+  buildForeignKeyConstraintName,
   type CreateTableColumnSpec,
   type CreateTableForeignKeySpec,
 } from "@/helpers/create-table/shared"
@@ -591,6 +594,7 @@ export async function updateTable(
       name: sanitizeDatabaseIdentifier(column.name),
       dataType: sanitizeText(column.dataType).toUpperCase(),
       size: sanitizeText(column.size),
+      unsigned: Boolean((column as { unsigned?: boolean }).unsigned),
       notNull: Boolean(column.notNull),
       primaryKey: Boolean(column.primaryKey),
       autoIncrement: Boolean(column.autoIncrement),
@@ -611,6 +615,19 @@ export async function updateTable(
     throw new Error("Informe ao menos uma coluna válida para atualizar a tabela.")
   }
 
+  if (
+    (connection.databaseType === "mysql" || connection.databaseType === "mariadb") &&
+    normalizedForeignKeys.length
+  ) {
+    await assertMySqlForeignKeyCompatibility(
+      connection,
+      normalizedDatabase || connection.databaseName,
+      normalizedSchema,
+      normalizedColumns,
+      normalizedForeignKeys
+    )
+  }
+
   const originalTableDetails = await getTableDetails(
     connection,
     normalizedDatabase,
@@ -623,10 +640,16 @@ export async function updateTable(
   const seenColumns = new Set<string>()
   const originalForeignKeys = originalTableDetails.foreignKeys
     .map((foreignKey) => parseForeignKeySummary(foreignKey, normalizedSchema))
-    .filter((foreignKey): foreignKey is CreateTableForeignKeySpec => Boolean(foreignKey))
+    .filter(
+      (
+        foreignKey
+      ): foreignKey is CreateTableForeignKeySpec & {
+        constraintName?: string
+      } => Boolean(foreignKey)
+    )
   const originalForeignKeyKeys = buildForeignKeyComparisonKeys(originalForeignKeys, normalizedSchema)
   const nextForeignKeyKeys = buildForeignKeyComparisonKeys(normalizedForeignKeys, normalizedSchema)
-  const changedColumns = normalizedColumns.some((column) => {
+  const modifiedColumns = normalizedColumns.filter((column) => {
     const sourceName = (column.sourceName || "").trim()
 
     if (!sourceName) {
@@ -635,7 +658,7 @@ export async function updateTable(
 
     const original = originalColumnsByName.get(sourceName)
     if (!original) {
-      return true
+      return false
     }
 
     seenColumns.add(sourceName)
@@ -644,6 +667,7 @@ export async function updateTable(
       column.name.trim() !== original.name.trim() ||
       column.dataType.trim().toUpperCase() !== original.dataType.trim().toUpperCase() ||
       column.size.trim() !== original.size.trim() ||
+      Boolean(column.unsigned) !== Boolean(original.unsigned) ||
       column.notNull !== original.notNull ||
       column.primaryKey !== original.primaryKey ||
       column.autoIncrement !== original.autoIncrement ||
@@ -657,10 +681,13 @@ export async function updateTable(
   const foreignKeyChanged =
     originalForeignKeyKeys.length !== nextForeignKeyKeys.length ||
     originalForeignKeyKeys.some((key, index) => key !== nextForeignKeyKeys[index])
+  const isMySqlLike = connection.databaseType === "mysql" || connection.databaseType === "mariadb"
+  const foreignKeyCanAlter = isMySqlLike && removedColumns.length === 0
   const requiresRebuild =
-    changedColumns ||
-    (connection.databaseType === "sqlite" && removedColumns.length > 0) ||
-    foreignKeyChanged
+    !isMySqlLike &&
+    ((connection.databaseType === "sqlite" && removedColumns.length > 0) ||
+      (connection.databaseType !== "sqlite" && modifiedColumns.length > 0) ||
+      (foreignKeyChanged && !foreignKeyCanAlter))
 
   const hasTableNameChange = nextTableName !== originalTableName
   const hasCommentChange = input.comment.trim() !== originalTableDetails.comment.trim()
@@ -680,6 +707,22 @@ export async function updateTable(
             nextTableName
           )}`
 
+          if ((foreignKeyChanged || modifiedColumns.length) && originalForeignKeys.length) {
+            for (const foreignKey of originalForeignKeys) {
+              const constraintName =
+                foreignKey.constraintName ||
+                buildForeignKeyConstraintName(connection, originalTableName, foreignKey, 0)
+              await client.query(
+                buildMySqlLikeDropForeignKeySql(
+                  connection,
+                  normalizedSchema,
+                  originalTableName,
+                  constraintName
+                )
+              )
+            }
+          }
+
           for (const column of removedColumns) {
             await client.query(
               `ALTER TABLE ${qualifiedOriginal} DROP COLUMN ${quoteIdentifier(
@@ -687,6 +730,22 @@ export async function updateTable(
                 column.name
               )}`
             )
+          }
+
+          for (const column of modifiedColumns) {
+            const sourceName = (column.sourceName || "").trim()
+            const definition = buildCreateTableColumnDefinition(connection, column)
+
+            if (sourceName && sourceName !== column.name.trim()) {
+              await client.query(
+                `ALTER TABLE ${qualifiedOriginal} CHANGE COLUMN ${quoteIdentifier(
+                  connection.databaseType,
+                  sourceName
+                )} ${definition}`
+              )
+            } else {
+              await client.query(`ALTER TABLE ${qualifiedOriginal} MODIFY COLUMN ${definition}`)
+            }
           }
 
           for (const column of addedColumns) {
@@ -701,6 +760,25 @@ export async function updateTable(
             )
           }
 
+          if (
+            foreignKeyCanAlter &&
+            normalizedForeignKeys.length &&
+            (foreignKeyChanged || modifiedColumns.length)
+          ) {
+            for (let index = 0; index < normalizedForeignKeys.length; index += 1) {
+              const foreignKey = normalizedForeignKeys[index]
+              await client.query(
+                `ALTER TABLE ${qualifiedOriginal} ADD ${buildCreateTableForeignKeyDefinition(
+                  connection,
+                  originalTableName,
+                  foreignKey,
+                  index,
+                  normalizedSchema
+                )}`
+              )
+            }
+          }
+
           if (hasTableNameChange) {
             await client.query(`RENAME TABLE ${qualifiedOriginal} TO ${qualifiedNext}`)
           }
@@ -708,7 +786,7 @@ export async function updateTable(
           return {
             message: "Tabela atualizada com sucesso.",
             details:
-              hasTableNameChange && !hasCommentChange && !addedColumns.length
+              hasTableNameChange && !hasCommentChange && !addedColumns.length && !modifiedColumns.length
                 ? `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`
                 : `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`,
             tableName: nextTableName,
@@ -734,6 +812,21 @@ export async function updateTable(
             )
           }
 
+          for (const column of modifiedColumns) {
+            const definition = buildCreateTableColumnDefinition(connection, column)
+
+            if ((column.sourceName || "").trim() && column.name.trim() !== (column.sourceName || "").trim()) {
+              await client.query(
+                `ALTER TABLE ${qualifiedOriginal} RENAME COLUMN ${quoteIdentifier(
+                  "postgresql",
+                  column.sourceName || column.name
+                )} TO ${quoteIdentifier("postgresql", column.name)}`
+              )
+            }
+
+            await client.query(`ALTER TABLE ${qualifiedOriginal} ALTER COLUMN ${definition}`)
+          }
+
           for (const column of addedColumns) {
             await client.query(
               `ALTER TABLE ${qualifiedOriginal} ADD COLUMN ${buildCreateTableColumnDefinition(
@@ -756,7 +849,7 @@ export async function updateTable(
           return {
             message: "Tabela atualizada com sucesso.",
             details:
-              hasTableNameChange && !hasCommentChange && !addedColumns.length
+              hasTableNameChange && !hasCommentChange && !addedColumns.length && !modifiedColumns.length
                 ? `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`
                 : `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`,
             tableName: nextTableName,
@@ -781,6 +874,12 @@ export async function updateTable(
               )
           }
 
+          for (const column of modifiedColumns) {
+            await pool.request().query(
+              `ALTER TABLE ${qualifiedOriginal} ALTER COLUMN ${buildCreateTableColumnDefinition(connection, column)}`
+            )
+          }
+
           for (const column of addedColumns) {
             await pool.request().query(
               `ALTER TABLE ${qualifiedOriginal} ADD ${buildCreateTableColumnDefinition(connection, column)}`
@@ -798,7 +897,7 @@ export async function updateTable(
           return {
             message: "Tabela atualizada com sucesso.",
             details:
-              hasTableNameChange && !addedColumns.length
+              hasTableNameChange && !addedColumns.length && !modifiedColumns.length
                 ? `A tabela ${originalTableName} foi renomeada para ${nextTableName}.`
                 : `A estrutura da tabela ${originalTableName} foi atualizada com sucesso.`,
             tableName: nextTableName,
@@ -1215,28 +1314,107 @@ function normalizeForeignKeyAction(value?: string) {
     : ""
 }
 
+function normalizeMySqlForeignKeyType(dataType: string) {
+  switch (sanitizeText(dataType).trim().toUpperCase()) {
+    case "INTEGER":
+      return "INT"
+    case "NUMERIC":
+      return "DECIMAL"
+    default:
+      return sanitizeText(dataType).trim().toUpperCase()
+  }
+}
+
+function formatColumnTypeForError(column: { dataType: string; size: string; unsigned?: boolean }) {
+  const dataType = normalizeMySqlForeignKeyType(column.dataType)
+  const size = sanitizeText(column.size).trim()
+  const unsigned = Boolean(column.unsigned)
+
+  return `${size ? `${dataType}(${size})` : dataType}${unsigned ? " UNSIGNED" : ""}`
+}
+
+async function assertMySqlForeignKeyCompatibility(
+  connection: SavedConnection,
+  databaseName: string,
+  defaultSchemaName: string,
+  sourceColumns: Array<{ name: string; dataType: string; size: string; unsigned?: boolean }>,
+  foreignKeys: CreateTableForeignKeySpec[]
+) {
+  const sourceColumnsByName = new Map(
+    sourceColumns.map((column) => [column.name.trim().toLowerCase(), column] as const)
+  )
+  const referencedTableCache = new Map<string, TableDetails>()
+
+  for (const foreignKey of foreignKeys) {
+    const sourceColumn = sourceColumnsByName.get(foreignKey.sourceColumn.trim().toLowerCase())
+
+    if (!sourceColumn) {
+      continue
+    }
+
+    const referencedSchemaName = foreignKey.referencedSchemaName?.trim() || defaultSchemaName
+    const cacheKey = `${referencedSchemaName.toLowerCase()}::${foreignKey.referencedTableName.trim().toLowerCase()}`
+
+    let referencedTable = referencedTableCache.get(cacheKey)
+    if (!referencedTable) {
+      referencedTable = await getTableDetails(
+        connection,
+        databaseName,
+        referencedSchemaName,
+        foreignKey.referencedTableName
+      )
+      referencedTableCache.set(cacheKey, referencedTable)
+    }
+
+    const referencedColumn = referencedTable.columns.find(
+      (column) => column.name.trim().toLowerCase() === foreignKey.referencedColumnName.trim().toLowerCase()
+    )
+
+    if (!referencedColumn) {
+      continue
+    }
+
+    const sourceType = normalizeMySqlForeignKeyType(sourceColumn.dataType)
+    const referencedType = normalizeMySqlForeignKeyType(referencedColumn.dataType)
+    const sourceUnsigned = Boolean(sourceColumn.unsigned)
+    const referencedUnsigned = Boolean(referencedColumn.unsigned)
+
+    if (sourceType !== referencedType || sourceUnsigned !== referencedUnsigned) {
+      throw new Error(
+        `A chave estrangeira ${sourceColumn.name} -> ${referencedTable.tableName}.${referencedColumn.name} não pode ser criada porque ${formatColumnTypeForError(sourceColumn)} é incompatível com ${formatColumnTypeForError(referencedColumn)}.`
+      )
+    }
+  }
+}
+
 function parseForeignKeySummary(
   value: string,
   defaultSchemaName: string
-): CreateTableForeignKeySpec | null {
+): (CreateTableForeignKeySpec & { constraintName?: string }) | null {
   const match = value.trim().match(/^(?:(.+?):\s*)?(.+?)\s*->\s*(.+)$/)
 
   if (!match) {
     return null
   }
 
-  const referenced = match[3].trim()
+  const referencedWithActions = match[3].trim()
+  const actionIndex = referencedWithActions.search(/\s+ON\s+(DELETE|UPDATE)\s+/i)
+  const referenced = (actionIndex >= 0 ? referencedWithActions.slice(0, actionIndex) : referencedWithActions).trim()
+  const actions = actionIndex >= 0 ? referencedWithActions.slice(actionIndex).trim() : ""
   const lastDot = referenced.lastIndexOf(".")
   const referencedTableName = lastDot >= 0 ? referenced.slice(0, lastDot) : referenced
   const referencedColumnName = lastDot >= 0 ? referenced.slice(lastDot + 1) : ""
+  const deleteMatch = actions.match(/\bON DELETE\s+(.+?)(?=\s+ON UPDATE\s+|$)/i)
+  const updateMatch = actions.match(/\bON UPDATE\s+(.+)$/i)
 
   return {
+    constraintName: match[1]?.trim() ?? "",
     sourceColumn: sanitizeDatabaseIdentifier(match[2]),
     referencedSchemaName: defaultSchemaName,
     referencedTableName: sanitizeDatabaseIdentifier(referencedTableName),
     referencedColumnName: sanitizeDatabaseIdentifier(referencedColumnName),
-    onDelete: "",
-    onUpdate: "",
+    onDelete: normalizeForeignKeyAction(deleteMatch?.[1]),
+    onUpdate: normalizeForeignKeyAction(updateMatch?.[1]),
   }
 }
 
@@ -1278,6 +1456,7 @@ export async function createTable(
       name: sanitizeDatabaseIdentifier(column.name),
       dataType: sanitizeSqlType(column.dataType),
       size: sanitizeSqlExpression(column.size),
+      unsigned: Boolean((column as { unsigned?: boolean }).unsigned),
       notNull: Boolean(column.notNull),
       primaryKey: Boolean(column.primaryKey),
       autoIncrement: Boolean(column.autoIncrement),
@@ -1293,6 +1472,19 @@ export async function createTable(
 
   if (!columns.length) {
     throw new Error("Adicione ao menos uma coluna para criar a tabela.")
+  }
+
+  if (
+    (connection.databaseType === "mysql" || connection.databaseType === "mariadb") &&
+    foreignKeys.length
+  ) {
+    await assertMySqlForeignKeyCompatibility(
+      connection,
+      targetDatabaseName || connection.databaseName,
+      schemaName,
+      columns,
+      foreignKeys
+    )
   }
 
   switch (connection.databaseType) {
@@ -2449,9 +2641,10 @@ async function getMySqlLikeTableDetails(
       client,
       connection.databaseType,
       `
-        SELECT
+      SELECT
           COLUMN_NAME AS name,
           DATA_TYPE AS data_type,
+          COLUMN_TYPE AS column_type,
           CHARACTER_MAXIMUM_LENGTH AS char_length,
           NUMERIC_PRECISION AS numeric_precision,
           NUMERIC_SCALE AS numeric_scale,
@@ -2489,6 +2682,8 @@ async function getMySqlLikeTableDetails(
           kcu.COLUMN_NAME AS column_name,
           kcu.REFERENCED_TABLE_NAME AS referenced_table,
           kcu.REFERENCED_COLUMN_NAME AS referenced_column,
+          rc.DELETE_RULE AS delete_rule,
+          rc.UPDATE_RULE AS update_rule,
           kcu.ORDINAL_POSITION AS ordinal_position
         FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
         INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
@@ -2547,7 +2742,35 @@ async function getMySqlLikeTableDetails(
       columns: rows.map((row) => ({
         name: String(row.name ?? row.COLUMN_NAME ?? "").trim(),
         dataType: String(row.data_type ?? row.DATA_TYPE ?? "").trim().toUpperCase(),
-        size: normalizeColumnSize(row.char_length, row.numeric_precision, row.numeric_scale),
+        unsigned: /\bunsigned\b/i.test(String(row.column_type ?? row.COLUMN_TYPE ?? "").trim()),
+        size: (() => {
+          const columnType = String(row.column_type ?? row.COLUMN_TYPE ?? "").trim()
+          const dataType = String(row.data_type ?? row.DATA_TYPE ?? "").trim().toUpperCase()
+          const sizeFromType = (() => {
+            const match = columnType.match(/^[^(]+\((\d+(?:\s*,\s*\d+)?)\)(?:\s+unsigned|\s+zerofill)?$/i)
+
+            if (!match) {
+              return ""
+            }
+
+            return match[1].replace(/\s+/g, "").trim()
+          })()
+
+          if (dataType === "BIGINT") {
+            return sizeFromType || "20"
+          }
+
+          if (
+            sizeFromType &&
+            /^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|DECIMAL|NUMERIC|NUMBER|FLOAT|DOUBLE)$/i.test(
+              dataType
+            )
+          ) {
+            return sizeFromType
+          }
+
+          return normalizeColumnSize(row.char_length, row.numeric_precision, row.numeric_scale)
+        })(),
         notNull: String(row.is_nullable ?? row.IS_NULLABLE ?? "").toUpperCase() === "NO",
         primaryKey: String(row.column_key ?? row.COLUMN_KEY ?? "").toUpperCase() === "PRI",
         autoIncrement: String(row.extra ?? row.EXTRA ?? "").toLowerCase().includes("auto_increment"),
@@ -2559,7 +2782,16 @@ async function getMySqlLikeTableDetails(
         const columnName = String(row.column_name ?? row.COLUMN_NAME ?? "").trim()
         const referencedTable = String(row.referenced_table ?? row.REFERENCED_TABLE_NAME ?? "").trim()
         const referencedColumn = String(row.referenced_column ?? row.REFERENCED_COLUMN_NAME ?? "").trim()
-        return `${constraintName}: ${columnName} -> ${referencedTable}.${referencedColumn}`
+        const deleteRule = String(row.delete_rule ?? row.DELETE_RULE ?? "").trim().toUpperCase()
+        const updateRule = String(row.update_rule ?? row.UPDATE_RULE ?? "").trim().toUpperCase()
+        const actions = [
+          deleteRule ? `ON DELETE ${deleteRule}` : "",
+          updateRule ? `ON UPDATE ${updateRule}` : "",
+        ]
+          .filter(Boolean)
+          .join(" ")
+
+        return `${constraintName}: ${columnName} -> ${referencedTable}.${referencedColumn}${actions ? ` ${actions}` : ""}`
       }),
       indexes: extractNames(indexes),
       triggers: extractNames(triggers),

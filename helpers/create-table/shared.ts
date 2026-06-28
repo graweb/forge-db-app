@@ -5,6 +5,7 @@ export type CreateTableColumnSpec = {
   name: string
   dataType: string
   size: string
+  unsigned?: boolean
   notNull: boolean
   primaryKey: boolean
   autoIncrement: boolean
@@ -43,7 +44,7 @@ export function buildCreateTableColumnDefinition(
   const baseType = column.dataType
   const typeWithSize =
     column.size &&
-    /^(CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER|ENUM|FLOAT|DOUBLE)$/.test(baseType)
+    /^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER|ENUM|FLOAT|DOUBLE)$/.test(baseType)
       ? `${baseType}(${column.size})`
       : baseType
 
@@ -52,6 +53,16 @@ export function buildCreateTableColumnDefinition(
   }
 
   parts.push(typeWithSize)
+
+  if (
+    column.unsigned &&
+    (connection.databaseType === "mysql" || connection.databaseType === "mariadb") &&
+    /^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|DECIMAL|NUMERIC|NUMBER|FLOAT|DOUBLE)$/i.test(
+      baseType
+    )
+  ) {
+    parts.push("UNSIGNED")
+  }
 
   if (column.autoIncrement) {
     if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
@@ -82,7 +93,7 @@ export function buildCreateTableColumnDefinition(
   return parts.join(" ")
 }
 
-function buildForeignKeyConstraintName(
+export function buildForeignKeyConstraintName(
   connection: SavedConnection,
   tableName: string,
   foreignKey: CreateTableForeignKeySpec,
