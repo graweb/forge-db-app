@@ -5,6 +5,7 @@ export type CreateTableColumnInput = {
   unsigned?: boolean
   notNull: boolean
   primaryKey: boolean
+  unique?: boolean
   autoIncrement: boolean
   defaultValue: string
   comment: string
@@ -19,6 +20,12 @@ export type CreateTableForeignKeyInput = {
   onUpdate?: string
 }
 
+export type CreateTableIndexInput = {
+  name?: string
+  columns: string[]
+  unique?: boolean
+}
+
 export type CreateTableInput = {
   databaseName: string
   schemaName: string
@@ -26,6 +33,7 @@ export type CreateTableInput = {
   comment: string
   columns: CreateTableColumnInput[]
   foreignKeys?: CreateTableForeignKeyInput[]
+  indexes?: CreateTableIndexInput[]
 }
 
 export type CreateTableResult = {
@@ -42,9 +50,17 @@ export type TableColumnDefinition = {
   unsigned?: boolean
   notNull: boolean
   primaryKey: boolean
+  unique?: boolean
   autoIncrement: boolean
   defaultValue: string
   comment: string
+}
+
+export type TableIndexDefinition = {
+  name: string
+  columns: string[]
+  unique: boolean
+  primaryKey: boolean
 }
 
 export type TableDetails = {
@@ -54,7 +70,7 @@ export type TableDetails = {
   comment: string
   columns: TableColumnDefinition[]
   foreignKeys: string[]
-  indexes: string[]
+  indexes: TableIndexDefinition[]
   triggers: string[]
   functions: string[]
 }
@@ -67,6 +83,7 @@ export type UpdateTableInput = {
   columns: Array<TableColumnDefinition & { sourceName?: string }>
   comment: string
   foreignKeys?: CreateTableForeignKeyInput[]
+  indexes?: CreateTableIndexInput[]
 }
 
 export type UpdateTableResult = {

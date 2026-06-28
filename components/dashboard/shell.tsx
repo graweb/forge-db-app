@@ -209,12 +209,18 @@ export function DashboardShell({
                       size: string
                       notNull: boolean
                       primaryKey: boolean
+                      unique?: boolean
                       autoIncrement: boolean
                       defaultValue: string
                       comment: string
                     }>
                     foreignKeys?: string[]
-                    indexes?: string[]
+                    indexes?: Array<{
+                      name: string
+                      columns: string[]
+                      unique: boolean
+                      primaryKey: boolean
+                    }>
                     triggers?: string[]
                     functions?: string[]
                   } = await response.json()

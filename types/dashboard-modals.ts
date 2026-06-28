@@ -13,6 +13,7 @@ export type CreateTableColumnDraft = {
   unsigned?: boolean
   notNull: boolean
   primaryKey: boolean
+  unique?: boolean
   autoIncrement: boolean
   defaultValue: string
   comment: string
@@ -28,12 +29,24 @@ export type CreateTableForeignKeyDraft = {
   onUpdate: string
 }
 
+export type CreateTableIndexDraft = {
+  id?: string
+  sourceName?: string
+  name: string
+  columnName: string
+  columns: string[]
+  unique: boolean
+  primaryKey: boolean
+  removable: boolean
+}
+
 export type CreateTableDraft = {
   schemaName: string
   tableName: string
   comment: string
   columns: CreateTableColumnDraft[]
   foreignKeys: CreateTableForeignKeyDraft[]
+  indexes: CreateTableIndexDraft[]
 }
 
 export type CreateTableModalProps = {

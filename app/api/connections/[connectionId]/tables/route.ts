@@ -27,6 +27,7 @@ export async function POST(
     const body = (await request.json()) as Partial<CreateTableInput> & {
       columns?: Array<Partial<CreateTableInput["columns"][number]>>
       foreignKeys?: Array<Partial<NonNullable<CreateTableInput["foreignKeys"]>[number]>>
+      indexes?: Array<Partial<NonNullable<CreateTableInput["indexes"]>[number]>>
     }
 
     const result = await createTable(connection, {
@@ -41,6 +42,7 @@ export async function POST(
         unsigned: Boolean(column?.unsigned),
         notNull: Boolean(column?.notNull),
         primaryKey: Boolean(column?.primaryKey),
+        unique: Boolean(column?.unique),
         autoIncrement: Boolean(column?.autoIncrement),
         defaultValue: column?.defaultValue ?? "",
         comment: column?.comment ?? "",
@@ -52,6 +54,11 @@ export async function POST(
         referencedColumnName: foreignKey?.referencedColumnName ?? "",
         onDelete: foreignKey?.onDelete ?? "",
         onUpdate: foreignKey?.onUpdate ?? "",
+      })),
+      indexes: (body.indexes ?? []).map((index) => ({
+        name: index?.name ?? "",
+        columns: (index?.columns ?? []).map((columnName) => columnName ?? "").filter(Boolean),
+        unique: Boolean(index?.unique),
       })),
     })
 

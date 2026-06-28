@@ -22,6 +22,12 @@ export type CreateTableForeignKeySpec = {
   onUpdate?: string
 }
 
+export type CreateTableIndexSpec = {
+  name: string
+  columns: string[]
+  unique: boolean
+}
+
 export function normalizeDefaultValue(value: string) {
   const trimmed = value.trim()
 
@@ -113,6 +119,75 @@ export function buildForeignKeyConstraintName(
   }
 
   return `\`fk_${suffix.replace(/`/g, "``")}\``
+}
+
+export function buildTableIndexName(tableName: string, columnNames: string[] | string, index: number) {
+  const columns = Array.isArray(columnNames) ? columnNames : [columnNames]
+  const suffix = `${tableName}_${columns.join("_")}_${index}`
+    .replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+
+  return `idx_${suffix}`.toLowerCase()
+}
+
+export function buildCreateTableIndexDefinition(
+  connection: SavedConnection,
+  tableName: string,
+  index: CreateTableIndexSpec,
+  indexNumber: number,
+  defaultSchemaName: string
+) {
+  const indexName = index.name.trim() || buildTableIndexName(tableName, index.columns, indexNumber)
+  const columnNames = index.columns.map((column) => column.trim()).filter(Boolean)
+  const quotedIndexName = quoteIdentifier(connection.databaseType, indexName)
+  const quotedColumnNames = columnNames.map((columnName) => quoteIdentifier(connection.databaseType, columnName))
+
+  if (!columnNames.length) {
+    throw new Error("Informe ao menos uma coluna válida para criar o índice.")
+  }
+
+  const uniquePrefix = index.unique ? "UNIQUE " : ""
+
+  if (connection.databaseType === "sqlite") {
+    return `CREATE ${uniquePrefix}INDEX ${quotedIndexName} ON ${quoteIdentifier(connection.databaseType, tableName)} (${quotedColumnNames.join(", ")})`
+  }
+
+  const quotedSchema = quoteIdentifier(connection.databaseType, defaultSchemaName)
+  const quotedTable = quoteIdentifier(connection.databaseType, tableName)
+
+  return `CREATE ${uniquePrefix}INDEX ${quotedIndexName} ON ${quotedSchema}.${quotedTable} (${quotedColumnNames.join(", ")})`
+}
+
+export function buildDropTableIndexSql(
+  connection: SavedConnection,
+  schemaName: string,
+  tableName: string,
+  indexName: string
+) {
+  const quotedIndexName = quoteIdentifier(connection.databaseType, indexName)
+
+  if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
+    const qualifiedTable = `${quoteIdentifier(connection.databaseType, schemaName)}.${quoteIdentifier(
+      connection.databaseType,
+      tableName
+    )}`
+    return `ALTER TABLE ${qualifiedTable} DROP INDEX ${quotedIndexName}`
+  }
+
+  if (connection.databaseType === "postgresql") {
+    return `DROP INDEX IF EXISTS ${quoteIdentifier(connection.databaseType, schemaName)}.${quotedIndexName}`
+  }
+
+  if (connection.databaseType === "sqlserver") {
+    const qualifiedTable = `${quoteIdentifier(connection.databaseType, schemaName)}.${quoteIdentifier(
+      connection.databaseType,
+      tableName
+    )}`
+    return `DROP INDEX ${quotedIndexName} ON ${qualifiedTable}`
+  }
+
+  return `DROP INDEX IF EXISTS ${quotedIndexName}`
 }
 
 export function buildCreateTableForeignKeyDefinition(

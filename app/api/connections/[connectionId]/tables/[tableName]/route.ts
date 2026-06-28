@@ -88,6 +88,7 @@ export async function PUT(
         unsigned?: boolean
         notNull: boolean
         primaryKey: boolean
+        unique?: boolean
         autoIncrement: boolean
         defaultValue: string
         comment: string
@@ -100,6 +101,11 @@ export async function PUT(
         onDelete?: string
         onUpdate?: string
       }>
+      indexes?: Array<{
+        name?: string
+        columns: string[]
+        unique?: boolean
+      }>
     }
     const result = await updateTable(connection, {
       databaseName,
@@ -109,6 +115,7 @@ export async function PUT(
       comment: body.comment ?? "",
       columns: body.columns ?? [],
       foreignKeys: body.foreignKeys ?? [],
+      indexes: body.indexes ?? [],
     })
 
     return NextResponse.json({

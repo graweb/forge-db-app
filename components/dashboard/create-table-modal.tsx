@@ -26,11 +26,17 @@ import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/helpers/utils"
-import { buildForeignKeyConstraintName } from "@/helpers/create-table/shared"
+import {
+  buildCreateTableIndexDefinition,
+  buildDropTableIndexSql,
+  buildForeignKeyConstraintName,
+  buildTableIndexName,
+} from "@/helpers/create-table/shared"
 import type {
   CreateTableColumnDraft,
   CreateTableDraft,
   CreateTableForeignKeyDraft,
+  CreateTableIndexDraft,
   CreateTableModalProps,
 } from "@/types/dashboard-modals"
 import type { DatabaseStructureDatabase, SavedConnection, TableDetails } from "@/types/connections"
@@ -105,6 +111,7 @@ function createColumnDraft(partial?: Partial<CreateTableColumnDraft>): CreateTab
     unsigned: partial?.unsigned ?? false,
     notNull: partial?.notNull ?? false,
     primaryKey: partial?.primaryKey ?? false,
+    unique: partial?.unique ?? false,
     autoIncrement: partial?.autoIncrement ?? false,
     defaultValue: partial?.defaultValue ?? "",
     comment: partial?.comment ?? "",
@@ -176,6 +183,51 @@ function createForeignKeyDraft(
     onDelete: partial?.onDelete ?? "",
     onUpdate: partial?.onUpdate ?? "",
   }
+}
+
+function createIndexDraft(partial?: Partial<CreateTableIndexDraft>): CreateTableIndexDraft {
+  return {
+    id:
+      partial?.id ||
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`),
+    sourceName: partial?.sourceName,
+    name: partial?.name ?? "",
+    columnName: partial?.columnName ?? partial?.columns?.[0] ?? "",
+    columns: partial?.columns ?? (partial?.columnName ? [partial.columnName] : []),
+    unique: partial?.unique ?? false,
+    primaryKey: partial?.primaryKey ?? false,
+    removable: partial?.removable ?? true,
+  }
+}
+
+function createIndexDraftFromDefinition(
+  definition: TableDetails["indexes"][number]
+): CreateTableIndexDraft {
+  const firstColumn = definition.columns[0] ?? ""
+
+  return createIndexDraft({
+    sourceName: definition.name,
+    name: definition.name,
+    columnName: firstColumn,
+    columns: definition.columns,
+    unique: definition.unique,
+    primaryKey: definition.primaryKey,
+    removable: !definition.primaryKey,
+  })
+}
+
+function createPrimaryIndexDraft(columnName: string, indexName: string) {
+  return createIndexDraft({
+    sourceName: indexName,
+    name: indexName,
+    columnName,
+    columns: [columnName],
+    unique: true,
+    primaryKey: true,
+    removable: false,
+  })
 }
 
 type ReferenceTableOption = {
@@ -495,9 +547,18 @@ function getInitialDraft(
       tableName: table.tableName,
       comment: table.comment || "",
       columns: table.columns.length
-        ? table.columns.map((column) => createColumnDraft({ ...column, id: column.name, sourceName: column.name }))
+        ? table.columns.map((column) =>
+            createColumnDraft({ ...column, id: column.name, sourceName: column.name })
+          )
         : [createColumnDraft(getDefaultColumn(connection.databaseType))],
       foreignKeys: foreignKeys.length ? foreignKeys : [],
+      indexes: table.indexes.length
+        ? table.indexes.map((index) => createIndexDraftFromDefinition(index))
+        : table.columns.some((column) => column.primaryKey)
+          ? table.columns
+              .filter((column) => column.primaryKey)
+              .map((column) => createPrimaryIndexDraft(column.name, "PRIMARY"))
+          : [],
     }
   }
 
@@ -510,6 +571,7 @@ function getInitialDraft(
     comment: "",
     columns: [createColumnDraft(getDefaultColumn(connection.databaseType))],
     foreignKeys: [],
+    indexes: [createPrimaryIndexDraft("id", "PRIMARY")],
   }
 }
 
@@ -541,6 +603,7 @@ function createEmptyDraft(
     comment: "",
     columns: [createColumnDraft(getDefaultColumn(connection.databaseType))],
     foreignKeys: [],
+    indexes: [createPrimaryIndexDraft("id", "PRIMARY")],
   }
 }
 
@@ -709,6 +772,77 @@ function buildForeignKeyPreviewDefinition(
   return `CONSTRAINT ${constraintName} FOREIGN KEY (${sourceColumn}) REFERENCES ${referencedQualifiedTable} (${referencedColumn})${actions ? ` ${actions}` : ""}`
 }
 
+function getNextGeneratedIndexName(
+  tableName: string,
+  columnNames: string[] | string,
+  currentIndex: number,
+  indexes: Array<{ name: string }>
+) {
+  const baseName = buildTableIndexName(tableName, columnNames, currentIndex)
+  const usedNames = new Set(
+    indexes
+      .map((index, indexPosition) => (indexPosition === currentIndex ? "" : index.name.trim().toLowerCase()))
+      .filter(Boolean)
+  )
+
+  if (!usedNames.has(baseName.toLowerCase())) {
+    return baseName
+  }
+
+  let suffix = 2
+  let candidate = `${baseName}_${suffix}`
+
+  while (usedNames.has(candidate.toLowerCase())) {
+    suffix += 1
+    candidate = `${baseName}_${suffix}`
+  }
+
+  return candidate
+}
+
+function normalizeIndexDrafts(form: CreateTableDraft) {
+  return form.indexes
+    .map((index) => ({
+      ...index,
+      name: index.name.trim(),
+      columnName: index.columnName.trim(),
+      columns: index.columns.map((column) => column.trim()).filter(Boolean),
+    }))
+    .filter((index) => index.primaryKey || index.columns.length > 0)
+    .map((index, currentIndex) => {
+      const columnNames = index.columns.length ? index.columns : index.columnName ? [index.columnName] : []
+      const name = index.name.trim()
+      const generatedName = name || getNextGeneratedIndexName(form.tableName, columnNames, currentIndex, form.indexes)
+
+      return {
+        name: generatedName,
+        columns: columnNames,
+        unique: Boolean(index.unique),
+        primaryKey: Boolean(index.primaryKey),
+      }
+    })
+}
+
+function buildIndexPreviewDefinition(
+  connection: SavedConnection,
+  tableName: string,
+  index: { name: string; columns: string[]; unique: boolean },
+  indexNumber: number,
+  defaultSchemaName: string
+) {
+  return buildCreateTableIndexDefinition(
+    connection,
+    tableName,
+    index,
+    indexNumber,
+    defaultSchemaName
+  )
+}
+
+function normalizeSavedIndexes(form: CreateTableDraft) {
+  return normalizeIndexDrafts(form).filter((index) => !index.primaryKey)
+}
+
 function normalizeForeignKeyDrafts(form: CreateTableDraft) {
   return form.foreignKeys
     .filter(
@@ -820,6 +954,10 @@ function buildCreatePreviewStatements(
   const foreignKeyDefinitions = foreignKeys.map((foreignKey, index) =>
     `  ${buildForeignKeyPreviewDefinition(connection, form.tableName, foreignKey, index, form.schemaName)}`
   )
+  const indexes = normalizeSavedIndexes(form)
+  const indexDefinitions = indexes.map((index, indexNumber) =>
+    `  ${buildIndexPreviewDefinition(connection, form.tableName, index, indexNumber, form.schemaName)}`
+  )
 
   const statements: string[] = []
 
@@ -846,14 +984,19 @@ function buildCreatePreviewStatements(
     statements.push(`CREATE TABLE IF NOT EXISTS ${qualifiedTableName} (`)
     statements.push(...columns, ...foreignKeyDefinitions)
     statements.push(`) COMMENT=${quotePreviewSqlLiteral(form.comment)};`)
-    return statements
   }
 
-  statements.push(
-    `CREATE TABLE ${connection.databaseType === "sqlite" ? quotePreviewIdentifier(connection, form.tableName) : qualifiedTableName} (`
-  )
-  statements.push(...columns, ...foreignKeyDefinitions)
-  statements.push(");")
+  if (!(form.comment.trim() && (connection.databaseType === "mysql" || connection.databaseType === "mariadb"))) {
+    statements.push(
+      `CREATE TABLE ${connection.databaseType === "sqlite" ? quotePreviewIdentifier(connection, form.tableName) : qualifiedTableName} (`
+    )
+    statements.push(...columns, ...foreignKeyDefinitions)
+    statements.push(");")
+  }
+
+  for (const indexDefinition of indexDefinitions) {
+    statements.push(indexDefinition + ";")
+  }
 
   if (form.comment.trim() && connection.databaseType === "postgresql") {
     statements.push(
@@ -956,6 +1099,41 @@ function buildEditPreviewStatements(
   const isMySqlLike = connection.databaseType === "mysql" || connection.databaseType === "mariadb"
   const foreignKeyCanAlter =
     isMySqlLike && !rebuildSensitiveChanges && removedColumns.length === 0
+  const indexes = normalizeSavedIndexes(form)
+  const originalIndexes = table?.indexes.filter((index) => !index.primaryKey) ?? []
+  const originalIndexMap = new Map(
+    originalIndexes.map((index) => [index.name.trim().toLowerCase(), index] as const)
+  )
+  const nextIndexMap = new Map(indexes.map((index) => [index.name.trim().toLowerCase(), index] as const))
+  const indexesToDrop = originalIndexes.filter((index) => {
+    const nextIndex = nextIndexMap.get(index.name.trim().toLowerCase())
+
+    if (!nextIndex) {
+      return true
+    }
+
+    return (
+      nextIndex.unique !== index.unique ||
+      JSON.stringify(nextIndex.columns.map((column) => column.trim().toLowerCase())) !==
+        JSON.stringify(index.columns.map((column) => column.trim().toLowerCase()))
+    )
+  })
+  const indexesToAdd = indexes.filter((index) => {
+    const originalIndex = originalIndexMap.get(index.name.trim().toLowerCase())
+
+    if (!originalIndex) {
+      return true
+    }
+
+    return (
+      originalIndex.unique !== index.unique ||
+      JSON.stringify(originalIndex.columns.map((column) => column.trim().toLowerCase())) !==
+        JSON.stringify(index.columns.map((column) => column.trim().toLowerCase()))
+    )
+  })
+  const indexStatements = indexesToAdd.map((index, indexNumber) =>
+    buildIndexPreviewDefinition(connection, form.tableName, index, indexNumber, form.schemaName)
+  )
   const requiresRebuild =
     !isMySqlLike &&
     ((connection.databaseType === "sqlite" && removedColumns.length > 0) ||
@@ -1069,6 +1247,16 @@ function buildEditPreviewStatements(
       }
     }
 
+    for (const index of indexesToDrop) {
+      statements.push(
+        `${buildDropTableIndexSql(connection, originalSchemaName, originalTableName, index.name)};`
+      )
+    }
+
+    for (const indexDefinition of indexStatements) {
+      statements.push(`${indexDefinition};`)
+    }
+
     return statements.length ? statements : ["-- Nenhuma alteração detectada."]
   }
 
@@ -1079,6 +1267,9 @@ function buildEditPreviewStatements(
   const foreignKeys = normalizeForeignKeyDrafts(form)
   const foreignKeyDefinitions = foreignKeys.map((foreignKey, index) =>
     `  ${buildForeignKeyPreviewDefinition(connection, form.tableName, foreignKey, index, form.schemaName)}`
+  )
+  const rebuildIndexStatements = normalizeSavedIndexes(form).map((index, indexNumber) =>
+    `  ${buildIndexPreviewDefinition(connection, form.tableName, index, indexNumber, form.schemaName)}`
   )
   const copyColumns = targetColumns.filter((column) => (column.sourceName || "").trim())
   const insertTargetColumns = copyColumns.map((column) => quotePreviewIdentifier(connection, column.name)).join(", ")
@@ -1103,6 +1294,9 @@ function buildEditPreviewStatements(
         `FROM ${originalQualified};`
       )
     }
+    for (const indexDefinition of rebuildIndexStatements) {
+      statements.push(`${indexDefinition};`)
+    }
     statements.push(`DROP TABLE ${originalQualified};`)
     statements.push(`RENAME TABLE ${tempQualified} TO ${nextQualified};`)
     return statements
@@ -1119,6 +1313,9 @@ function buildEditPreviewStatements(
         `SELECT ${insertSourceColumns}`,
         `FROM ${originalQualified};`
       )
+    }
+    for (const indexDefinition of rebuildIndexStatements) {
+      statements.push(`${indexDefinition};`)
     }
     statements.push(`DROP TABLE ${originalQualified};`)
     statements.push(
@@ -1147,6 +1344,9 @@ function buildEditPreviewStatements(
         `FROM ${originalQualified};`
       )
     }
+    for (const indexDefinition of rebuildIndexStatements) {
+      statements.push(`${indexDefinition};`)
+    }
     statements.push(`DROP TABLE ${originalQualified};`)
     statements.push(
       `EXEC sp_rename ${quotePreviewSqlLiteral(`${form.schemaName}.${tempTableName}`)}, ${quotePreviewSqlLiteral(
@@ -1163,6 +1363,9 @@ function buildEditPreviewStatements(
       `SELECT ${insertSourceColumns}`,
       `FROM ${originalQualified};`
     )
+  }
+  for (const indexDefinition of rebuildIndexStatements) {
+    statements.push(`${indexDefinition};`)
   }
   statements.push(`DROP TABLE ${originalQualified};`)
   statements.push(
@@ -1299,13 +1502,44 @@ export function CreateTableModal({
     .map((column) => column.name.trim())
 
   function updateField(field: keyof CreateTableDraft, value: string) {
-    setForm((current) => ({ ...current, [field]: value }))
+    setForm((current) => {
+      if (field !== "tableName") {
+        return { ...current, [field]: value }
+      }
+
+      const nextIndexes = current.indexes.map((index, currentIndex) => {
+        const shouldRefreshName =
+          !index.name.trim() ||
+          index.name.trim().toLowerCase().startsWith("idx_") ||
+          index.name.trim().toLowerCase().startsWith("uidx_") ||
+          index.name.trim().toLowerCase().startsWith("pk_")
+
+        if (!shouldRefreshName || !index.columns.length) {
+          return index
+        }
+
+        return {
+          ...index,
+          name: getNextGeneratedIndexName(value, index.columns, currentIndex, current.indexes),
+        }
+      })
+
+      return {
+        ...current,
+        tableName: value,
+        indexes: nextIndexes,
+      }
+    })
   }
 
   function updateColumn(index: number, field: keyof CreateTableColumnDraft, value: string | boolean) {
-    setForm((current) => ({
-      ...current,
-      columns: current.columns.map((column, currentIndex) =>
+    setForm((current) => {
+      const previousColumn = current.columns[index]
+      if (!previousColumn) {
+        return current
+      }
+
+      const nextColumns = current.columns.map((column, currentIndex) =>
         currentIndex === index
           ? {
               ...column,
@@ -1315,8 +1549,111 @@ export function CreateTableModal({
                 : {}),
             }
           : column
-      ),
-    }))
+      )
+      const nextColumn = nextColumns[index]
+      const oldColumnName = previousColumn.name.trim()
+      const nextColumnName = nextColumn.name.trim()
+      let nextIndexes = current.indexes.map((item, currentIndex) => {
+        const updatedColumns = item.columns.map((columnName) =>
+          columnName.trim().toLowerCase() === oldColumnName.toLowerCase() ? nextColumnName : columnName
+        )
+        const referencesColumn = item.columns.some(
+          (columnName) => columnName.trim().toLowerCase() === oldColumnName.toLowerCase()
+        )
+        const shouldRefreshName =
+          !item.name.trim() ||
+          /^idx_/i.test(item.name.trim()) ||
+          /^uidx_/i.test(item.name.trim()) ||
+          item.primaryKey
+
+        if (!referencesColumn) {
+          return item
+        }
+
+        return {
+          ...item,
+          columns: updatedColumns,
+          columnName: updatedColumns[0] ?? "",
+          name:
+            shouldRefreshName && updatedColumns.length
+              ? item.primaryKey
+                ? "PRIMARY"
+                : getNextGeneratedIndexName(current.tableName, updatedColumns, currentIndex, current.indexes)
+              : item.name,
+        }
+      })
+
+      if (field === "primaryKey") {
+        if (Boolean(value)) {
+          const hasPrimary = nextIndexes.some(
+            (item) =>
+              item.primaryKey &&
+              item.columns.length === 1 &&
+              item.columns[0].trim().toLowerCase() === nextColumnName.toLowerCase()
+          )
+
+          if (!hasPrimary) {
+            nextIndexes = [...nextIndexes, createPrimaryIndexDraft(nextColumnName, "PRIMARY")]
+          }
+        } else {
+          nextIndexes = nextIndexes.filter(
+            (item) =>
+              !(
+                item.primaryKey &&
+                item.columns.length === 1 &&
+                item.columns[0].trim().toLowerCase() === oldColumnName.toLowerCase()
+              )
+          )
+        }
+      }
+
+      if (field === "unique") {
+        if (Boolean(value)) {
+          const hasUnique = nextIndexes.some(
+            (item) =>
+              !item.primaryKey &&
+              item.unique &&
+              item.columns.length === 1 &&
+              item.columns[0].trim().toLowerCase() === nextColumnName.toLowerCase()
+          )
+
+          if (!hasUnique && nextColumnName) {
+            nextIndexes = [
+              ...nextIndexes,
+              createIndexDraft({
+                name: getNextGeneratedIndexName(
+                  current.tableName,
+                  [nextColumnName],
+                  nextIndexes.length,
+                  nextIndexes
+                ),
+                columnName: nextColumnName,
+                columns: [nextColumnName],
+                unique: true,
+                primaryKey: false,
+                removable: true,
+              }),
+            ]
+          }
+        } else {
+          nextIndexes = nextIndexes.filter(
+            (item) =>
+              !(
+                !item.primaryKey &&
+                item.unique &&
+                item.columns.length === 1 &&
+                item.columns[0].trim().toLowerCase() === oldColumnName.toLowerCase()
+              )
+          )
+        }
+      }
+
+      return {
+        ...current,
+        columns: nextColumns,
+        indexes: nextIndexes,
+      }
+    })
   }
 
   function addColumn() {
@@ -1332,7 +1669,17 @@ export function CreateTableModal({
   function removeColumn(index: number) {
     setForm((current) => ({
       ...current,
-      columns: current.columns.length > 1 ? current.columns.filter((_, currentIndex) => currentIndex !== index) : current.columns,
+      columns:
+        current.columns.length > 1
+          ? current.columns.filter((_, currentIndex) => currentIndex !== index)
+          : current.columns,
+      indexes: current.indexes.filter(
+        (item) =>
+          !item.columns.some(
+            (columnName) =>
+              columnName.trim().toLowerCase() === current.columns[index]?.name.trim().toLowerCase()
+          )
+      ),
     }))
   }
 
@@ -1462,6 +1809,114 @@ export function CreateTableModal({
     }))
   }
 
+  function updateIndex(index: number, field: keyof CreateTableIndexDraft, value: string | boolean) {
+    setForm((current) => {
+      const previousIndex = current.indexes[index]
+      const previousColumnName = previousIndex?.columns[0] ?? previousIndex?.columnName ?? ""
+      const nextIndexes = current.indexes.map((item, currentIndex) =>
+        currentIndex === index ? { ...item, [field]: value } : item
+      )
+
+      if (field !== "columnName" && field !== "unique") {
+        return {
+          ...current,
+          indexes: nextIndexes,
+        }
+      }
+
+      const nextIndex = nextIndexes[index]
+      const nextColumnName =
+        field === "columnName" ? String(value).trim() : nextIndex?.columnName.trim() ?? ""
+      const shouldRefreshName =
+        !previousIndex?.name.trim() || previousIndex.name.trim().toLowerCase().startsWith("idx_")
+      const nextColumns = current.columns.map((column) => {
+        const matchesPrevious = column.name.trim().toLowerCase() === previousColumnName.trim().toLowerCase()
+        const matchesNext = column.name.trim().toLowerCase() === nextColumnName.toLowerCase()
+
+        if (previousIndex?.columns.length <= 1 && field === "columnName") {
+          if (matchesPrevious && previousColumnName.trim() !== nextColumnName) {
+            return { ...column, unique: false }
+          }
+
+          if (matchesNext) {
+            return { ...column, unique: Boolean(nextIndex?.unique) }
+          }
+        }
+
+        if (previousIndex?.columns.length <= 1 && field === "unique" && matchesPrevious) {
+          return { ...column, unique: Boolean(value) }
+        }
+
+        return column
+      })
+
+      return {
+        ...current,
+        columns: nextColumns,
+        indexes: nextIndexes.map((item, currentIndexPosition) => {
+          if (currentIndexPosition !== index || !nextColumnName) {
+            return item
+          }
+
+          const columns = item.columns.length ? item.columns : item.columnName ? [item.columnName] : []
+          const shouldSyncSingleColumn = columns.length <= 1
+
+          return {
+            ...item,
+            columns: shouldSyncSingleColumn ? [nextColumnName] : columns,
+            columnName: shouldSyncSingleColumn ? nextColumnName : item.columnName,
+            name: shouldRefreshName
+              ? getNextGeneratedIndexName(
+                  current.tableName,
+                  shouldSyncSingleColumn ? [nextColumnName] : columns,
+                  currentIndexPosition,
+                  nextIndexes
+                )
+              : item.name,
+          }
+        }),
+      }
+    })
+  }
+
+  function addIndex() {
+    const firstSourceColumn = sourceColumnOptions[0] ?? ""
+
+    setForm((current) => {
+      const nextIndexColumn = firstSourceColumn || current.indexes[0]?.columnName || ""
+      const generatedName = nextIndexColumn
+        ? getNextGeneratedIndexName(current.tableName, [nextIndexColumn], current.indexes.length, current.indexes)
+        : ""
+
+      return {
+        ...current,
+        indexes: [
+          ...current.indexes,
+          createIndexDraft({
+            columnName: nextIndexColumn,
+            columns: nextIndexColumn ? [nextIndexColumn] : [],
+            name: generatedName,
+          }),
+        ],
+      }
+    })
+  }
+
+  function removeIndex(index: number) {
+    setForm((current) => ({
+      ...current,
+      columns:
+        current.indexes[index]?.unique && current.indexes[index].columns.length === 1
+          ? current.columns.map((column) =>
+              column.name.trim() === current.indexes[index]?.columns[0]?.trim()
+                ? { ...column, unique: false }
+                : column
+            )
+          : current.columns,
+      indexes: current.indexes.filter((_, currentIndex) => currentIndex !== index),
+    }))
+  }
+
   async function handleSave() {
     if (!form.tableName.trim()) {
       setErrorMessage("Informe o nome da tabela.")
@@ -1487,6 +1942,17 @@ export function CreateTableModal({
       return
     }
 
+    if (
+      form.indexes.some(
+        (index) =>
+          index.columns.some((columnName) => columnName.trim()) &&
+          index.columns.some((columnName) => !columnNames.has(columnName.trim().toLowerCase()))
+      )
+    ) {
+      setErrorMessage("A coluna do índice precisa existir na lista de colunas.")
+      return
+    }
+
     const foreignKeyCompatibilityError = getForeignKeyCompatibilityError(form, database)
     if (foreignKeyCompatibilityError) {
       setErrorMessage(foreignKeyCompatibilityError)
@@ -1500,6 +1966,7 @@ export function CreateTableModal({
         foreignKey.referencedTableName.trim() ||
         foreignKey.referencedColumnName.trim()
     )
+    const indexes = normalizeSavedIndexes(form)
 
     if (
       foreignKeys.some(
@@ -1510,6 +1977,11 @@ export function CreateTableModal({
       )
     ) {
       setErrorMessage("Complete a associação da chave estrangeira ou remova a linha vazia.")
+      return
+    }
+
+    if (indexes.some((index) => !index.name.trim() || !index.columns.length)) {
+      setErrorMessage("Complete o índice ou remova a linha vazia.")
       return
     }
 
@@ -1537,6 +2009,7 @@ export function CreateTableModal({
           comment: form.comment,
           columns: form.columns,
           foreignKeys,
+          indexes,
         }),
       })
 
@@ -1706,6 +2179,7 @@ export function CreateTableModal({
                               <TableHead className="w-24 text-center">Not Null</TableHead>
                               <TableHead className="w-40 text-center">Chave primária</TableHead>
                               <TableHead className="w-36 text-center">Auto increment</TableHead>
+                              <TableHead className="w-28 text-center">Unique</TableHead>
                               <TableHead className="w-14" />
                             </TableRow>
                           </TableHeader>
@@ -1798,6 +2272,17 @@ export function CreateTableModal({
                                         checked={column.autoIncrement}
                                         onChange={(event) =>
                                           updateColumn(index, "autoIncrement", event.currentTarget.checked)
+                                        }
+                                      />
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-center">
+                                    <div className="flex justify-center">
+                                      <Checkbox
+                                        checked={Boolean(column.unique || column.primaryKey)}
+                                        disabled={column.primaryKey}
+                                        onChange={(event) =>
+                                          updateColumn(index, "unique", event.currentTarget.checked)
                                         }
                                       />
                                     </div>
@@ -2013,12 +2498,112 @@ export function CreateTableModal({
 
                   <TabsContent value="indexes">
                     <Card className="border-white/10 bg-white/5">
-                      <CardHeader>
-                        <CardTitle className="text-base text-white">Índices</CardTitle>
-                        <CardDescription>Índices já existentes nesta tabela.</CardDescription>
+                      <CardHeader className="pb-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <CardTitle className="text-base text-white">Índices</CardTitle>
+                            <CardDescription>
+                              Crie, revise e remova índices. Chaves primárias aparecem como padrão e não podem ser removidas por aqui.
+                            </CardDescription>
+                          </div>
+                          <Button
+                            type="button"
+                            onClick={addIndex}
+                            variant="outline"
+                            className="border-white/10 bg-white/5 text-white hover:bg-white/10"
+                            disabled={!sourceColumnOptions.length}
+                          >
+                            <Plus className="size-4" />
+                            Adicionar índice
+                          </Button>
+                        </div>
                       </CardHeader>
-                      <CardContent>
-                        <MetadataList items={table?.indexes ?? []} emptyText="Nenhum índice encontrado." />
+                      <CardContent className="space-y-4 pt-0">
+                        {form.indexes.length ? (
+                          <Table wrapperClassName="rounded-2xl border border-white/10">
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="w-80">Nome do índice</TableHead>
+                                <TableHead className="w-96">Colunas</TableHead>
+                                <TableHead className="w-24 text-center">Unique</TableHead>
+                                <TableHead className="w-32 text-center">Tipo</TableHead>
+                                <TableHead className="w-14" />
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {form.indexes.map((index, indexPosition) => (
+                                <TableRow key={index.id ?? `${indexPosition}`} className="h-14">
+                                  <TableCell>
+                                    <Input
+                                      value={index.name}
+                                      onChange={(event) =>
+                                        updateIndex(indexPosition, "name", event.target.value)
+                                      }
+                                      placeholder="idx_tabela_coluna"
+                                      className="h-9"
+                                      disabled={index.primaryKey}
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    {index.columns.length > 1 ? (
+                                      <Input value={index.columns.join(", ")} readOnly className="h-9" />
+                                    ) : (
+                                      <Select
+                                        value={index.columns[0] ?? ""}
+                                        onValueChange={(value) =>
+                                          updateIndex(indexPosition, "columnName", value)
+                                        }
+                                        disabled={!sourceColumnOptions.length || index.primaryKey}
+                                      >
+                                        <SelectTrigger className="h-9 w-full">
+                                          <SelectValue placeholder="Selecione a coluna" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectGroup>
+                                            {sourceColumnOptions.map((columnName) => (
+                                              <SelectItem key={columnName} value={columnName}>
+                                                {columnName}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectGroup>
+                                        </SelectContent>
+                                      </Select>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-center">
+                                    <div className="flex justify-center">
+                                      <Checkbox
+                                        checked={index.primaryKey ? true : Boolean(index.unique)}
+                                        disabled={index.primaryKey}
+                                        onChange={(event) =>
+                                          updateIndex(indexPosition, "unique", event.currentTarget.checked)
+                                        }
+                                      />
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-center text-sm text-white/60">
+                                    {index.primaryKey ? "Chave primária" : index.unique ? "Unique" : "Index"}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => removeIndex(indexPosition)}
+                                      className="inline-flex size-8 items-center justify-center rounded-lg text-white/40 transition-colors hover:bg-white/5 hover:text-rose-300"
+                                      aria-label="Remover índice"
+                                      disabled={!index.removable}
+                                    >
+                                      <Trash2 className="size-4" />
+                                    </button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-5 text-sm text-white/45">
+                            Nenhum índice configurado.
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   </TabsContent>

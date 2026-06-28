@@ -26,6 +26,7 @@ import type {
   CreateDatabaseInput,
   CreateDatabaseResult,
   CreateTableInput,
+  CreateTableIndexInput,
   CreateTableResult,
   CreateTableForeignKeyInput,
   DatabaseStructure,
@@ -37,6 +38,7 @@ import type {
   QueryExecutionResult,
   SavedConnection,
   TableDetails,
+  TableIndexDefinition,
   TestConnectionResult,
   UpdateDatabaseInput,
   UpdateDatabaseResult,
@@ -70,9 +72,13 @@ import { buildSqliteCreateTableSql } from "@/helpers/create-table/sqlite"
 import {
   buildCreateTableColumnDefinition,
   buildCreateTableForeignKeyDefinition,
+  buildCreateTableIndexDefinition,
+  buildDropTableIndexSql,
   buildForeignKeyConstraintName,
+  buildTableIndexName,
   type CreateTableColumnSpec,
   type CreateTableForeignKeySpec,
+  type CreateTableIndexSpec,
 } from "@/helpers/create-table/shared"
 import {
   createGroup,
@@ -597,6 +603,7 @@ export async function updateTable(
       unsigned: Boolean((column as { unsigned?: boolean }).unsigned),
       notNull: Boolean(column.notNull),
       primaryKey: Boolean(column.primaryKey),
+      unique: Boolean((column as { unique?: boolean }).unique),
       autoIncrement: Boolean(column.autoIncrement),
       defaultValue: sanitizeText(column.defaultValue),
       comment: sanitizeText(column.comment),
@@ -634,6 +641,43 @@ export async function updateTable(
     normalizedSchema,
     originalTableName
   )
+  const normalizedIndexes = normalizeTableIndexesInput(
+    input.indexes,
+    nextTableName || originalTableName,
+    originalTableDetails.indexes.map((index) => index.name)
+  )
+  const originalIndexes = originalTableDetails.indexes.filter((index) => !index.primaryKey)
+  const originalIndexMap = new Map(
+    originalIndexes.map((index) => [index.name.trim().toLowerCase(), index] as const)
+  )
+  const indexesToAdd = normalizedIndexes.filter((index) => {
+    const originalIndex = originalIndexMap.get(index.name.trim().toLowerCase())
+
+    if (!originalIndex) {
+      return true
+    }
+
+    return (
+      originalIndex.unique !== index.unique ||
+      JSON.stringify(originalIndex.columns.map((column) => column.trim().toLowerCase())) !==
+        JSON.stringify(index.columns.map((column) => column.trim().toLowerCase()))
+    )
+  })
+  const indexesToDrop = originalTableDetails.indexes.filter(
+    (index) =>
+      !index.primaryKey &&
+      !normalizedIndexes.some((nextIndex) => {
+        if (nextIndex.name.trim().toLowerCase() !== index.name.trim().toLowerCase()) {
+          return false
+        }
+
+        return (
+          nextIndex.unique === index.unique &&
+          JSON.stringify(nextIndex.columns.map((column) => column.trim().toLowerCase())) ===
+            JSON.stringify(index.columns.map((column) => column.trim().toLowerCase()))
+        )
+      })
+  )
   const originalColumnsByName = new Map(
     originalTableDetails.columns.map((column) => [column.name.trim(), column] as const)
   )
@@ -670,6 +714,7 @@ export async function updateTable(
       Boolean(column.unsigned) !== Boolean(original.unsigned) ||
       column.notNull !== original.notNull ||
       column.primaryKey !== original.primaryKey ||
+      Boolean(column.unique) !== Boolean(original.unique) ||
       column.autoIncrement !== original.autoIncrement ||
       column.defaultValue.trim() !== original.defaultValue.trim() ||
       column.comment.trim() !== original.comment.trim()
@@ -760,6 +805,18 @@ export async function updateTable(
             )
           }
 
+          for (const index of indexesToDrop) {
+            await client.query(
+              buildDropTableIndexSql(connection, normalizedSchema, originalTableName, index.name)
+            )
+          }
+
+          for (const index of indexesToAdd) {
+            await client.query(
+              buildCreateTableIndexDefinition(connection, originalTableName, index, 0, normalizedSchema)
+            )
+          }
+
           if (
             foreignKeyCanAlter &&
             normalizedForeignKeys.length &&
@@ -842,6 +899,18 @@ export async function updateTable(
             )
           }
 
+          for (const index of indexesToDrop) {
+            await client.query(
+              buildDropTableIndexSql(connection, normalizedSchema, originalTableName, index.name)
+            )
+          }
+
+          for (const index of indexesToAdd) {
+            await client.query(
+              buildCreateTableIndexDefinition(connection, originalTableName, index, 0, normalizedSchema)
+            )
+          }
+
           if (hasTableNameChange) {
             await client.query(`ALTER TABLE ${qualifiedOriginal} RENAME TO ${quotedNextTableName}`)
           }
@@ -886,6 +955,18 @@ export async function updateTable(
             )
           }
 
+          for (const index of indexesToDrop) {
+            await pool.request().query(
+              buildDropTableIndexSql(connection, normalizedSchema, originalTableName, index.name)
+            )
+          }
+
+          for (const index of indexesToAdd) {
+            await pool.request().query(
+              buildCreateTableIndexDefinition(connection, originalTableName, index, 0, normalizedSchema)
+            )
+          }
+
           if (hasTableNameChange) {
             await pool.request().query(
               `EXEC sp_rename ${quoteSqlLiteral(`${normalizedSchema}.${originalTableName}`)}, ${quoteSqlLiteral(
@@ -907,11 +988,19 @@ export async function updateTable(
       }
 
       case "sqlite": {
-        return withSqliteDatabase(connection, async (db) => {
+          return withSqliteDatabase(connection, async (db) => {
           const qualifiedOriginal = quoteIdentifier("sqlite", originalTableName)
 
           for (const column of addedColumns) {
             db.exec(`ALTER TABLE ${qualifiedOriginal} ADD COLUMN ${buildCreateTableColumnDefinition(connection, column)}`)
+          }
+
+          for (const index of indexesToDrop) {
+            db.exec(buildDropTableIndexSql(connection, "main", originalTableName, index.name))
+          }
+
+          for (const index of indexesToAdd) {
+            db.exec(buildCreateTableIndexDefinition(connection, originalTableName, index, 0, "main"))
           }
 
           if (hasTableNameChange) {
@@ -955,7 +1044,8 @@ export async function updateTable(
           tempTableName,
           input.comment,
           normalizedColumns,
-          normalizedForeignKeys
+          normalizedForeignKeys,
+          normalizedIndexes
         )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
@@ -1023,7 +1113,15 @@ export async function updateTable(
           tempTableName
         )}`
 
-        await createPostgreSqlTable(connection, normalizedSchema, tempTableName, input.comment, normalizedColumns)
+        await createPostgreSqlTable(
+          connection,
+          normalizedSchema,
+          tempTableName,
+          input.comment,
+          normalizedColumns,
+          normalizedForeignKeys,
+          normalizedIndexes
+        )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
         const targetColumns = copyColumns.map((column) => quoteIdentifier("postgresql", column.name))
@@ -1072,7 +1170,9 @@ export async function updateTable(
           normalizedSchema,
           tempTableName,
           input.comment,
-          normalizedColumns
+          normalizedColumns,
+          normalizedForeignKeys,
+          normalizedIndexes
         )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
@@ -1126,7 +1226,14 @@ export async function updateTable(
         const qualifiedOriginal = quoteIdentifier("sqlite", originalTableName)
         const qualifiedTemp = quoteIdentifier("sqlite", tempTableName)
 
-        await createSqliteTable(connection, tempTableName, input.comment, normalizedColumns)
+        await createSqliteTable(
+          connection,
+          tempTableName,
+          input.comment,
+          normalizedColumns,
+          normalizedForeignKeys,
+          normalizedIndexes
+        )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
         const targetColumns = copyColumns.map((column) => quoteIdentifier("sqlite", column.name))
@@ -1307,6 +1414,46 @@ function normalizeForeignKeysInput(
     )
 }
 
+function normalizeTableIndexesInput(
+  indexes: Array<CreateTableIndexInput | undefined> | undefined,
+  tableName: string,
+  existingIndexNames: Array<string> = []
+): CreateTableIndexSpec[] {
+  const usedNames = new Set(existingIndexNames.map((name) => name.trim().toLowerCase()).filter(Boolean))
+  const normalized: CreateTableIndexSpec[] = []
+
+  for (const [indexNumber, index] of (indexes ?? []).entries()) {
+    const columns = (index?.columns ?? [])
+      .map((columnName) => sanitizeDatabaseIdentifier(columnName))
+      .filter(Boolean)
+
+    if (!columns.length) {
+      continue
+    }
+
+    const providedName = sanitizeDatabaseIdentifier(index?.name)
+    const generatedName = buildTableIndexName(tableName, columns, indexNumber)
+    let name = providedName || generatedName
+
+    if (!providedName) {
+      let suffix = 2
+      while (usedNames.has(name.trim().toLowerCase())) {
+        name = `${generatedName}_${suffix}`
+        suffix += 1
+      }
+    }
+
+    usedNames.add(name.trim().toLowerCase())
+    normalized.push({
+      name,
+      columns,
+      unique: Boolean(index?.unique),
+    })
+  }
+
+  return normalized
+}
+
 function normalizeForeignKeyAction(value?: string) {
   const normalized = sanitizeText(value).toUpperCase()
   return ["CASCADE", "RESTRICT", "NO ACTION", "SET NULL", "SET DEFAULT"].includes(normalized)
@@ -1459,12 +1606,14 @@ export async function createTable(
       unsigned: Boolean((column as { unsigned?: boolean }).unsigned),
       notNull: Boolean(column.notNull),
       primaryKey: Boolean(column.primaryKey),
+      unique: Boolean((column as { unique?: boolean }).unique),
       autoIncrement: Boolean(column.autoIncrement),
       defaultValue: sanitizeSqlExpression(column.defaultValue),
       comment: sanitizeSqlExpression(column.comment),
     }))
     .filter((column) => column.name && column.dataType)
   const foreignKeys = normalizeForeignKeysInput(input.foreignKeys, schemaName)
+  const indexes = normalizeTableIndexesInput(input.indexes, tableName)
 
   if (!tableName) {
     throw new Error("Informe um nome válido para a tabela.")
@@ -1496,11 +1645,12 @@ export async function createTable(
         tableName,
         comment,
         columns,
-        foreignKeys
+        foreignKeys,
+        indexes
       )
 
     case "postgresql":
-      return createPostgreSqlTable(connection, schemaName, tableName, comment, columns, foreignKeys)
+      return createPostgreSqlTable(connection, schemaName, tableName, comment, columns, foreignKeys, indexes)
 
     case "sqlserver":
       return createSqlServerTable(
@@ -1510,11 +1660,12 @@ export async function createTable(
         tableName,
         comment,
         columns,
-        foreignKeys
+        foreignKeys,
+        indexes
       )
 
     case "sqlite":
-      return createSqliteTable(connection, tableName, comment, columns, foreignKeys)
+      return createSqliteTable(connection, tableName, comment, columns, foreignKeys, indexes)
 
     default:
       throw new Error("Tipo de banco não suportado.")
@@ -1527,7 +1678,8 @@ async function createSqlTableLike(
   tableName: string,
   comment: string,
   columns: CreateTableColumnSpec[],
-  foreignKeys: CreateTableForeignKeySpec[] = []
+  foreignKeys: CreateTableForeignKeySpec[] = [],
+  indexes: CreateTableIndexSpec[] = []
 ): Promise<CreateTableResult> {
   return withMySqlLikeClient(connection, schemaName, async (client) => {
     const createTableSql = buildMySqlLikeCreateTableSql(
@@ -1541,6 +1693,9 @@ async function createSqlTableLike(
     await client.query(createTableSql)
     for (const statement of buildMySqlLikeAddForeignKeySql(connection, schemaName, tableName, foreignKeys)) {
       await client.query(statement)
+    }
+    for (const index of indexes) {
+      await client.query(buildCreateTableIndexDefinition(connection, tableName, index, 0, schemaName))
     }
 
     return {
@@ -1558,7 +1713,8 @@ async function createPostgreSqlTable(
   tableName: string,
   comment: string,
   columns: CreateTableColumnSpec[],
-  foreignKeys: CreateTableForeignKeySpec[] = []
+  foreignKeys: CreateTableForeignKeySpec[] = [],
+  indexes: CreateTableIndexSpec[] = []
 ): Promise<CreateTableResult> {
   return withPostgresClient(connection, connection.databaseName.trim() || "postgres", async (client) => {
     const { createSchemaSql, createTableSql, commentSql } = buildPostgreSqlCreateTableSql(
@@ -1580,6 +1736,10 @@ async function createPostgreSqlTable(
       await client.query(commentSql)
     }
 
+    for (const index of indexes) {
+      await client.query(buildCreateTableIndexDefinition(connection, tableName, index, 0, schemaName))
+    }
+
     return {
       message: "Tabela criada com sucesso.",
       details: `A tabela ${schemaName}.${tableName} foi criada com sucesso.`,
@@ -1596,7 +1756,8 @@ async function createSqlServerTable(
   tableName: string,
   _comment: string,
   columns: CreateTableColumnSpec[],
-  foreignKeys: CreateTableForeignKeySpec[] = []
+  foreignKeys: CreateTableForeignKeySpec[] = [],
+  indexes: CreateTableIndexSpec[] = []
 ): Promise<CreateTableResult> {
   return withSqlServerPool(
     connection,
@@ -1615,6 +1776,9 @@ async function createSqlServerTable(
       }
 
       await pool.request().query(createTableSql)
+      for (const index of indexes) {
+        await pool.request().query(buildCreateTableIndexDefinition(connection, tableName, index, 0, schemaName))
+      }
 
       return {
         message: "Tabela criada com sucesso.",
@@ -1631,7 +1795,8 @@ async function createSqliteTable(
   tableName: string,
   _comment: string,
   columns: CreateTableColumnSpec[],
-  foreignKeys: CreateTableForeignKeySpec[] = []
+  foreignKeys: CreateTableForeignKeySpec[] = [],
+  indexes: CreateTableIndexSpec[] = []
 ): Promise<CreateTableResult> {
   return withSqliteDatabase(connection, async (db) => {
     const { tablePath, createTableSql } = buildSqliteCreateTableSql(
@@ -1641,6 +1806,9 @@ async function createSqliteTable(
       foreignKeys
     )
     db.exec(createTableSql)
+    for (const index of indexes) {
+      db.exec(buildCreateTableIndexDefinition(connection, tableName, index, 0, "main"))
+    }
 
     return {
       message: "Tabela criada com sucesso.",
@@ -2696,16 +2864,19 @@ async function getMySqlLikeTableDetails(
       `,
       [schemaName, tableName]
     )
-    const indexes = await runMySqlLikeMetadataQuery(
+    const indexRows = await runMySqlLikeMetadataQuery(
       client,
       connection.databaseType,
       `
-        SELECT DISTINCT INDEX_NAME AS name
+        SELECT
+          INDEX_NAME AS index_name,
+          NON_UNIQUE AS non_unique,
+          COLUMN_NAME AS column_name,
+          SEQ_IN_INDEX AS seq_in_index
         FROM INFORMATION_SCHEMA.STATISTICS
         WHERE TABLE_SCHEMA = ?
           AND TABLE_NAME = ?
-          AND INDEX_NAME <> 'PRIMARY'
-        ORDER BY name
+        ORDER BY INDEX_NAME, SEQ_IN_INDEX
       `,
       [schemaName, tableName]
     )
@@ -2732,6 +2903,46 @@ async function getMySqlLikeTableDetails(
         ORDER BY ROUTINE_NAME
       `,
       [schemaName]
+    )
+    const indexMap = new Map<
+      string,
+      TableIndexDefinition
+    >()
+
+    for (const row of indexRows) {
+      const name = String(row.index_name ?? row.INDEX_NAME ?? "").trim()
+      const columnName = String(row.column_name ?? row.COLUMN_NAME ?? "").trim()
+
+      if (!name || !columnName) {
+        continue
+      }
+
+      const existing = indexMap.get(name)
+      const unique = Number(row.non_unique ?? row.NON_UNIQUE ?? 1) === 0
+      const nextEntry =
+        existing ??
+        ({
+          name,
+          columns: [],
+          unique,
+          primaryKey: name.toUpperCase() === "PRIMARY",
+        } satisfies TableIndexDefinition)
+
+      nextEntry.columns.push(columnName)
+      nextEntry.unique = nextEntry.primaryKey ? true : unique
+      indexMap.set(name, nextEntry)
+    }
+    const indexes = Array.from(indexMap.values()).sort((left, right) => {
+      if (left.primaryKey !== right.primaryKey) {
+        return left.primaryKey ? -1 : 1
+      }
+
+      return left.name.localeCompare(right.name)
+    })
+    const uniqueColumnSet = new Set(
+      indexes
+        .filter((index) => index.unique && index.columns.length === 1 && !index.primaryKey)
+        .map((index) => index.columns[0].trim().toLowerCase())
     )
 
     return {
@@ -2773,6 +2984,9 @@ async function getMySqlLikeTableDetails(
         })(),
         notNull: String(row.is_nullable ?? row.IS_NULLABLE ?? "").toUpperCase() === "NO",
         primaryKey: String(row.column_key ?? row.COLUMN_KEY ?? "").toUpperCase() === "PRI",
+        unique:
+          uniqueColumnSet.has(String(row.name ?? row.COLUMN_NAME ?? "").trim().toLowerCase()) ||
+          String(row.column_key ?? row.COLUMN_KEY ?? "").toUpperCase() === "UNI",
         autoIncrement: String(row.extra ?? row.EXTRA ?? "").toLowerCase().includes("auto_increment"),
         defaultValue: String(row.default_value ?? row.COLUMN_DEFAULT ?? "").trim(),
         comment: String(row.comment ?? row.COLUMN_COMMENT ?? "").trim(),
@@ -2793,7 +3007,7 @@ async function getMySqlLikeTableDetails(
 
         return `${constraintName}: ${columnName} -> ${referencedTable}.${referencedColumn}${actions ? ` ${actions}` : ""}`
       }),
-      indexes: extractNames(indexes),
+      indexes,
       triggers: extractNames(triggers),
       functions: extractNames(functions),
     }
@@ -2883,12 +3097,21 @@ async function getPostgreSqlTableDetails(
     )
     const indexResult = await client.query(
       `
-        SELECT indexname AS name
-        FROM pg_indexes
-        WHERE schemaname = $1
-          AND tablename = $2
-          AND indexname NOT LIKE '%_pkey'
-        ORDER BY indexname
+        SELECT
+          i.relname AS name,
+          ix.indisunique AS is_unique,
+          ix.indisprimary AS is_primary,
+          ARRAY_AGG(a.attname ORDER BY x.ordinality) AS columns
+        FROM pg_index ix
+        INNER JOIN pg_class t ON t.oid = ix.indrelid
+        INNER JOIN pg_class i ON i.oid = ix.indexrelid
+        INNER JOIN pg_namespace n ON n.oid = t.relnamespace
+        INNER JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS x(attnum, ordinality) ON TRUE
+        INNER JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = x.attnum
+        WHERE n.nspname = $1
+          AND t.relname = $2
+        GROUP BY i.relname, ix.indisunique, ix.indisprimary
+        ORDER BY i.relname
       `,
       [schemaName, tableName]
     )
@@ -2914,6 +3137,19 @@ async function getPostgreSqlTableDetails(
     )
 
     const primaryKeys = new Set(extractNames(pkResult.rows))
+    const indexes = (indexResult.rows as Array<Record<string, unknown>>).map((row) => ({
+      name: String(row.name ?? "").trim(),
+      columns: Array.isArray(row.columns)
+        ? (row.columns as Array<unknown>).map((value) => String(value ?? "").trim()).filter(Boolean)
+        : [],
+      unique: Boolean(row.is_unique),
+      primaryKey: Boolean(row.is_primary),
+    }))
+    const uniqueColumnSet = new Set(
+      indexes
+        .filter((index) => index.unique && index.columns.length === 1 && !index.primaryKey)
+        .map((index) => index.columns[0].trim().toLowerCase())
+    )
 
     return {
       databaseName,
@@ -2926,6 +3162,9 @@ async function getPostgreSqlTableDetails(
         size: normalizeColumnSize(row.character_maximum_length, row.numeric_precision, row.numeric_scale),
         notNull: String(row.is_nullable ?? "").toUpperCase() === "NO",
         primaryKey: primaryKeys.has(String(row.name ?? "").trim()),
+        unique:
+          uniqueColumnSet.has(String(row.name ?? "").trim().toLowerCase()) &&
+          !primaryKeys.has(String(row.name ?? "").trim()),
         autoIncrement: String(row.column_default ?? "").toLowerCase().includes("nextval("),
         defaultValue: String(row.column_default ?? "").trim(),
         comment: "",
@@ -2937,7 +3176,7 @@ async function getPostgreSqlTableDetails(
         const referencedColumn = String(row.referenced_column ?? "").trim()
         return `${name}: ${column} -> ${referencedTable}.${referencedColumn}`
       }),
-      indexes: extractNames(indexResult.rows),
+      indexes,
       triggers: extractNames(triggerResult.rows),
       functions: extractNames(functionResult.rows),
     }
@@ -3022,12 +3261,18 @@ async function getSqlServerTableDetails(
       ORDER BY fk.name, fkc.constraint_column_id
     `)
     const indexResult = await pool.request().query(`
-      SELECT name
-      FROM sys.indexes
-      WHERE object_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
-        AND name IS NOT NULL
-        AND is_primary_key = 0
-      ORDER BY name
+      SELECT
+        i.name AS name,
+        i.is_unique AS is_unique,
+        i.is_primary_key AS is_primary_key,
+        c.name AS column_name,
+        ic.key_ordinal AS key_ordinal
+      FROM sys.indexes i
+      INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+      INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+      WHERE i.object_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
+        AND i.name IS NOT NULL
+      ORDER BY i.name, ic.key_ordinal
     `)
     const triggerResult = await pool.request().query(`
       SELECT name
@@ -3045,6 +3290,43 @@ async function getSqlServerTableDetails(
     `)
 
     const primaryKeys = new Set(extractNames(pkResult.recordset as Array<Record<string, unknown>>))
+    const indexMap = new Map<string, TableIndexDefinition>()
+
+    for (const row of indexResult.recordset as Array<Record<string, unknown>>) {
+      const name = String(row.name ?? "").trim()
+      const columnName = String(row.column_name ?? "").trim()
+
+      if (!name || !columnName) {
+        continue
+      }
+
+      const unique = Boolean(row.is_unique)
+      const primaryKey = Boolean(row.is_primary_key)
+      const existing = indexMap.get(name) ?? {
+        name,
+        columns: [],
+        unique,
+        primaryKey,
+      }
+
+      existing.columns.push(columnName)
+      existing.unique = existing.primaryKey ? true : unique
+      existing.primaryKey = primaryKey
+      indexMap.set(name, existing)
+    }
+
+    const indexes = Array.from(indexMap.values()).sort((left, right) => {
+      if (left.primaryKey !== right.primaryKey) {
+        return left.primaryKey ? -1 : 1
+      }
+
+      return left.name.localeCompare(right.name)
+    })
+    const uniqueColumnSet = new Set(
+      indexes
+        .filter((index) => index.unique && index.columns.length === 1 && !index.primaryKey)
+        .map((index) => index.columns[0].trim().toLowerCase())
+    )
 
     return {
       databaseName,
@@ -3057,12 +3339,15 @@ async function getSqlServerTableDetails(
         size: normalizeColumnSize(row.max_length, row.precision, row.scale),
         notNull: Boolean(row.is_nullable) === false,
         primaryKey: primaryKeys.has(String(row.name ?? "").trim()),
+        unique:
+          uniqueColumnSet.has(String(row.name ?? "").trim().toLowerCase()) &&
+          !primaryKeys.has(String(row.name ?? "").trim()),
         autoIncrement: Boolean(row.is_identity),
         defaultValue: String(row.default_value ?? "").trim(),
         comment: String(row.comment ?? "").trim(),
       })),
       foreignKeys: extractNames(fkResult.recordset as Array<Record<string, unknown>>).map((name) => name),
-      indexes: extractNames(indexResult.recordset as Array<Record<string, unknown>>),
+      indexes,
       triggers: extractNames(triggerResult.recordset as Array<Record<string, unknown>>),
       functions: extractNames(functionResult.recordset as Array<Record<string, unknown>>),
     }
@@ -3096,12 +3381,48 @@ async function getSqliteTableDetails(
       .all() as Array<{ id?: number; from?: string; table?: string; to?: string }>
     const indexRows = db
       .prepare(`PRAGMA index_list(${quoteSqlLiteral(tableName)})`)
-      .all() as Array<{ name?: string }>
+      .all() as Array<{ name?: string; unique?: number; origin?: string }>
     const triggerRows = db
       .prepare(
         `SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ${quoteSqlLiteral(tableName)} ORDER BY name`
       )
       .all() as Array<{ name?: string }>
+    const indexes = indexRows
+      .map((row) => {
+        const name = String(row.name ?? "").trim()
+
+        if (!name) {
+          return null
+        }
+
+        const indexInfoRows = db
+          .prepare(`PRAGMA index_info(${quoteSqlLiteral(name)})`)
+          .all() as Array<{ name?: string; seqno?: number }>
+        const columns = indexInfoRows
+          .sort((left, right) => Number(left.seqno ?? 0) - Number(right.seqno ?? 0))
+          .map((row) => String(row.name ?? "").trim())
+          .filter(Boolean)
+
+        return {
+          name,
+          columns,
+          unique: Boolean(row.unique) || row.origin === "pk",
+          primaryKey: row.origin === "pk",
+        }
+      })
+      .filter((index): index is TableIndexDefinition => Boolean(index))
+      .sort((left, right) => {
+        if (left.primaryKey !== right.primaryKey) {
+          return left.primaryKey ? -1 : 1
+        }
+
+        return left.name.localeCompare(right.name)
+      })
+    const uniqueColumnSet = new Set(
+      indexes
+        .filter((index) => index.unique && index.columns.length === 1 && !index.primaryKey)
+        .map((index) => index.columns[0].trim().toLowerCase())
+    )
 
     return {
       databaseName: connection.databaseFile || "main",
@@ -3114,6 +3435,9 @@ async function getSqliteTableDetails(
         size: "",
         notNull: Boolean(row.notnull),
         primaryKey: Boolean(row.pk),
+        unique:
+          uniqueColumnSet.has(String(row.name ?? "").trim().toLowerCase()) &&
+          !Boolean(row.pk),
         autoIncrement: false,
         defaultValue: String(row.dflt_value ?? "").trim(),
         comment: "",
@@ -3124,7 +3448,7 @@ async function getSqliteTableDetails(
         const to = String(row.to ?? "").trim()
         return `${from} -> ${refTable}.${to}`
       }),
-      indexes: extractNames(indexRows),
+      indexes,
       triggers: extractNames(triggerRows),
       functions: [],
     }
