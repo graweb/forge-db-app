@@ -30,8 +30,12 @@ DrawerOverlay.displayName = DialogPrimitive.Overlay.displayName
 
 const DrawerContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
+    side?: "right" | "bottom"
+  }
+>(({ className, children, side = "right", ...props }, ref) => {
+
+  return (
   <DrawerPortal>
     <DrawerOverlay />
     <DialogPrimitive.Content
@@ -46,9 +50,15 @@ const DrawerContent = React.forwardRef<
         event.preventDefault()
       }}
       className={cn(
-        "fixed inset-y-0 right-0 z-50 h-[100dvh] w-[min(100vw-1rem,72rem)] translate-x-0 rounded-l-[2rem] border-l border-white/10 bg-[#0b1221] outline-none",
-        "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right-10",
-        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-10",
+        side === "bottom"
+          ? "fixed inset-x-0 bottom-0 top-auto z-50 h-[min(92dvh,52rem)] w-full translate-y-0 rounded-t-[2rem] border-t border-white/10 bg-[#0b1221] outline-none"
+          : "fixed inset-y-0 right-0 z-50 h-[100dvh] w-[min(100vw-1rem,72rem)] translate-x-0 rounded-l-[2rem] border-l border-white/10 bg-[#0b1221] outline-none",
+        side === "bottom"
+          ? "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-10"
+          : "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right-10",
+        side === "bottom"
+          ? "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-bottom-10"
+          : "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-10",
         "duration-200",
         className
       )}
@@ -63,7 +73,8 @@ const DrawerContent = React.forwardRef<
       </DialogPrimitive.Close>
     </DialogPrimitive.Content>
   </DrawerPortal>
-))
+  )
+})
 DrawerContent.displayName = DialogPrimitive.Content.displayName
 
 export { Drawer, DrawerClose, DrawerContent, DrawerOverlay, DrawerPortal, DrawerTrigger }

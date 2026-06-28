@@ -744,7 +744,10 @@ export function CreateTableModal({
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
-      <DrawerContent className="w-[min(100vw-1rem,72rem)] overflow-hidden rounded-l-[2rem] border-l border-white/10 bg-[#0b1221] p-0 text-white shadow-[0_24px_90px_-35px_rgba(0,0,0,0.95)]">
+      <DrawerContent
+        side="bottom"
+        className="overflow-hidden rounded-t-[2rem] border-t border-white/10 bg-[#0b1221] p-0 text-white shadow-[0_24px_90px_-35px_rgba(0,0,0,0.95)]"
+      >
         <div className="flex h-full flex-col overflow-hidden">
           <div className="border-b border-white/10 px-6 py-5 pr-16">
             <DialogHeader className="text-left">
@@ -870,11 +873,11 @@ export function CreateTableModal({
                           <TableHeader>
                             <TableRow>
                               <TableHead className="w-12">#</TableHead>
-                              <TableHead>Nome</TableHead>
-                              <TableHead>Tipo</TableHead>
+                              <TableHead className="w-80">Nome</TableHead>
+                              <TableHead className="w-32">Tipo</TableHead>
                               <TableHead className="w-32">Tamanho</TableHead>
-                              <TableHead className="w-36">Default</TableHead>
-                              <TableHead className="w-[18rem]">Comentário</TableHead>
+                              <TableHead className="w-80">Default</TableHead>
+                              <TableHead>Comentário</TableHead>
                               <TableHead className="w-24 text-center">Not Null</TableHead>
                               <TableHead className="w-20 text-center">PK</TableHead>
                               <TableHead className="w-28 text-center">AI</TableHead>
@@ -890,7 +893,7 @@ export function CreateTableModal({
                                     value={column.name}
                                     onChange={(event) => updateColumn(index, "name", event.target.value)}
                                     placeholder="nome"
-                                    className="h-9 w-36"
+                                    className="h-9 w-full"
                                   />
                                 </TableCell>
                                 <TableCell>
@@ -898,7 +901,7 @@ export function CreateTableModal({
                                     value={column.dataType}
                                     onValueChange={(value) => updateColumn(index, "dataType", value)}
                                   >
-                                    <SelectTrigger className="h-9">
+                                    <SelectTrigger className="h-9 w-32 shrink-0">
                                       <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -935,7 +938,7 @@ export function CreateTableModal({
                                     value={column.comment}
                                     onChange={(event) => updateColumn(index, "comment", event.target.value)}
                                     placeholder="Comentário"
-                                    className="h-9"
+                                    className="h-9 w-full"
                                   />
                                 </TableCell>
                                 <TableCell className="text-center">
