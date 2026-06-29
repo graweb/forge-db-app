@@ -972,7 +972,7 @@ export function CreateViewModal({
                         onDragLeave={handleCanvasDragLeave}
                         onDrop={handleCanvasDrop}
                         className={cn(
-                          "relative h-full min-h-[clamp(16rem,36dvh,30rem)] overflow-hidden rounded-3xl border bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.18),transparent_40%),linear-gradient(180deg,rgba(6,11,20,0.96),rgba(4,8,14,0.96))] p-4 transition-colors",
+                          "relative h-full min-h-[clamp(16rem,36dvh,30rem)] overflow-hidden rounded-3xl border bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.18),transparent_40%),linear-gradient(180deg,rgba(6,11,20,0.96),rgba(4,8,14,0.96))] p-3 transition-colors",
                           isCanvasDropActive
                             ? "border-sky-400/40 shadow-[0_0_0_1px_rgba(56,189,248,0.2),0_18px_60px_-30px_rgba(56,189,248,0.35)]"
                           : "border-white/10",
@@ -1034,9 +1034,9 @@ export function CreateViewModal({
                             ))}
                           </svg>
                         ) : null}
-                        <div className="relative flex h-full min-h-[clamp(16rem,36dvh,30rem)] items-center justify-center">
+                        <div className="relative flex h-full min-h-0 items-stretch justify-stretch">
                           {selectedTables.length ? (
-                            <div className="relative z-10 grid w-full gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+                            <div className="relative z-10 grid w-full gap-2 self-start sm:grid-cols-2 2xl:grid-cols-3">
                               {selectedTables.map((table, index) => {
                                 const tableDetails = tableDetailsById[table.id]
                                 const outgoingForeignKeys = (tableDetails?.foreignKeys ?? [])
@@ -1066,7 +1066,7 @@ export function CreateViewModal({
                                     onDrop={(event) => handleSelectedTableDrop(event, table.id)}
                                     ref={(element) => setTableCardRef(table.id, element)}
                                     className={cn(
-                                      "relative rounded-2xl border border-white/10 bg-[#0a1321]/90 p-4 shadow-[0_12px_40px_-28px_rgba(0,0,0,0.9)] transition-transform",
+                                      "relative rounded-xl border border-white/10 bg-[#0a1321]/90 p-3 shadow-[0_12px_40px_-28px_rgba(0,0,0,0.9)] transition-transform",
                                       index === 0 && "sm:col-span-2 2xl:col-span-1",
                                       isDraggingTable && "cursor-grab active:cursor-grabbing",
                                       dropTarget?.id === table.id && "border-sky-400/40 bg-[#0c1728]"
@@ -1078,44 +1078,44 @@ export function CreateViewModal({
                                     <div className="flex items-start justify-between gap-3">
                                       <div className="space-y-1">
                                         <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-sky-300/80">
-                                          <Sparkles className="size-3.5" />
+                                          <Sparkles className="size-3" />
                                           t{index + 1}
                                         </div>
-                                        <div className="text-lg font-semibold text-white">{table.tableName}</div>
+                                        <div className="text-base font-semibold text-white">{table.tableName}</div>
                                         <div className="text-xs text-white/45">{table.reference}</div>
                                       </div>
                                       <button
                                         type="button"
                                         onClick={() => removeSelectedTable(index)}
-                                        className="inline-flex size-8 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/45 transition-colors hover:bg-white/10 hover:text-rose-300"
+                                        className="inline-flex size-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/45 transition-colors hover:bg-white/10 hover:text-rose-300"
                                         aria-label={`Remover ${table.tableName}`}
                                       >
-                                        <Trash2 className="size-4" />
+                                        <Trash2 className="size-3.5" />
                                       </button>
                                     </div>
 
-                                    <div className="mt-3 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.18em] text-white/45">
-                                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">
+                                    <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-[0.18em] text-white/45">
+                                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
                                         {table.columns.length} colunas
                                       </span>
                                       {outgoingForeignKeys.length ? (
-                                        <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-1 text-sky-200">
+                                        <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 text-sky-200">
                                           {outgoingForeignKeys.length} FK
                                         </span>
                                       ) : null}
                                       {incomingCount ? (
-                                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-emerald-200">
+                                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-0.5 text-emerald-200">
                                           {incomingCount} ref
                                         </span>
                                       ) : null}
                                     </div>
 
                                     {outgoingForeignKeys.length ? (
-                                      <div className="mt-3 space-y-1.5">
-                                        {outgoingForeignKeys.slice(0, 3).map((foreignKey) => (
+                                      <div className="mt-2 space-y-1">
+                                        {outgoingForeignKeys.slice(0, 2).map((foreignKey) => (
                                           <div
                                             key={`${table.id}-${foreignKey.sourceColumn}-${foreignKey.referencedTableName}-${foreignKey.referencedColumnName}`}
-                                            className="rounded-xl border border-sky-400/15 bg-sky-400/8 px-3 py-2 text-xs leading-5 text-sky-50/85"
+                                            className="rounded-lg border border-sky-400/15 bg-sky-400/8 px-2.5 py-1.5 text-[11px] leading-4 text-sky-50/85"
                                           >
                                             <span className="font-medium text-sky-200">{foreignKey.sourceColumn}</span>
                                             <span className="text-white/45"> → </span>
@@ -1131,23 +1131,23 @@ export function CreateViewModal({
                                       <div className="absolute inset-x-3 bottom-1 rounded-full border-b-2 border-sky-400/80" />
                                     ) : null}
 
-                                    <Separator className="my-4 bg-white/10" />
+                                    <Separator className="my-3 bg-white/10" />
 
-                                    <div className="space-y-3 text-sm text-white/70">
-                                      {table.columns.slice(0, 4).map((column) => (
+                                    <div className="space-y-2 text-sm text-white/70">
+                                      {table.columns.slice(0, 3).map((column) => (
                                         <div
                                           key={`${table.id}-${column.name}`}
-                                          className="flex items-center justify-between rounded-xl border border-white/8 bg-white/3 px-3 py-2"
+                                          className="flex items-center justify-between rounded-lg border border-white/8 bg-white/3 px-2.5 py-1.5"
                                         >
                                           <span className="truncate text-white/80">{column.name}</span>
-                                          <span className="ml-3 shrink-0 text-xs text-white/35">
+                                          <span className="ml-3 shrink-0 text-[11px] text-white/35">
                                             {column.dataType}
                                             {column.size ? `(${column.size})` : ""}
                                           </span>
                                         </div>
                                       ))}
                                       {!table.columns.length ? (
-                                        <div className="rounded-xl border border-dashed border-white/10 px-3 py-4 text-xs text-white/35">
+                                        <div className="rounded-lg border border-dashed border-white/10 px-2.5 py-3 text-xs text-white/35">
                                           Nenhuma coluna disponível.
                                         </div>
                                       ) : null}
@@ -1157,8 +1157,8 @@ export function CreateViewModal({
                               })}
                             </div>
                           ) : (
-                            <div className="flex min-h-[clamp(16rem,36dvh,30rem)] w-full items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/2 text-center">
-                              <div className="max-w-sm space-y-3 px-4">
+                            <div className="flex h-full min-h-0 w-full items-stretch justify-center rounded-2xl border border-dashed border-white/10 bg-white/2 text-center">
+                              <div className="flex h-full w-full max-w-sm flex-col items-center justify-center space-y-3 px-4">
                                 <div className="mx-auto flex size-14 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/40">
                                   <Table2 className="size-6" />
                                 </div>
