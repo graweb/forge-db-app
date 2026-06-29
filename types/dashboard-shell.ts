@@ -1,5 +1,5 @@
 import type { DatabaseStructure, DatabaseStructureDatabase, SavedConnection } from "@/types/connections"
-import type { TableIndexDefinition } from "@/types/connections"
+import type { TableIndexDefinition, TableTriggerDefinition } from "@/types/connections"
 
 export type DashboardShellProps = {
   connection: SavedConnection | null
@@ -33,6 +33,6 @@ export type TableTarget = {
   }>
   foreignKeys: string[]
   indexes: TableIndexDefinition[]
-  triggers: string[]
+  triggers: TableTriggerDefinition[]
   functions: string[]
 }

@@ -28,6 +28,14 @@ export type CreateTableIndexSpec = {
   unique: boolean
 }
 
+export type CreateTableTriggerSpec = {
+  name: string
+  description?: string
+  timing: string
+  event: string
+  body: string
+}
+
 export function normalizeDefaultValue(value: string) {
   const trimmed = value.trim()
 
@@ -188,6 +196,99 @@ export function buildDropTableIndexSql(
   }
 
   return `DROP INDEX IF EXISTS ${quotedIndexName}`
+}
+
+function buildTriggerFunctionName(tableName: string, triggerName: string) {
+  return `trgfn_${`${tableName}_${triggerName}`.replace(/[^A-Za-z0-9_]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "")}`.toLowerCase()
+}
+
+export function buildCreateTableTriggerDefinition(
+  connection: SavedConnection,
+  tableName: string,
+  trigger: CreateTableTriggerSpec,
+  defaultSchemaName: string
+) {
+  const triggerName = trigger.name.trim()
+  const timing = trigger.timing.trim().toUpperCase()
+  const event = trigger.event.trim().toUpperCase()
+  const body = trigger.body.trim()
+
+  if (!triggerName || !timing || !event || !body) {
+    throw new Error("Informe nome, temporização, evento e comando da trigger.")
+  }
+
+  const quotedTriggerName = quoteIdentifier(connection.databaseType, triggerName)
+  const quotedTableName = quoteIdentifier(connection.databaseType, tableName)
+  const quotedSchemaName = quoteIdentifier(connection.databaseType, defaultSchemaName)
+  const qualifiedTable =
+    connection.databaseType === "sqlite"
+      ? quotedTableName
+      : `${quotedSchemaName}.${quotedTableName}`
+  const bodyLines: string[] = []
+  const description = trigger.description?.trim() ?? ""
+  if (description) {
+    bodyLines.push(`  -- ${description.replace(/\s+/g, " ")}`)
+  }
+  bodyLines.push(
+    ...body
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .map((line) => `  ${line}`)
+  )
+  const formattedBody = bodyLines.length ? bodyLines.join("\n") : "  "
+
+  if (connection.databaseType === "postgresql") {
+    const functionName = buildTriggerFunctionName(tableName, triggerName)
+    const quotedFunctionName = quoteIdentifier(connection.databaseType, functionName)
+    const returnExpression = event === "DELETE" ? "OLD" : "NEW"
+    const functionBody = formattedBody.replace(/\n/g, "\n")
+
+    return [
+      `CREATE OR REPLACE FUNCTION ${quotedSchemaName}.${quotedFunctionName}() RETURNS trigger AS $$`,
+      "BEGIN",
+      functionBody,
+      `  RETURN ${returnExpression};`,
+      "END;",
+      `$$ LANGUAGE plpgsql;`,
+      `CREATE TRIGGER ${quotedTriggerName} ${timing} ${event} ON ${qualifiedTable} FOR EACH ROW EXECUTE FUNCTION ${quotedSchemaName}.${quotedFunctionName}();`,
+    ].join("\n")
+  }
+
+  if (connection.databaseType === "sqlserver") {
+    return `CREATE TRIGGER ${quotedTriggerName} ON ${qualifiedTable} ${timing} ${event} AS BEGIN
+${formattedBody}
+END`
+  }
+
+  if (connection.databaseType === "sqlite") {
+    return `CREATE TRIGGER ${quotedTriggerName} ${timing} ${event} ON ${quotedTableName} BEGIN
+${formattedBody}
+END`
+  }
+
+  return `CREATE TRIGGER ${quotedTriggerName} ${timing} ${event} ON ${qualifiedTable} FOR EACH ROW BEGIN
+${formattedBody}
+END`
+}
+
+export function buildDropTableTriggerSql(
+  connection: SavedConnection,
+  schemaName: string,
+  tableName: string,
+  triggerName: string
+) {
+  const quotedTriggerName = quoteIdentifier(connection.databaseType, triggerName)
+
+  if (connection.databaseType === "postgresql") {
+    const qualifiedTable = `${quoteIdentifier(connection.databaseType, schemaName)}.${quoteIdentifier(
+      connection.databaseType,
+      tableName
+    )}`
+    return `DROP TRIGGER IF EXISTS ${quotedTriggerName} ON ${qualifiedTable}`
+  }
+
+  return `DROP TRIGGER IF EXISTS ${quotedTriggerName}`
 }
 
 export function buildCreateTableForeignKeyDefinition(

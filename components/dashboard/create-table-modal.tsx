@@ -25,10 +25,13 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/helpers/utils"
 import {
   buildCreateTableIndexDefinition,
+  buildCreateTableTriggerDefinition,
   buildDropTableIndexSql,
+  buildDropTableTriggerSql,
   buildForeignKeyConstraintName,
   buildTableIndexName,
 } from "@/helpers/create-table/shared"
@@ -37,6 +40,7 @@ import type {
   CreateTableDraft,
   CreateTableForeignKeyDraft,
   CreateTableIndexDraft,
+  CreateTableTriggerDraft,
   CreateTableModalProps,
 } from "@/types/dashboard-modals"
 import type { DatabaseStructureDatabase, SavedConnection, TableDetails } from "@/types/connections"
@@ -215,6 +219,37 @@ function createIndexDraftFromDefinition(
     unique: definition.unique,
     primaryKey: definition.primaryKey,
     removable: !definition.primaryKey,
+  })
+}
+
+function createTriggerDraft(partial?: Partial<CreateTableTriggerDraft>): CreateTableTriggerDraft {
+  return {
+    id:
+      partial?.id ||
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`),
+    sourceName: partial?.sourceName,
+    name: partial?.name ?? "",
+    description: partial?.description ?? "",
+    timing: partial?.timing ?? "AFTER",
+    event: partial?.event ?? "INSERT",
+    body: partial?.body ?? "",
+    removable: partial?.removable ?? true,
+  }
+}
+
+function createTriggerDraftFromDefinition(
+  definition: TableDetails["triggers"][number]
+): CreateTableTriggerDraft {
+  return createTriggerDraft({
+    sourceName: definition.name,
+    name: definition.name,
+    description: definition.description,
+    timing: definition.timing,
+    event: definition.event,
+    body: definition.body,
+    removable: true,
   })
 }
 
@@ -559,6 +594,9 @@ function getInitialDraft(
               .filter((column) => column.primaryKey)
               .map((column) => createPrimaryIndexDraft(column.name, "PRIMARY"))
           : [],
+      triggers: table.triggers.length
+        ? table.triggers.map((trigger) => createTriggerDraftFromDefinition(trigger))
+        : [],
     }
   }
 
@@ -572,6 +610,7 @@ function getInitialDraft(
     columns: [createColumnDraft(getDefaultColumn(connection.databaseType))],
     foreignKeys: [],
     indexes: [createPrimaryIndexDraft("id", "PRIMARY")],
+    triggers: [],
   }
 }
 
@@ -604,6 +643,7 @@ function createEmptyDraft(
     columns: [createColumnDraft(getDefaultColumn(connection.databaseType))],
     foreignKeys: [],
     indexes: [createPrimaryIndexDraft("id", "PRIMARY")],
+    triggers: [],
   }
 }
 
@@ -800,6 +840,204 @@ function getNextGeneratedIndexName(
   return candidate
 }
 
+function getNextGeneratedTriggerName(
+  tableName: string,
+  currentIndex: number,
+  triggers: Array<{ name: string }>
+) {
+  const baseName = `trg_${`${tableName}_${currentIndex}`.replace(/[^A-Za-z0-9_]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "")}`.toLowerCase()
+  const usedNames = new Set(
+    triggers
+      .map((trigger, triggerIndex) =>
+        triggerIndex === currentIndex ? "" : trigger.name.trim().toLowerCase()
+      )
+      .filter(Boolean)
+  )
+
+  if (!usedNames.has(baseName)) {
+    return baseName
+  }
+
+  let suffix = 2
+  let candidate = `${baseName}_${suffix}`
+
+  while (usedNames.has(candidate)) {
+    suffix += 1
+    candidate = `${baseName}_${suffix}`
+  }
+
+  return candidate
+}
+
+function getTriggerBodyTemplate(
+  databaseType: SavedConnection["databaseType"],
+  timing: string,
+  event: string,
+  description?: string
+) {
+  const normalizedTiming = timing.trim().toUpperCase()
+  const normalizedEvent = event.trim().toUpperCase()
+  const notes: string[] = []
+
+  if (description?.trim()) {
+    notes.push(`-- ${description.trim().replace(/\s+/g, " ")}`)
+  }
+
+  const appendMysqlAuditExample = () => {
+    if (normalizedEvent === "INSERT") {
+      notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+      notes.push("VALUES ('sua_tabela', 'INSERT', NEW.id, CURRENT_TIMESTAMP);")
+      return
+    }
+
+    if (normalizedEvent === "UPDATE") {
+      notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+      notes.push("VALUES ('sua_tabela', 'UPDATE', NEW.id, CURRENT_TIMESTAMP);")
+      notes.push("-- compare OLD.name e NEW.name aqui, se precisar")
+      return
+    }
+
+    notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+    notes.push("VALUES ('sua_tabela', 'DELETE', OLD.id, CURRENT_TIMESTAMP);")
+  }
+
+  const appendPostgreSqlExample = () => {
+    if (normalizedEvent === "INSERT") {
+      notes.push("NEW.updated_at := NOW();")
+      notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+      notes.push("VALUES ('sua_tabela', 'INSERT', NEW.id, NOW());")
+      return
+    }
+
+    if (normalizedEvent === "UPDATE") {
+      notes.push("NEW.updated_at := NOW();")
+      notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+      notes.push("VALUES ('sua_tabela', 'UPDATE', NEW.id, NOW());")
+      notes.push("IF NEW.status IS DISTINCT FROM OLD.status THEN")
+      notes.push("  -- sua lógica de validação aqui")
+      notes.push("END IF;")
+      return
+    }
+
+    notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+    notes.push("VALUES ('sua_tabela', 'DELETE', OLD.id, NOW());")
+  }
+
+  const appendSqlServerExample = () => {
+    if (normalizedEvent === "INSERT") {
+      notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+      notes.push("SELECT 'sua_tabela', 'INSERT', i.id, SYSDATETIME()")
+      notes.push("FROM inserted i;")
+      return
+    }
+
+    if (normalizedEvent === "UPDATE") {
+      notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+      notes.push("SELECT 'sua_tabela', 'UPDATE', i.id, SYSDATETIME()")
+      notes.push("FROM inserted i")
+      notes.push("INNER JOIN deleted d ON d.id = i.id;")
+      notes.push("-- compare d.coluna_antiga e i.coluna_nova aqui")
+      return
+    }
+
+    notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+    notes.push("SELECT 'sua_tabela', 'DELETE', d.id, SYSDATETIME()")
+    notes.push("FROM deleted d;")
+  }
+
+  const appendSqliteExample = () => {
+    if (normalizedEvent === "INSERT") {
+      notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+      notes.push("VALUES ('sua_tabela', 'INSERT', NEW.id, CURRENT_TIMESTAMP);")
+      return
+    }
+
+    if (normalizedEvent === "UPDATE") {
+      notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+      notes.push("VALUES ('sua_tabela', 'UPDATE', NEW.id, CURRENT_TIMESTAMP);")
+      notes.push("-- compare OLD.coluna e NEW.coluna aqui")
+      return
+    }
+
+    notes.push("INSERT INTO audit_log(table_name, action, row_id, created_at)")
+    notes.push("VALUES ('sua_tabela', 'DELETE', OLD.id, CURRENT_TIMESTAMP);")
+  }
+
+  if (databaseType === "postgresql") {
+    notes.push(
+      normalizedTiming === "BEFORE"
+        ? "-- PostgreSQL antes do evento: faça validações ou ajustes em NEW/OLD."
+        : "-- PostgreSQL após o evento: use isso para auditoria ou integrações."
+    )
+    notes.push(
+      normalizedEvent === "INSERT"
+        ? "-- NEW representa a nova linha."
+        : normalizedEvent === "UPDATE"
+          ? "-- NEW é o valor final e OLD é o valor anterior."
+          : "-- OLD representa a linha removida."
+    )
+    appendPostgreSqlExample()
+    if (normalizedTiming === "BEFORE") {
+      notes.push("-- o retorno da função será adicionado automaticamente")
+    }
+    return notes.join("\n")
+  }
+
+  if (databaseType === "mysql" || databaseType === "mariadb") {
+    notes.push(
+      normalizedTiming === "BEFORE"
+        ? "-- MySQL/MariaDB antes do evento: use NEW para ajustar dados."
+        : "-- MySQL/MariaDB depois do evento: use para auditoria ou sincronização."
+    )
+    notes.push(
+      normalizedEvent === "INSERT"
+        ? "-- NEW é a linha inserida."
+        : normalizedEvent === "UPDATE"
+          ? "-- NEW e OLD permitem comparar a alteração."
+          : "-- OLD é a linha removida."
+    )
+    appendMysqlAuditExample()
+    return notes.join("\n")
+  }
+
+  if (databaseType === "sqlserver") {
+    notes.push(
+      normalizedTiming === "BEFORE"
+        ? "-- SQL Server não usa BEFORE nativo; o gatilho roda após a operação."
+        : "-- SQL Server trabalha com inserted/deleted dentro do gatilho."
+    )
+    notes.push(
+      normalizedEvent === "INSERT"
+        ? "-- inserted contém as linhas inseridas."
+        : normalizedEvent === "UPDATE"
+          ? "-- inserted traz o estado novo e deleted o anterior."
+          : "-- deleted contém as linhas removidas."
+    )
+    appendSqlServerExample()
+    return notes.join("\n")
+  }
+
+  if (databaseType === "sqlite") {
+    notes.push(
+      normalizedTiming === "BEFORE"
+        ? "-- SQLite antes do evento: valide ou bloqueie a operação quando necessário."
+        : "-- SQLite após o evento: costuma ser usado para auditoria."
+    )
+    notes.push(
+      normalizedEvent === "INSERT"
+        ? "-- NEW é a linha inserida."
+        : normalizedEvent === "UPDATE"
+          ? "-- NEW e OLD permitem comparar a alteração."
+          : "-- OLD é a linha removida."
+    )
+    appendSqliteExample()
+    return notes.join("\n")
+  }
+
+  notes.push("-- sua lógica aqui")
+  return notes.join("\n")
+}
+
 function normalizeIndexDrafts(form: CreateTableDraft) {
   return form.indexes
     .map((index) => ({
@@ -841,6 +1079,41 @@ function buildIndexPreviewDefinition(
 
 function normalizeSavedIndexes(form: CreateTableDraft) {
   return normalizeIndexDrafts(form).filter((index) => !index.primaryKey)
+}
+
+function normalizeTriggerDrafts(form: CreateTableDraft) {
+  return form.triggers
+    .map((trigger) => ({
+      ...trigger,
+      name: trigger.name.trim(),
+      description: trigger.description.trim(),
+      timing: trigger.timing.trim().toUpperCase(),
+      event: trigger.event.trim().toUpperCase(),
+      body: trigger.body.trim(),
+    }))
+    .filter((trigger) => trigger.name || trigger.description || trigger.timing || trigger.event || trigger.body)
+    .map((trigger) => ({
+      name: trigger.name,
+      description: trigger.description,
+      timing: trigger.timing,
+      event: trigger.event,
+      body: trigger.body,
+    }))
+}
+
+function normalizeCompletedTriggerDrafts(form: CreateTableDraft) {
+  return normalizeTriggerDrafts(form).filter(
+    (trigger) => trigger.name.trim() && trigger.timing.trim() && trigger.event.trim() && trigger.body.trim()
+  )
+}
+
+function buildTriggerPreviewDefinition(
+  connection: SavedConnection,
+  tableName: string,
+  trigger: { name: string; description: string; timing: string; event: string; body: string },
+  defaultSchemaName: string
+) {
+  return buildCreateTableTriggerDefinition(connection, tableName, trigger, defaultSchemaName)
 }
 
 function normalizeForeignKeyDrafts(form: CreateTableDraft) {
@@ -892,6 +1165,18 @@ const foreignKeyActionOptions = [
   { value: "NO ACTION", label: "NO ACTION" },
   { value: "SET NULL", label: "SET NULL" },
   { value: "SET DEFAULT", label: "SET DEFAULT" },
+]
+
+const triggerTimingOptions = [
+  { value: "BEFORE", label: "BEFORE" },
+  { value: "AFTER", label: "AFTER" },
+  { value: "INSTEAD OF", label: "INSTEAD OF" },
+]
+
+const triggerEventOptions = [
+  { value: "INSERT", label: "INSERT" },
+  { value: "UPDATE", label: "UPDATE" },
+  { value: "DELETE", label: "DELETE" },
 ]
 
 function hasForeignKeyChanges(form: CreateTableDraft, table?: TableDetails | null) {
@@ -958,6 +1243,10 @@ function buildCreatePreviewStatements(
   const indexDefinitions = indexes.map((index, indexNumber) =>
     `  ${buildIndexPreviewDefinition(connection, form.tableName, index, indexNumber, form.schemaName)}`
   )
+  const triggers = normalizeCompletedTriggerDrafts(form)
+  const triggerDefinitions = triggers.map((trigger) =>
+    `  ${buildTriggerPreviewDefinition(connection, form.tableName, trigger, form.schemaName)}`
+  )
 
   const statements: string[] = []
 
@@ -996,6 +1285,10 @@ function buildCreatePreviewStatements(
 
   for (const indexDefinition of indexDefinitions) {
     statements.push(indexDefinition + ";")
+  }
+
+  for (const triggerDefinition of triggerDefinitions) {
+    statements.push(triggerDefinition + ";")
   }
 
   if (form.comment.trim() && connection.databaseType === "postgresql") {
@@ -1134,6 +1427,11 @@ function buildEditPreviewStatements(
   const indexStatements = indexesToAdd.map((index, indexNumber) =>
     buildIndexPreviewDefinition(connection, form.tableName, index, indexNumber, form.schemaName)
   )
+  const triggers = normalizeCompletedTriggerDrafts(form)
+  const originalTriggers = table?.triggers ?? []
+  const triggerStatements = triggers.map((trigger) =>
+    buildTriggerPreviewDefinition(connection, form.tableName, trigger, form.schemaName)
+  )
   const requiresRebuild =
     !isMySqlLike &&
     ((connection.databaseType === "sqlite" && removedColumns.length > 0) ||
@@ -1233,6 +1531,12 @@ function buildEditPreviewStatements(
       )
     }
 
+    for (const trigger of originalTriggers) {
+      statements.push(
+        `${buildDropTableTriggerSql(connection, originalSchemaName, originalTableName, trigger.name)};`
+      )
+    }
+
     if (tableNameChanged) {
       if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
         statements.push(`RENAME TABLE ${originalQualified} TO ${nextQualified};`)
@@ -1255,6 +1559,10 @@ function buildEditPreviewStatements(
 
     for (const indexDefinition of indexStatements) {
       statements.push(`${indexDefinition};`)
+    }
+
+    for (const triggerDefinition of triggerStatements) {
+      statements.push(`${triggerDefinition};`)
     }
 
     return statements.length ? statements : ["-- Nenhuma alteração detectada."]
@@ -1299,6 +1607,9 @@ function buildEditPreviewStatements(
     }
     statements.push(`DROP TABLE ${originalQualified};`)
     statements.push(`RENAME TABLE ${tempQualified} TO ${nextQualified};`)
+    for (const triggerDefinition of triggerStatements) {
+      statements.push(`${triggerDefinition};`)
+    }
     return statements
   }
 
@@ -1321,6 +1632,9 @@ function buildEditPreviewStatements(
     statements.push(
       `ALTER TABLE ${tempQualified} RENAME TO ${quotePreviewIdentifier(connection, form.tableName)};`
     )
+    for (const triggerDefinition of triggerStatements) {
+      statements.push(`${triggerDefinition};`)
+    }
     return statements
   }
 
@@ -1353,6 +1667,9 @@ function buildEditPreviewStatements(
         form.tableName
       )};`
     )
+    for (const triggerDefinition of triggerStatements) {
+      statements.push(`${triggerDefinition};`)
+    }
     return statements
   }
 
@@ -1371,6 +1688,9 @@ function buildEditPreviewStatements(
   statements.push(
     `ALTER TABLE ${tempQualified} RENAME TO ${quotePreviewIdentifier(connection, form.tableName)};`
   )
+  for (const triggerDefinition of triggerStatements) {
+    statements.push(`${triggerDefinition};`)
+  }
   return statements
 }
 
@@ -1523,11 +1843,25 @@ export function CreateTableModal({
           name: getNextGeneratedIndexName(value, index.columns, currentIndex, current.indexes),
         }
       })
+      const nextTriggers = current.triggers.map((trigger, currentIndex) => {
+        const shouldRefreshName =
+          !trigger.name.trim() || trigger.name.trim().toLowerCase().startsWith("trg_")
+
+        if (!shouldRefreshName) {
+          return trigger
+        }
+
+        return {
+          ...trigger,
+          name: getNextGeneratedTriggerName(value, currentIndex, current.triggers),
+        }
+      })
 
       return {
         ...current,
         tableName: value,
         indexes: nextIndexes,
+        triggers: nextTriggers,
       }
     })
   }
@@ -1917,6 +2251,77 @@ export function CreateTableModal({
     }))
   }
 
+  function addTrigger() {
+    setForm((current) => {
+      const nextTriggerName = getNextGeneratedTriggerName(current.tableName, current.triggers.length, current.triggers)
+      const initialBody = getTriggerBodyTemplate(
+        activeConnection.databaseType,
+        "AFTER",
+        "INSERT"
+      )
+
+      return {
+        ...current,
+        triggers: [
+          ...current.triggers,
+          createTriggerDraft({
+            name: nextTriggerName,
+            description: "",
+            timing: "AFTER",
+            event: "INSERT",
+            body: initialBody,
+          }),
+        ],
+      }
+    })
+  }
+
+  function updateTrigger(index: number, field: keyof CreateTableTriggerDraft, value: string) {
+    setForm((current) => {
+      const nextTriggers = current.triggers.map((trigger, currentIndex) => {
+        if (currentIndex !== index) {
+          return trigger
+        }
+
+        const nextTrigger = { ...trigger, [field]: value }
+
+        if (field === "timing" || field === "event" || field === "description") {
+          const currentTemplate = getTriggerBodyTemplate(
+            activeConnection.databaseType,
+            trigger.timing,
+            trigger.event,
+            trigger.description
+          )
+          const nextTemplate = getTriggerBodyTemplate(
+            activeConnection.databaseType,
+            nextTrigger.timing,
+            nextTrigger.event,
+            nextTrigger.description
+          )
+          const currentBody = trigger.body.trim()
+
+          if (!currentBody || currentBody === currentTemplate.trim()) {
+            nextTrigger.body = nextTemplate
+          }
+        }
+
+        return nextTrigger
+      })
+
+      return {
+        ...current,
+        triggers: nextTriggers,
+      }
+    })
+  }
+
+  function removeTrigger(index: number) {
+    setForm((current) => ({
+      ...current,
+      triggers: current.triggers.filter((_, currentIndex) => currentIndex !== index),
+    }))
+  }
+
   async function handleSave() {
     if (!form.tableName.trim()) {
       setErrorMessage("Informe o nome da tabela.")
@@ -1985,6 +2390,20 @@ export function CreateTableModal({
       return
     }
 
+    const triggers = normalizeTriggerDrafts(form)
+    if (
+      triggers.some(
+        (trigger) =>
+          !trigger.name.trim() ||
+          !trigger.timing.trim() ||
+          !trigger.event.trim() ||
+          !trigger.body.trim()
+      )
+    ) {
+      setErrorMessage("Complete a trigger ou remova a linha vazia.")
+      return
+    }
+
     setSaving(true)
     setErrorMessage(null)
 
@@ -2010,6 +2429,7 @@ export function CreateTableModal({
           columns: form.columns,
           foreignKeys,
           indexes,
+          triggers,
         }),
       })
 
@@ -2610,15 +3030,124 @@ export function CreateTableModal({
 
                   <TabsContent value="triggers">
                     <Card className="border-white/10 bg-white/5">
-                      <CardHeader>
-                        <CardTitle className="text-base text-white">Triggers</CardTitle>
-                        <CardDescription>Triggers já cadastradas para a tabela.</CardDescription>
+                      <CardHeader className="pb-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <CardTitle className="text-base text-white">Triggers</CardTitle>
+                            <CardDescription>
+                              Crie, revise e remova triggers. A descrição fica como comentário interno no corpo da trigger.
+                            </CardDescription>
+                          </div>
+                          <Button
+                            type="button"
+                            onClick={addTrigger}
+                            variant="outline"
+                            className="border-white/10 bg-white/5 text-white hover:bg-white/10"
+                          >
+                            <Plus className="size-4" />
+                            Adicionar trigger
+                          </Button>
+                        </div>
                       </CardHeader>
-                      <CardContent>
-                        <MetadataList
-                          items={table?.triggers ?? []}
-                          emptyText="Nenhuma trigger encontrada."
-                        />
+                      <CardContent className="space-y-4 pt-0">
+                        {form.triggers.length ? (
+                          <Table wrapperClassName="rounded-2xl border border-white/10">
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="w-64">Nome</TableHead>
+                                <TableHead className="w-72">Descrição</TableHead>
+                                <TableHead className="w-40">Temporização</TableHead>
+                                <TableHead className="w-40">Tipo</TableHead>
+                                <TableHead>Comando</TableHead>
+                                <TableHead className="w-14" />
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {form.triggers.map((trigger, index) => (
+                                <TableRow key={trigger.id ?? `${index}`} className="align-top">
+                                  <TableCell>
+                                    <Input
+                                      value={trigger.name}
+                                      onChange={(event) => updateTrigger(index, "name", event.target.value)}
+                                      placeholder="trg_tabela_insert"
+                                      className="h-9"
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Input
+                                      value={trigger.description}
+                                      onChange={(event) =>
+                                        updateTrigger(index, "description", event.target.value)
+                                      }
+                                      placeholder="Descrição opcional"
+                                      className="h-9"
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Select
+                                      value={trigger.timing}
+                                      onValueChange={(value) => updateTrigger(index, "timing", value)}
+                                    >
+                                      <SelectTrigger className="h-9 w-full">
+                                        <SelectValue placeholder="Selecione" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectGroup>
+                                          {triggerTimingOptions.map((option) => (
+                                            <SelectItem key={option.value} value={option.value}>
+                                              {option.label}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectGroup>
+                                      </SelectContent>
+                                    </Select>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Select
+                                      value={trigger.event}
+                                      onValueChange={(value) => updateTrigger(index, "event", value)}
+                                    >
+                                      <SelectTrigger className="h-9 w-full">
+                                        <SelectValue placeholder="Selecione" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectGroup>
+                                          {triggerEventOptions.map((option) => (
+                                            <SelectItem key={option.value} value={option.value}>
+                                              {option.label}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectGroup>
+                                      </SelectContent>
+                                    </Select>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Textarea
+                                      value={trigger.body}
+                                      onChange={(event) => updateTrigger(index, "body", event.target.value)}
+                                      placeholder="DECLARE / BEGIN / SQL da trigger"
+                                      className="min-h-28 resize-y"
+                                    />
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => removeTrigger(index)}
+                                      className="inline-flex size-8 items-center justify-center rounded-lg text-white/40 transition-colors hover:bg-white/5 hover:text-rose-300"
+                                      aria-label="Remover trigger"
+                                    >
+                                      <Trash2 className="size-4" />
+                                    </button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-5 text-sm text-white/45">
+                            Nenhuma trigger configurada.
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   </TabsContent>

@@ -221,7 +221,13 @@ export function DashboardShell({
                       unique: boolean
                       primaryKey: boolean
                     }>
-                    triggers?: string[]
+                    triggers?: Array<{
+                      name: string
+                      description: string
+                      timing: string
+                      event: string
+                      body: string
+                    }>
                     functions?: string[]
                   } = await response.json()
 

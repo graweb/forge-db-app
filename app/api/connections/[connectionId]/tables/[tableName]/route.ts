@@ -106,6 +106,13 @@ export async function PUT(
         columns: string[]
         unique?: boolean
       }>
+      triggers?: Array<{
+        name?: string
+        description?: string
+        timing: string
+        event: string
+        body: string
+      }>
     }
     const result = await updateTable(connection, {
       databaseName,
@@ -116,6 +123,7 @@ export async function PUT(
       columns: body.columns ?? [],
       foreignKeys: body.foreignKeys ?? [],
       indexes: body.indexes ?? [],
+      triggers: body.triggers ?? [],
     })
 
     return NextResponse.json({

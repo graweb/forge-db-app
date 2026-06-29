@@ -40,6 +40,17 @@ export type CreateTableIndexDraft = {
   removable: boolean
 }
 
+export type CreateTableTriggerDraft = {
+  id?: string
+  sourceName?: string
+  name: string
+  description: string
+  timing: string
+  event: string
+  body: string
+  removable: boolean
+}
+
 export type CreateTableDraft = {
   schemaName: string
   tableName: string
@@ -47,6 +58,7 @@ export type CreateTableDraft = {
   columns: CreateTableColumnDraft[]
   foreignKeys: CreateTableForeignKeyDraft[]
   indexes: CreateTableIndexDraft[]
+  triggers: CreateTableTriggerDraft[]
 }
 
 export type CreateTableModalProps = {

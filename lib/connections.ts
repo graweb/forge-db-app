@@ -27,6 +27,7 @@ import type {
   CreateDatabaseResult,
   CreateTableInput,
   CreateTableIndexInput,
+  CreateTableTriggerInput,
   CreateTableResult,
   CreateTableForeignKeyInput,
   DatabaseStructure,
@@ -73,12 +74,15 @@ import {
   buildCreateTableColumnDefinition,
   buildCreateTableForeignKeyDefinition,
   buildCreateTableIndexDefinition,
+  buildCreateTableTriggerDefinition,
   buildDropTableIndexSql,
+  buildDropTableTriggerSql,
   buildForeignKeyConstraintName,
   buildTableIndexName,
   type CreateTableColumnSpec,
   type CreateTableForeignKeySpec,
   type CreateTableIndexSpec,
+  type CreateTableTriggerSpec,
 } from "@/helpers/create-table/shared"
 import {
   createGroup,
@@ -646,6 +650,7 @@ export async function updateTable(
     nextTableName || originalTableName,
     originalTableDetails.indexes.map((index) => index.name)
   )
+  const normalizedTriggers = normalizeTableTriggersInput(input.triggers)
   const originalIndexes = originalTableDetails.indexes.filter((index) => !index.primaryKey)
   const originalIndexMap = new Map(
     originalIndexes.map((index) => [index.name.trim().toLowerCase(), index] as const)
@@ -737,6 +742,7 @@ export async function updateTable(
   const hasTableNameChange = nextTableName !== originalTableName
   const hasCommentChange = input.comment.trim() !== originalTableDetails.comment.trim()
   const addedColumns = normalizedColumns.filter((column) => !column.sourceName)
+  const triggerTargetTableName = hasTableNameChange ? nextTableName : originalTableName
 
   if (!requiresRebuild) {
     switch (connection.databaseType) {
@@ -817,6 +823,17 @@ export async function updateTable(
             )
           }
 
+          for (const trigger of originalTableDetails.triggers) {
+            await client.query(
+              buildDropTableTriggerSql(
+                connection,
+                normalizedSchema,
+                originalTableName,
+                trigger.name
+              )
+            )
+          }
+
           if (
             foreignKeyCanAlter &&
             normalizedForeignKeys.length &&
@@ -838,6 +855,17 @@ export async function updateTable(
 
           if (hasTableNameChange) {
             await client.query(`RENAME TABLE ${qualifiedOriginal} TO ${qualifiedNext}`)
+          }
+
+          for (const trigger of normalizedTriggers) {
+            await client.query(
+              buildCreateTableTriggerDefinition(
+                connection,
+                triggerTargetTableName,
+                trigger,
+                normalizedSchema
+              )
+            )
           }
 
           return {
@@ -911,8 +939,30 @@ export async function updateTable(
             )
           }
 
+          for (const trigger of originalTableDetails.triggers) {
+            await client.query(
+              buildDropTableTriggerSql(
+                connection,
+                normalizedSchema,
+                originalTableName,
+                trigger.name
+              )
+            )
+          }
+
           if (hasTableNameChange) {
             await client.query(`ALTER TABLE ${qualifiedOriginal} RENAME TO ${quotedNextTableName}`)
+          }
+
+          for (const trigger of normalizedTriggers) {
+            await client.query(
+              buildCreateTableTriggerDefinition(
+                connection,
+                triggerTargetTableName,
+                trigger,
+                normalizedSchema
+              )
+            )
           }
 
           return {
@@ -967,11 +1017,33 @@ export async function updateTable(
             )
           }
 
+          for (const trigger of originalTableDetails.triggers) {
+            await pool.request().query(
+              buildDropTableTriggerSql(
+                connection,
+                normalizedSchema,
+                originalTableName,
+                trigger.name
+              )
+            )
+          }
+
           if (hasTableNameChange) {
             await pool.request().query(
               `EXEC sp_rename ${quoteSqlLiteral(`${normalizedSchema}.${originalTableName}`)}, ${quoteSqlLiteral(
                 nextTableName
               )}`
+            )
+          }
+
+          for (const trigger of normalizedTriggers) {
+            await pool.request().query(
+              buildCreateTableTriggerDefinition(
+                connection,
+                triggerTargetTableName,
+                trigger,
+                normalizedSchema
+              )
             )
           }
 
@@ -1003,8 +1075,16 @@ export async function updateTable(
             db.exec(buildCreateTableIndexDefinition(connection, originalTableName, index, 0, "main"))
           }
 
+          for (const trigger of originalTableDetails.triggers) {
+            db.exec(buildDropTableTriggerSql(connection, "main", originalTableName, trigger.name))
+          }
+
           if (hasTableNameChange) {
             db.exec(`ALTER TABLE ${qualifiedOriginal} RENAME TO ${quoteIdentifier("sqlite", nextTableName)}`)
+          }
+
+          for (const trigger of normalizedTriggers) {
+            db.exec(buildCreateTableTriggerDefinition(connection, triggerTargetTableName, trigger, "main"))
           }
 
           return {
@@ -1089,6 +1169,17 @@ export async function updateTable(
           )
         }
 
+        for (const trigger of normalizedTriggers) {
+          await client.query(
+            buildCreateTableTriggerDefinition(
+              connection,
+              triggerTargetTableName,
+              trigger,
+              normalizedSchema
+            )
+          )
+        }
+
         return {
           message: "Tabela atualizada com sucesso.",
           details:
@@ -1141,6 +1232,12 @@ export async function updateTable(
         await client.query(
           `ALTER TABLE ${qualifiedTemp} RENAME TO ${quoteIdentifier("postgresql", nextTableName)}`
         )
+
+        for (const trigger of normalizedTriggers) {
+          await client.query(
+            buildCreateTableTriggerDefinition(connection, triggerTargetTableName, trigger, normalizedSchema)
+          )
+        }
 
         return {
           message: "Tabela atualizada com sucesso.",
@@ -1208,6 +1305,12 @@ export async function updateTable(
           )}`
         )
 
+        for (const trigger of normalizedTriggers) {
+          await pool.request().query(
+            buildCreateTableTriggerDefinition(connection, triggerTargetTableName, trigger, normalizedSchema)
+          )
+        }
+
         return {
           message: "Tabela atualizada com sucesso.",
           details:
@@ -1251,6 +1354,10 @@ export async function updateTable(
 
         db.exec(`DROP TABLE ${qualifiedOriginal}`)
         db.exec(`ALTER TABLE ${qualifiedTemp} RENAME TO ${quoteIdentifier("sqlite", nextTableName)}`)
+
+        for (const trigger of normalizedTriggers) {
+          db.exec(buildCreateTableTriggerDefinition(connection, triggerTargetTableName, trigger, "main"))
+        }
 
         return {
           message: "Tabela atualizada com sucesso.",
@@ -1454,6 +1561,58 @@ function normalizeTableIndexesInput(
   return normalized
 }
 
+function normalizeTableTriggersInput(
+  triggers: Array<CreateTableTriggerInput | undefined> | undefined
+): CreateTableTriggerSpec[] {
+  return (triggers ?? [])
+    .map((trigger) => ({
+      name: sanitizeDatabaseIdentifier(trigger?.name),
+      description: sanitizeSqlExpression(trigger?.description),
+      timing: sanitizeText(trigger?.timing).trim().toUpperCase(),
+      event: sanitizeText(trigger?.event).trim().toUpperCase(),
+      body: sanitizeSqlExpression(trigger?.body),
+    }))
+    .filter(
+      (trigger) =>
+        trigger.name && trigger.description !== undefined && trigger.timing && trigger.event && trigger.body
+    )
+}
+
+function extractTriggerPayloadFromDefinition(
+  definition: string,
+  functionDefinition?: string
+): {
+  description: string
+  body: string
+  timing: string
+  event: string
+} {
+  const source = `${functionDefinition ?? ""}\n${definition}`.trim()
+  const timingEventMatch = source.match(/\b(BEFORE|AFTER|INSTEAD OF)\s+(INSERT|UPDATE|DELETE)\b/i)
+  const bodyMatch =
+    source.match(/\bBEGIN\b([\s\S]*?)\bRETURN\s+(?:NEW|OLD);\s*\bEND\b/i) ??
+    source.match(/\bBEGIN\b([\s\S]*?)\bEND\b/i)
+  const rawBody = (bodyMatch?.[1] ?? "").trim()
+  const lines = rawBody.split(/\r?\n/)
+  const firstLine = lines[0]?.trim() ?? ""
+  let description = ""
+  let bodyLines = lines
+
+  if (firstLine.startsWith("--")) {
+    description = firstLine.replace(/^--\s*/, "").trim()
+    bodyLines = lines.slice(1)
+  }
+
+  const body = bodyLines.map((line) => line.trimEnd()).join("\n").trim()
+
+  return {
+    description,
+    body,
+    timing: timingEventMatch?.[1]?.trim().toUpperCase() ?? "",
+    event: timingEventMatch?.[2]?.trim().toUpperCase() ?? "",
+  }
+}
+
 function normalizeForeignKeyAction(value?: string) {
   const normalized = sanitizeText(value).toUpperCase()
   return ["CASCADE", "RESTRICT", "NO ACTION", "SET NULL", "SET DEFAULT"].includes(normalized)
@@ -1614,6 +1773,7 @@ export async function createTable(
     .filter((column) => column.name && column.dataType)
   const foreignKeys = normalizeForeignKeysInput(input.foreignKeys, schemaName)
   const indexes = normalizeTableIndexesInput(input.indexes, tableName)
+  const triggers = normalizeTableTriggersInput(input.triggers)
 
   if (!tableName) {
     throw new Error("Informe um nome válido para a tabela.")
@@ -1646,11 +1806,21 @@ export async function createTable(
         comment,
         columns,
         foreignKeys,
-        indexes
+        indexes,
+        triggers
       )
 
     case "postgresql":
-      return createPostgreSqlTable(connection, schemaName, tableName, comment, columns, foreignKeys, indexes)
+      return createPostgreSqlTable(
+        connection,
+        schemaName,
+        tableName,
+        comment,
+        columns,
+        foreignKeys,
+        indexes,
+        triggers
+      )
 
     case "sqlserver":
       return createSqlServerTable(
@@ -1661,11 +1831,12 @@ export async function createTable(
         comment,
         columns,
         foreignKeys,
-        indexes
+        indexes,
+        triggers
       )
 
     case "sqlite":
-      return createSqliteTable(connection, tableName, comment, columns, foreignKeys, indexes)
+      return createSqliteTable(connection, tableName, comment, columns, foreignKeys, indexes, triggers)
 
     default:
       throw new Error("Tipo de banco não suportado.")
@@ -1679,7 +1850,8 @@ async function createSqlTableLike(
   comment: string,
   columns: CreateTableColumnSpec[],
   foreignKeys: CreateTableForeignKeySpec[] = [],
-  indexes: CreateTableIndexSpec[] = []
+  indexes: CreateTableIndexSpec[] = [],
+  triggers: CreateTableTriggerSpec[] = []
 ): Promise<CreateTableResult> {
   return withMySqlLikeClient(connection, schemaName, async (client) => {
     const createTableSql = buildMySqlLikeCreateTableSql(
@@ -1696,6 +1868,9 @@ async function createSqlTableLike(
     }
     for (const index of indexes) {
       await client.query(buildCreateTableIndexDefinition(connection, tableName, index, 0, schemaName))
+    }
+    for (const trigger of triggers) {
+      await client.query(buildCreateTableTriggerDefinition(connection, tableName, trigger, schemaName))
     }
 
     return {
@@ -1714,7 +1889,8 @@ async function createPostgreSqlTable(
   comment: string,
   columns: CreateTableColumnSpec[],
   foreignKeys: CreateTableForeignKeySpec[] = [],
-  indexes: CreateTableIndexSpec[] = []
+  indexes: CreateTableIndexSpec[] = [],
+  triggers: CreateTableTriggerSpec[] = []
 ): Promise<CreateTableResult> {
   return withPostgresClient(connection, connection.databaseName.trim() || "postgres", async (client) => {
     const { createSchemaSql, createTableSql, commentSql } = buildPostgreSqlCreateTableSql(
@@ -1739,6 +1915,9 @@ async function createPostgreSqlTable(
     for (const index of indexes) {
       await client.query(buildCreateTableIndexDefinition(connection, tableName, index, 0, schemaName))
     }
+    for (const trigger of triggers) {
+      await client.query(buildCreateTableTriggerDefinition(connection, tableName, trigger, schemaName))
+    }
 
     return {
       message: "Tabela criada com sucesso.",
@@ -1757,7 +1936,8 @@ async function createSqlServerTable(
   _comment: string,
   columns: CreateTableColumnSpec[],
   foreignKeys: CreateTableForeignKeySpec[] = [],
-  indexes: CreateTableIndexSpec[] = []
+  indexes: CreateTableIndexSpec[] = [],
+  triggers: CreateTableTriggerSpec[] = []
 ): Promise<CreateTableResult> {
   return withSqlServerPool(
     connection,
@@ -1779,6 +1959,9 @@ async function createSqlServerTable(
       for (const index of indexes) {
         await pool.request().query(buildCreateTableIndexDefinition(connection, tableName, index, 0, schemaName))
       }
+      for (const trigger of triggers) {
+        await pool.request().query(buildCreateTableTriggerDefinition(connection, tableName, trigger, schemaName))
+      }
 
       return {
         message: "Tabela criada com sucesso.",
@@ -1796,7 +1979,8 @@ async function createSqliteTable(
   _comment: string,
   columns: CreateTableColumnSpec[],
   foreignKeys: CreateTableForeignKeySpec[] = [],
-  indexes: CreateTableIndexSpec[] = []
+  indexes: CreateTableIndexSpec[] = [],
+  triggers: CreateTableTriggerSpec[] = []
 ): Promise<CreateTableResult> {
   return withSqliteDatabase(connection, async (db) => {
     const { tablePath, createTableSql } = buildSqliteCreateTableSql(
@@ -1808,6 +1992,9 @@ async function createSqliteTable(
     db.exec(createTableSql)
     for (const index of indexes) {
       db.exec(buildCreateTableIndexDefinition(connection, tableName, index, 0, "main"))
+    }
+    for (const trigger of triggers) {
+      db.exec(buildCreateTableTriggerDefinition(connection, tableName, trigger, "main"))
     }
 
     return {
@@ -2884,7 +3071,11 @@ async function getMySqlLikeTableDetails(
       client,
       connection.databaseType,
       `
-        SELECT TRIGGER_NAME AS name
+        SELECT
+          TRIGGER_NAME AS name,
+          ACTION_TIMING AS timing,
+          EVENT_MANIPULATION AS event,
+          ACTION_STATEMENT AS body
         FROM INFORMATION_SCHEMA.TRIGGERS
         WHERE TRIGGER_SCHEMA = ?
           AND EVENT_OBJECT_TABLE = ?
@@ -3008,7 +3199,13 @@ async function getMySqlLikeTableDetails(
         return `${constraintName}: ${columnName} -> ${referencedTable}.${referencedColumn}${actions ? ` ${actions}` : ""}`
       }),
       indexes,
-      triggers: extractNames(triggers),
+      triggers: triggers.map((row) => ({
+        name: String(row.name ?? row.TRIGGER_NAME ?? "").trim(),
+        description: "",
+        timing: String(row.timing ?? row.ACTION_TIMING ?? "").trim().toUpperCase(),
+        event: String(row.event ?? row.EVENT_MANIPULATION ?? "").trim().toUpperCase(),
+        body: String(row.body ?? row.ACTION_STATEMENT ?? "").trim(),
+      })),
       functions: extractNames(functions),
     }
   } finally {
@@ -3117,11 +3314,17 @@ async function getPostgreSqlTableDetails(
     )
     const triggerResult = await client.query(
       `
-        SELECT trigger_name AS name
-        FROM information_schema.triggers
-        WHERE trigger_schema = $1
-          AND event_object_table = $2
-        ORDER BY trigger_name
+        SELECT
+          t.tgname AS name,
+          pg_get_triggerdef(t.oid) AS definition,
+          pg_get_functiondef(t.tgfoid) AS function_definition
+        FROM pg_trigger t
+        INNER JOIN pg_class c ON c.oid = t.tgrelid
+        INNER JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1
+          AND c.relname = $2
+          AND NOT t.tgisinternal
+        ORDER BY t.tgname
       `,
       [schemaName, tableName]
     )
@@ -3177,7 +3380,19 @@ async function getPostgreSqlTableDetails(
         return `${name}: ${column} -> ${referencedTable}.${referencedColumn}`
       }),
       indexes,
-      triggers: extractNames(triggerResult.rows),
+      triggers: (triggerResult.rows as Array<Record<string, unknown>>).map((row) => {
+        const definition = String(row.definition ?? "").trim()
+        const functionDefinition = String(row.function_definition ?? "").trim()
+        const payload = extractTriggerPayloadFromDefinition(definition, functionDefinition)
+
+        return {
+          name: String(row.name ?? "").trim(),
+          description: payload.description,
+          timing: payload.timing,
+          event: payload.event,
+          body: payload.body,
+        }
+      }),
       functions: extractNames(functionResult.rows),
     }
   } finally {
@@ -3275,10 +3490,16 @@ async function getSqlServerTableDetails(
       ORDER BY i.name, ic.key_ordinal
     `)
     const triggerResult = await pool.request().query(`
-      SELECT name
-      FROM sys.triggers
-      WHERE parent_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
-      ORDER BY name
+      SELECT
+        t.name AS name,
+        CASE WHEN t.is_instead_of_trigger = 1 THEN 'INSTEAD OF' ELSE 'AFTER' END AS timing,
+        STRING_AGG(te.type_desc, ', ') WITHIN GROUP (ORDER BY te.type_desc) AS event,
+        OBJECT_DEFINITION(t.object_id) AS definition
+      FROM sys.triggers t
+      LEFT JOIN sys.trigger_events te ON t.object_id = te.object_id
+      WHERE t.parent_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
+      GROUP BY t.name, t.is_instead_of_trigger, t.object_id
+      ORDER BY t.name
     `)
     const functionResult = await pool.request().query(`
       SELECT o.name AS name
@@ -3348,7 +3569,18 @@ async function getSqlServerTableDetails(
       })),
       foreignKeys: extractNames(fkResult.recordset as Array<Record<string, unknown>>).map((name) => name),
       indexes,
-      triggers: extractNames(triggerResult.recordset as Array<Record<string, unknown>>),
+      triggers: (triggerResult.recordset as Array<Record<string, unknown>>).map((row) => {
+        const definition = String(row.definition ?? "").trim()
+        const payload = extractTriggerPayloadFromDefinition(definition)
+
+        return {
+          name: String(row.name ?? "").trim(),
+          description: payload.description,
+          timing: String(row.timing ?? payload.timing ?? "").trim().toUpperCase(),
+          event: String(row.event ?? payload.event ?? "").trim().toUpperCase().replace(/_EVENT/g, ""),
+          body: payload.body || definition,
+        }
+      }),
       functions: extractNames(functionResult.recordset as Array<Record<string, unknown>>),
     }
   } finally {
@@ -3384,9 +3616,9 @@ async function getSqliteTableDetails(
       .all() as Array<{ name?: string; unique?: number; origin?: string }>
     const triggerRows = db
       .prepare(
-        `SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ${quoteSqlLiteral(tableName)} ORDER BY name`
+        `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ${quoteSqlLiteral(tableName)} ORDER BY name`
       )
-      .all() as Array<{ name?: string }>
+      .all() as Array<{ name?: string; sql?: string }>
     const indexes = indexRows
       .map((row) => {
         const name = String(row.name ?? "").trim()
@@ -3449,7 +3681,18 @@ async function getSqliteTableDetails(
         return `${from} -> ${refTable}.${to}`
       }),
       indexes,
-      triggers: extractNames(triggerRows),
+      triggers: triggerRows.map((row) => {
+        const definition = String(row.sql ?? "").trim()
+        const payload = extractTriggerPayloadFromDefinition(definition)
+
+        return {
+          name: String(row.name ?? "").trim(),
+          description: payload.description,
+          timing: payload.timing,
+          event: payload.event,
+          body: payload.body || definition,
+        }
+      }),
       functions: [],
     }
   } finally {

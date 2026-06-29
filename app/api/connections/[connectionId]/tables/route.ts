@@ -28,6 +28,7 @@ export async function POST(
       columns?: Array<Partial<CreateTableInput["columns"][number]>>
       foreignKeys?: Array<Partial<NonNullable<CreateTableInput["foreignKeys"]>[number]>>
       indexes?: Array<Partial<NonNullable<CreateTableInput["indexes"]>[number]>>
+      triggers?: Array<Partial<NonNullable<CreateTableInput["triggers"]>[number]>>
     }
 
     const result = await createTable(connection, {
@@ -59,6 +60,13 @@ export async function POST(
         name: index?.name ?? "",
         columns: (index?.columns ?? []).map((columnName) => columnName ?? "").filter(Boolean),
         unique: Boolean(index?.unique),
+      })),
+      triggers: (body.triggers ?? []).map((trigger) => ({
+        name: trigger?.name ?? "",
+        description: trigger?.description ?? "",
+        timing: trigger?.timing ?? "",
+        event: trigger?.event ?? "",
+        body: trigger?.body ?? "",
       })),
     })
 

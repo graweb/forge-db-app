@@ -26,6 +26,14 @@ export type CreateTableIndexInput = {
   unique?: boolean
 }
 
+export type CreateTableTriggerInput = {
+  name?: string
+  description?: string
+  timing: string
+  event: string
+  body: string
+}
+
 export type CreateTableInput = {
   databaseName: string
   schemaName: string
@@ -34,6 +42,7 @@ export type CreateTableInput = {
   columns: CreateTableColumnInput[]
   foreignKeys?: CreateTableForeignKeyInput[]
   indexes?: CreateTableIndexInput[]
+  triggers?: CreateTableTriggerInput[]
 }
 
 export type CreateTableResult = {
@@ -63,6 +72,14 @@ export type TableIndexDefinition = {
   primaryKey: boolean
 }
 
+export type TableTriggerDefinition = {
+  name: string
+  description: string
+  timing: string
+  event: string
+  body: string
+}
+
 export type TableDetails = {
   databaseName: string
   schemaName: string
@@ -71,7 +88,7 @@ export type TableDetails = {
   columns: TableColumnDefinition[]
   foreignKeys: string[]
   indexes: TableIndexDefinition[]
-  triggers: string[]
+  triggers: TableTriggerDefinition[]
   functions: string[]
 }
 
@@ -84,6 +101,7 @@ export type UpdateTableInput = {
   comment: string
   foreignKeys?: CreateTableForeignKeyInput[]
   indexes?: CreateTableIndexInput[]
+  triggers?: CreateTableTriggerInput[]
 }
 
 export type UpdateTableResult = {
