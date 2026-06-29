@@ -25,6 +25,8 @@ import type {
   ConnectionInput,
   CreateDatabaseInput,
   CreateDatabaseResult,
+  CreateUserInput,
+  CreateUserResult,
   CreateTableInput,
   CreateTableFunctionInput,
   CreateTableIndexInput,
@@ -107,6 +109,7 @@ export const EMPTY_DATABASE_STRUCTURE: DatabaseStructure = {
   databases: [],
   schemas: [],
   groups: [],
+  users: [],
 }
 
 const access = promisify(accessCb)
@@ -388,6 +391,195 @@ export async function createDatabase(
 
     case "sqlite":
       throw new Error("Não é possível criar banco de dados SQLite por esta tela.")
+
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function createUser(
+  connection: SavedConnection,
+  input: CreateUserInput
+): Promise<CreateUserResult> {
+  const userName = sanitizeDatabaseIdentifier(input.userName)
+  const password = sanitizeText(input.password)
+  const host = sanitizeText(input.host || "%") || "%"
+  const permissions = Array.from(
+    new Set((input.permissions ?? []).map((permission) => sanitizeText(permission).toUpperCase()).filter(Boolean))
+  )
+  const targetDatabaseName = sanitizeDatabaseIdentifier(input.databaseName) || connection.databaseName.trim()
+  const targetSchemaName = sanitizeDatabaseIdentifier(input.schemaName) || getFallbackSchemaName(connection)
+
+  if (!userName) {
+    throw new Error("Informe o nome do usuário.")
+  }
+
+  if (!password) {
+    throw new Error("Informe a senha do usuário.")
+  }
+
+  if (!targetDatabaseName) {
+    throw new Error("Informe o banco de dados de destino.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb": {
+      return withMySqlLikeClient(connection, targetDatabaseName || undefined, async (client) => {
+        const qualifiedUser = `${quoteSqlLiteral(userName)}@${quoteSqlLiteral(host)}`
+        const statements = [
+          `CREATE USER IF NOT EXISTS ${qualifiedUser} IDENTIFIED BY ${quoteSqlLiteral(password)}`,
+          `ALTER USER ${qualifiedUser} IDENTIFIED BY ${quoteSqlLiteral(password)}`,
+        ]
+
+        if (permissions.length) {
+          const allowedPermissions = permissions
+            .filter((permission) =>
+              [
+                "SELECT",
+                "INSERT",
+                "UPDATE",
+                "DELETE",
+                "CREATE",
+                "ALTER",
+                "DROP",
+                "INDEX",
+                "EXECUTE",
+                "TRIGGER",
+                "REFERENCES",
+              ].includes(permission)
+            )
+          if (allowedPermissions.length) {
+            statements.push(
+              `GRANT ${allowedPermissions.join(", ")} ON ${quoteIdentifier(
+                connection.databaseType,
+                targetDatabaseName
+              )}.* TO ${qualifiedUser}`
+            )
+          }
+        }
+
+        for (const statement of statements) {
+          await client.query(statement)
+        }
+
+        return {
+          message: "Usuário criado com sucesso.",
+          details: `O usuário ${userName} foi criado com permissões definidas.`,
+          userName,
+          databaseName: targetDatabaseName,
+        }
+      })
+    }
+
+    case "postgresql": {
+      return withPostgresClient(connection, targetDatabaseName || undefined, async (client) => {
+        await client.query(
+          `CREATE ROLE ${quoteIdentifier(connection.databaseType, userName)} LOGIN PASSWORD ${quoteSqlLiteral(password)}`
+        )
+
+        if (permissions.length) {
+          const grantedTablePrivileges = permissions.filter((permission) =>
+            ["SELECT", "INSERT", "UPDATE", "DELETE", "REFERENCES", "TRIGGER"].includes(permission)
+          )
+
+          if (permissions.includes("CONNECT")) {
+            await client.query(
+              `GRANT CONNECT ON DATABASE ${quoteIdentifier(
+                connection.databaseType,
+                targetDatabaseName
+              )} TO ${quoteIdentifier(connection.databaseType, userName)}`
+            )
+          }
+
+          if (permissions.includes("USAGE") || permissions.includes("CREATE")) {
+            const schemaPrivileges = [
+              permissions.includes("USAGE") ? "USAGE" : "",
+              permissions.includes("CREATE") ? "CREATE" : "",
+            ].filter(Boolean)
+
+            if (schemaPrivileges.length) {
+              await client.query(
+                `GRANT ${schemaPrivileges.join(", ")} ON SCHEMA ${quoteIdentifier(
+                  connection.databaseType,
+                  targetSchemaName
+                )} TO ${quoteIdentifier(connection.databaseType, userName)}`
+              )
+            }
+          }
+
+          if (grantedTablePrivileges.length) {
+            const privilegeList = grantedTablePrivileges.join(", ")
+            await client.query(
+              `GRANT ${privilegeList} ON ALL TABLES IN SCHEMA ${quoteIdentifier(
+                connection.databaseType,
+                targetSchemaName
+              )} TO ${quoteIdentifier(connection.databaseType, userName)}`
+            )
+            await client.query(
+              `ALTER DEFAULT PRIVILEGES IN SCHEMA ${quoteIdentifier(
+                connection.databaseType,
+                targetSchemaName
+              )} GRANT ${privilegeList} ON TABLES TO ${quoteIdentifier(connection.databaseType, userName)}`
+            )
+          }
+        }
+
+        return {
+          message: "Usuário criado com sucesso.",
+          details: `O usuário ${userName} foi criado com permissões definidas.`,
+          userName,
+          databaseName: targetDatabaseName,
+          schemaName: targetSchemaName,
+        }
+      })
+    }
+
+    case "sqlserver": {
+      return withSqlServerPool(
+        connection,
+        targetDatabaseName || "master",
+        async (pool) => {
+          await pool.request().query(
+            `CREATE LOGIN ${quoteSqlServerIdentifier(userName)} WITH PASSWORD = ${quoteSqlLiteral(password)}`
+          )
+          await pool.request().query(
+            `USE ${quoteSqlServerIdentifier(targetDatabaseName || connection.databaseName.trim() || "master")}`
+          )
+          await pool.request().query(
+            `CREATE USER ${quoteSqlServerIdentifier(userName)} FOR LOGIN ${quoteSqlServerIdentifier(userName)}`
+          )
+
+          const roleMap = new Map<string, string>([
+            ["DB_DATAREADER", "db_datareader"],
+            ["DB_DATAWRITER", "db_datawriter"],
+            ["DB_DDLADMIN", "db_ddladmin"],
+            ["DB_OWNER", "db_owner"],
+          ])
+
+          for (const permission of permissions) {
+            const roleName = roleMap.get(permission)
+            if (!roleName) {
+              continue
+            }
+
+            await pool.request().query(
+              `ALTER ROLE ${quoteSqlServerIdentifier(roleName)} ADD MEMBER ${quoteSqlServerIdentifier(userName)}`
+            )
+          }
+
+          return {
+            message: "Usuário criado com sucesso.",
+            details: `O usuário ${userName} foi criado com permissões definidas.`,
+            userName,
+            databaseName: targetDatabaseName,
+          }
+        }
+      )
+    }
+
+    case "sqlite":
+      throw new Error("SQLite não suporta criação de usuários neste fluxo.")
 
     default:
       throw new Error("Tipo de banco não suportado.")
@@ -2467,6 +2659,7 @@ async function getSqliteStructure(connection: SavedConnection): Promise<Database
       databases: [{ name: "main", schemas: [{ name: "main", groups }], groups }],
       schemas: [{ name: "main", groups }],
       groups,
+      users: [],
     }
   }
 
@@ -2513,6 +2706,7 @@ async function getSqliteStructure(connection: SavedConnection): Promise<Database
       ],
       schemas: [{ name: connection.databaseName.trim() || "main", groups }],
       groups,
+      users: [],
     }
   } finally {
     db.close()
@@ -2557,6 +2751,7 @@ async function getMySqlLikeStructure(connection: SavedConnection): Promise<Datab
     const databaseNames = database
       ? [database]
       : await listMySqlLikeDatabaseNames(client, databaseType)
+    const users = await getMySqlLikeUsers(client, databaseType)
 
     const databases: DatabaseStructureDatabase[] = []
 
@@ -2568,6 +2763,7 @@ async function getMySqlLikeStructure(connection: SavedConnection): Promise<Datab
       databases,
       schemas: [],
       groups: [],
+      users,
     }
   } finally {
     await client.end()
@@ -2593,6 +2789,48 @@ async function listMySqlLikeDatabaseNames(
   )
 
   return extractNames(rows)
+}
+
+async function getMySqlLikeUsers(
+  client: {
+    query: (queryText: string, params?: unknown[]) => Promise<unknown>
+  },
+  databaseType: "mysql" | "mariadb"
+) {
+  try {
+    const rows = await runMySqlLikeMetadataQuery(
+      client,
+      databaseType,
+      `
+        SELECT User AS name
+        FROM mysql.user
+        ORDER BY User
+      `,
+      []
+    )
+
+    return extractNames(rows)
+  } catch {
+    const fallbackRows = await runMySqlLikeMetadataQuery(
+      client,
+      databaseType,
+      `
+        SELECT DISTINCT GRANTEE AS name
+        FROM information_schema.user_privileges
+        ORDER BY GRANTEE
+      `,
+      []
+    )
+
+    return extractNames(
+      fallbackRows.map((row) => ({
+        ...row,
+        name: String((row as Record<string, unknown>).name ?? "")
+          .replace(/^'|'\@.*$/g, "")
+          .trim(),
+      }))
+    )
+  }
 }
 
 async function buildMySqlLikeDatabaseStructure(
@@ -2817,10 +3055,22 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
       ],
       schemas: [{ name: schemaName, groups }],
       groups,
+      users: await getPostgreSqlUsers(client),
     }
   } finally {
     await client.end()
   }
+}
+
+async function getPostgreSqlUsers(client: PostgresClient) {
+  const result = await client.query(`
+    SELECT rolname AS name
+    FROM pg_roles
+    WHERE rolcanlogin = true
+    ORDER BY rolname
+  `)
+
+  return extractNames(result.rows)
 }
 
 async function getSqlServerStructure(connection: SavedConnection): Promise<DatabaseStructure> {
@@ -2860,14 +3110,37 @@ async function getSqlServerStructure(connection: SavedConnection): Promise<Datab
       const databaseStructure = await getSqlServerDatabaseStructure(pool, databaseName)
       databases.push(databaseStructure)
     }
+    const users = await getSqlServerUsers(pool)
 
     return {
       databases,
       schemas: databases[0]?.schemas ?? [],
       groups: databases[0]?.groups ?? [],
+      users,
     }
   } finally {
     await pool.close()
+  }
+}
+
+async function getSqlServerUsers(pool: sql.ConnectionPool) {
+  try {
+    const result = await pool.request().query(`
+      SELECT name
+      FROM sys.server_principals
+      WHERE type IN ('S', 'U', 'G', 'E', 'X')
+        AND name NOT IN (
+          'sa',
+          'NT AUTHORITY\\SYSTEM',
+          'NT AUTHORITY\\NETWORK SERVICE',
+          'NT AUTHORITY\\LOCAL SERVICE'
+        )
+      ORDER BY name
+    `)
+
+    return extractNames(result.recordset as Array<Record<string, unknown>>)
+  } catch {
+    return []
   }
 }
 

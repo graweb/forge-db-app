@@ -12,6 +12,8 @@ import {
   Sigma,
   Table,
   Table2,
+  User,
+  Users,
   Wrench,
 } from "lucide-react"
 
@@ -61,6 +63,7 @@ export function DashboardSidebar({
   onSelect100Rows,
   onEditDatabase,
   onDeleteDatabase,
+  onCreateUser,
   onDisconnectConnection,
   onSelectConnection,
   onEditConnection,
@@ -81,6 +84,7 @@ export function DashboardSidebar({
     onSelect100Rows,
     onEditDatabase,
     onDeleteDatabase,
+    onCreateUser,
     onDisconnectConnection,
     onSelectConnection,
     onEditConnection,
@@ -148,6 +152,7 @@ function buildTreeNodes(
       databases: [],
       schemas: [],
       groups: [],
+      users: [],
     }
     const firstDatabase: DatabaseStructureDatabase | undefined = databaseStructure.databases[0]
     const primaryDatabase =
@@ -162,6 +167,7 @@ function buildTreeNodes(
     const canCreateDatabase = isAvailable && connection.databaseType !== "sqlite"
     const connectionSubtitle = getConnectionTreeSubtitle(connection)
     const isActive = connection.id === activeConnectionId
+    const usersNode = buildUsersNode(connection, databaseStructure, actions)
 
     const childNodes =
       (connection.databaseType === "sqlserver" ||
@@ -185,6 +191,7 @@ function buildTreeNodes(
                 buildDatabaseNode(connection, database, actions)
               ),
             },
+            usersNode,
           ]
       : [
             {
@@ -201,6 +208,7 @@ function buildTreeNodes(
               ) : null,
               children: getSchemaNodes(connection, databaseStructure, actions),
             },
+            usersNode,
           ]
 
     return {
@@ -308,6 +316,51 @@ function DatabaseItemContextMenu({
   )
 }
 
+function buildUsersNode(
+  connection: SavedConnection,
+  databaseStructure: DatabaseStructure,
+  actions: DashboardSidebarActions
+): TreeViewNode {
+  const users = databaseStructure.users ?? []
+  const targetDatabaseName = databaseStructure.databases[0]?.name || connection.databaseName
+  const targetSchemaName = databaseStructure.schemas[0]?.name || getDefaultSchemaName(connection)
+
+  return {
+    id: `users-${connection.id}`,
+    label: "Usuários",
+    icon: Users,
+    defaultExpanded: false,
+    expandOnClick: true,
+    badge: users.length,
+    contextActions: (
+      <div className="min-w-52 p-1">
+        <ContextMenuItem
+          onSelect={() =>
+            actions.onCreateUser(connection, {
+              databaseName: targetDatabaseName,
+              schemaName: targetSchemaName,
+            })
+          }
+        >
+          Criar usuário
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={actions.onRefreshStructure}>Atualizar</ContextMenuItem>
+      </div>
+    ),
+    children: users.map((userName) => ({
+      id: `users-${connection.id}-${userName}`,
+      label: userName,
+      icon: User,
+      isLeaf: true,
+      contextActions: (
+        <div className="min-w-52 p-1">
+          <ContextMenuItem onSelect={actions.onRefreshStructure}>Atualizar</ContextMenuItem>
+        </div>
+      ),
+    })),
+  }
+}
+
 function TableGroupContextMenu({
   onCreateTable,
   onRefreshStructure,
@@ -400,6 +453,7 @@ function buildGroupNode(
   const Icon = sectionIcons[group.label as keyof typeof sectionIcons] ?? FileCode
   const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
   const isTableGroup = group.label === "Tabelas"
+  const isViewGroup = group.label === "Views"
 
   return {
     id: `${connection.id}-${schemaName}-${group.label}`,
@@ -411,6 +465,13 @@ function buildGroupNode(
       isAvailable && isTableGroup ? (
         <TableGroupContextMenu
           onCreateTable={() => actions.onCreateTable(connection, database, schemaName)}
+          onRefreshStructure={actions.onRefreshDatabaseStructure}
+        />
+      ) : isAvailable && isViewGroup ? (
+        <ViewGroupContextMenu
+          connection={connection}
+          schemaName={schemaName}
+          onOpenSqlInNewTab={actions.onOpenSqlInNewTab}
           onRefreshStructure={actions.onRefreshDatabaseStructure}
         />
       ) : null,
@@ -490,6 +551,56 @@ function buildGroupNode(
       }
     }),
   }
+}
+
+function buildCreateViewSqlTemplate(connection: SavedConnection, schemaName: string) {
+  const quotedSchema =
+    connection.databaseType === "sqlite"
+      ? ""
+      : `${quoteIdentifier(connection.databaseType, schemaName)}.`
+  const viewName = quoteIdentifier(connection.databaseType, "nova_view")
+  const sourceTable = quoteIdentifier(connection.databaseType, "sua_tabela")
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb":
+    case "postgresql":
+      return `CREATE OR REPLACE VIEW ${quotedSchema}${viewName} AS\nSELECT *\nFROM ${quotedSchema}${sourceTable};`
+    case "sqlserver":
+      return `CREATE OR ALTER VIEW ${quotedSchema}${viewName} AS\nSELECT *\nFROM ${quotedSchema}${sourceTable};`
+    case "sqlite":
+      return `CREATE VIEW ${viewName} AS\nSELECT *\nFROM ${sourceTable};`
+    default:
+      return `CREATE VIEW ${viewName} AS\nSELECT *\nFROM ${sourceTable};`
+  }
+}
+
+function ViewGroupContextMenu({
+  connection,
+  schemaName,
+  onOpenSqlInNewTab,
+  onRefreshStructure,
+}: {
+  connection: SavedConnection
+  schemaName: string
+  onOpenSqlInNewTab: (sql: string, title?: string) => void
+  onRefreshStructure: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem
+        onSelect={() =>
+          onOpenSqlInNewTab(
+            buildCreateViewSqlTemplate(connection, schemaName),
+            "Criar view"
+          )
+        }
+      >
+        Criar view
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={onRefreshStructure}>Atualizar</ContextMenuItem>
+    </div>
+  )
 }
 
 function TreeContextMenu({

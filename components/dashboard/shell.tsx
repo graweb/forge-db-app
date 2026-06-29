@@ -12,6 +12,7 @@ import type { DashboardShellProps, ShellNotice, TableTarget } from "@/types/dash
 
 import { ConnectionModal } from "@/components/connections/connection-modal"
 import { CreateDatabaseModal } from "./create-database-modal"
+import { CreateUserModal } from "./create-user-modal"
 import { CreateTableModal } from "./create-table-modal"
 import { DeleteTableModal } from "./delete-table-modal"
 import { DeleteDatabaseModal } from "./delete-database-modal"
@@ -52,6 +53,8 @@ export function DashboardShell({
   const [databaseModalKey, setDatabaseModalKey] = useState(0)
   const [isTableModalOpen, setIsTableModalOpen] = useState(false)
   const [tableModalKey, setTableModalKey] = useState(0)
+  const [isUserModalOpen, setIsUserModalOpen] = useState(false)
+  const [userModalKey, setUserModalKey] = useState(0)
   const [tableTargetConnection, setTableTargetConnection] = useState<SavedConnection | null>(null)
   const [tableTargetDatabase, setTableTargetDatabase] = useState<DatabaseStructureDatabase | null>(
     null
@@ -59,6 +62,9 @@ export function DashboardShell({
   const [tableTargetSchema, setTableTargetSchema] = useState<string>("")
   const [tableTarget, setTableTarget] = useState<TableTarget | null>(null)
   const [tableModalMode, setTableModalMode] = useState<"create" | "edit">("create")
+  const [userTargetConnection, setUserTargetConnection] = useState<SavedConnection | null>(null)
+  const [userTargetDatabaseName, setUserTargetDatabaseName] = useState<string>("")
+  const [userTargetSchemaName, setUserTargetSchemaName] = useState<string>("")
   const [isDeleteTableModalOpen, setIsDeleteTableModalOpen] = useState(false)
   const [editingConnection, setEditingConnection] = useState<SavedConnection | null>(null)
   const [databaseTargetConnection, setDatabaseTargetConnection] = useState<SavedConnection | null>(null)
@@ -172,6 +178,13 @@ export function DashboardShell({
                 setDatabaseTarget(null)
                 setDatabaseModalKey((current) => current + 1)
                 setIsDatabaseModalOpen(true)
+              }}
+              onCreateUser={(connectionToUse, target) => {
+                setUserTargetConnection(connectionToUse)
+                setUserTargetDatabaseName(target?.databaseName ?? connectionToUse.databaseName)
+                setUserTargetSchemaName(target?.schemaName ?? "")
+                setUserModalKey((current) => current + 1)
+                setIsUserModalOpen(true)
               }}
               onCreateTable={(connectionToUse, databaseToUse, schemaName) => {
                 setTableModalMode("create")
@@ -516,6 +529,29 @@ export function DashboardShell({
               tableModalMode === "edit"
                 ? "A estrutura foi atualizada após a edição da tabela."
                 : "A estrutura foi atualizada após a criação da tabela.",
+          })
+        }}
+      />
+
+      <CreateUserModal
+        key={`${userTargetConnection?.id ?? "none"}-${userTargetDatabaseName}-${userTargetSchemaName}-${userModalKey}`}
+        open={isUserModalOpen}
+        connection={userTargetConnection}
+        databaseName={userTargetDatabaseName}
+        schemaName={userTargetSchemaName}
+        onOpenChange={(open) => {
+          setIsUserModalOpen(open)
+          if (!open) {
+            setUserTargetConnection(null)
+            setUserTargetDatabaseName("")
+            setUserTargetSchemaName("")
+          }
+        }}
+        onSaved={() => {
+          router.refresh()
+          showNotice({
+            title: "Usuário criado",
+            message: "O novo usuário foi adicionado e a árvore foi atualizada.",
           })
         }}
       />

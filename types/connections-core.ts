@@ -18,6 +18,23 @@ export type TestConnectionResult = {
   details: string
 }
 
+export type CreateUserInput = {
+  userName: string
+  password: string
+  host?: string
+  databaseName?: string
+  schemaName?: string
+  permissions: string[]
+}
+
+export type CreateUserResult = {
+  message: string
+  details: string
+  userName: string
+  databaseName?: string
+  schemaName?: string
+}
+
 export type SerializedValue = string | number | boolean | null
 
 export type QueryExecutionResult = {
@@ -67,6 +84,7 @@ export type DatabaseStructure = {
   databases: DatabaseStructureDatabase[]
   schemas: DatabaseStructureSchema[]
   groups: DatabaseStructureGroup[]
+  users: string[]
 }
 
 export type SavedConnection = ConnectionInput & {

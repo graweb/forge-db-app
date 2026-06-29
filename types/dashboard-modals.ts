@@ -62,6 +62,20 @@ export type CreateTableFunctionDraft = {
   removable: boolean
 }
 
+export type CreateUserPermissionDraft = {
+  key: string
+  label: string
+  description: string
+}
+
+export type CreateUserDraft = {
+  userName: string
+  password: string
+  confirmPassword: string
+  host: string
+  permissions: string[]
+}
+
 export type CreateTableDraft = {
   schemaName: string
   tableName: string
@@ -123,6 +137,15 @@ export type DatabaseModalProps = {
   mode: DatabaseModalMode
   connection: SavedConnection | null
   database?: DatabaseInfo | null
+  onOpenChange: (open: boolean) => void
+  onSaved: (details: { message: string; details: string }) => void | Promise<void>
+}
+
+export type CreateUserModalProps = {
+  open: boolean
+  connection: SavedConnection | null
+  databaseName?: string
+  schemaName?: string
   onOpenChange: (open: boolean) => void
   onSaved: (details: { message: string; details: string }) => void | Promise<void>
 }

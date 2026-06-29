@@ -39,6 +39,10 @@ export type DashboardSidebarProps = {
   ) => void
   onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+  onCreateUser: (
+    connection: SavedConnection,
+    target?: { databaseName?: string; schemaName?: string }
+  ) => void
   onDisconnectConnection: () => void
   onSelectConnection: (connection: SavedConnection) => void
   onEditConnection: (connection: SavedConnection) => void
@@ -79,6 +83,10 @@ export type DashboardSidebarActions = {
   ) => void
   onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
+  onCreateUser: (
+    connection: SavedConnection,
+    target?: { databaseName?: string; schemaName?: string }
+  ) => void
   onDisconnectConnection: () => void
   onSelectConnection: (connection: SavedConnection) => void
   onEditConnection: (connection: SavedConnection) => void
