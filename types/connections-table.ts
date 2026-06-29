@@ -34,6 +34,14 @@ export type CreateTableTriggerInput = {
   body: string
 }
 
+export type CreateTableFunctionInput = {
+  name?: string
+  description?: string
+  parameters?: string
+  returnType: string
+  body: string
+}
+
 export type CreateTableInput = {
   databaseName: string
   schemaName: string
@@ -43,6 +51,7 @@ export type CreateTableInput = {
   foreignKeys?: CreateTableForeignKeyInput[]
   indexes?: CreateTableIndexInput[]
   triggers?: CreateTableTriggerInput[]
+  functions?: CreateTableFunctionInput[]
 }
 
 export type CreateTableResult = {
@@ -80,6 +89,14 @@ export type TableTriggerDefinition = {
   body: string
 }
 
+export type TableFunctionDefinition = {
+  name: string
+  description: string
+  parameters: string
+  returnType: string
+  body: string
+}
+
 export type TableDetails = {
   databaseName: string
   schemaName: string
@@ -102,6 +119,7 @@ export type UpdateTableInput = {
   foreignKeys?: CreateTableForeignKeyInput[]
   indexes?: CreateTableIndexInput[]
   triggers?: CreateTableTriggerInput[]
+  functions?: CreateTableFunctionInput[]
 }
 
 export type UpdateTableResult = {

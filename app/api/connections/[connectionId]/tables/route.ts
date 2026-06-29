@@ -29,6 +29,7 @@ export async function POST(
       foreignKeys?: Array<Partial<NonNullable<CreateTableInput["foreignKeys"]>[number]>>
       indexes?: Array<Partial<NonNullable<CreateTableInput["indexes"]>[number]>>
       triggers?: Array<Partial<NonNullable<CreateTableInput["triggers"]>[number]>>
+      functions?: Array<Partial<NonNullable<CreateTableInput["functions"]>[number]>>
     }
 
     const result = await createTable(connection, {
@@ -67,6 +68,13 @@ export async function POST(
         timing: trigger?.timing ?? "",
         event: trigger?.event ?? "",
         body: trigger?.body ?? "",
+      })),
+      functions: (body.functions ?? []).map((item) => ({
+        name: item?.name ?? "",
+        description: item?.description ?? "",
+        parameters: item?.parameters ?? "",
+        returnType: item?.returnType ?? "",
+        body: item?.body ?? "",
       })),
     })
 

@@ -29,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/helpers/utils"
 import {
   buildCreateTableIndexDefinition,
+  buildCreateTableFunctionDefinition,
   buildCreateTableTriggerDefinition,
   buildDropTableIndexSql,
   buildDropTableTriggerSql,
@@ -40,6 +41,7 @@ import type {
   CreateTableDraft,
   CreateTableForeignKeyDraft,
   CreateTableIndexDraft,
+  CreateTableFunctionDraft,
   CreateTableTriggerDraft,
   CreateTableModalProps,
 } from "@/types/dashboard-modals"
@@ -249,6 +251,37 @@ function createTriggerDraftFromDefinition(
     timing: definition.timing,
     event: definition.event,
     body: definition.body,
+    removable: true,
+  })
+}
+
+function createFunctionDraft(partial?: Partial<CreateTableFunctionDraft>): CreateTableFunctionDraft {
+  return {
+    id:
+      partial?.id ||
+      (typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`),
+    sourceName: partial?.sourceName,
+    name: partial?.name ?? "",
+    description: partial?.description ?? "",
+    parameters: partial?.parameters ?? "",
+    returnType: partial?.returnType ?? "INT",
+    body: partial?.body ?? "",
+    removable: partial?.removable ?? true,
+  }
+}
+
+function createFunctionDraftFromDefinition(
+  definition: TableDetails["functions"][number]
+): CreateTableFunctionDraft {
+  return createFunctionDraft({
+    sourceName: definition,
+    name: definition,
+    description: "",
+    parameters: "",
+    returnType: "INT",
+    body: "RETURN 1;",
     removable: true,
   })
 }
@@ -597,6 +630,9 @@ function getInitialDraft(
       triggers: table.triggers.length
         ? table.triggers.map((trigger) => createTriggerDraftFromDefinition(trigger))
         : [],
+      functions: table.functions.length
+        ? table.functions.map((functionName) => createFunctionDraftFromDefinition(functionName))
+        : [],
     }
   }
 
@@ -611,6 +647,7 @@ function getInitialDraft(
     foreignKeys: [],
     indexes: [createPrimaryIndexDraft("id", "PRIMARY")],
     triggers: [],
+    functions: [],
   }
 }
 
@@ -644,6 +681,7 @@ function createEmptyDraft(
     foreignKeys: [],
     indexes: [createPrimaryIndexDraft("id", "PRIMARY")],
     triggers: [],
+    functions: [],
   }
 }
 
@@ -1038,6 +1076,98 @@ function getTriggerBodyTemplate(
   return notes.join("\n")
 }
 
+function getNextGeneratedFunctionName(
+  tableName: string,
+  currentIndex: number,
+  functions: Array<{ name: string }>
+) {
+  const baseName = `fn_${`${tableName}_${currentIndex}`.replace(/[^A-Za-z0-9_]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "")}`.toLowerCase()
+  const usedNames = new Set(
+    functions
+      .map((item, functionIndex) => (functionIndex === currentIndex ? "" : item.name.trim().toLowerCase()))
+      .filter(Boolean)
+  )
+
+  if (!usedNames.has(baseName)) {
+    return baseName
+  }
+
+  let suffix = 2
+  let candidate = `${baseName}_${suffix}`
+
+  while (usedNames.has(candidate)) {
+    suffix += 1
+    candidate = `${baseName}_${suffix}`
+  }
+
+  return candidate
+}
+
+function getFunctionBodyTemplate(
+  databaseType: SavedConnection["databaseType"],
+  parameters: string,
+  returnType: string,
+  description?: string
+) {
+  const normalizedParameters = parameters.trim()
+  const normalizedReturnType = returnType.trim().toUpperCase()
+  const notes: string[] = []
+
+  if (description?.trim()) {
+    notes.push(`-- ${description.trim().replace(/\s+/g, " ")}`)
+  }
+
+  if (databaseType === "postgresql") {
+    notes.push(
+      normalizedParameters.includes("p_value")
+        ? "-- use p_value para manipular o valor recebido."
+        : "-- defina parâmetros quando precisar receber valores de entrada."
+    )
+    notes.push(
+      normalizedReturnType === "BOOLEAN"
+        ? "RETURN TRUE;"
+        : normalizedReturnType.includes("CHAR") || normalizedReturnType.includes("TEXT")
+          ? "RETURN 'ok';"
+          : "RETURN 1;"
+    )
+    return notes.join("\n")
+  }
+
+  if (databaseType === "sqlserver") {
+    notes.push(
+      normalizedParameters.includes("@p_value")
+        ? "-- use @p_value para acessar o parâmetro."
+        : "-- defina parâmetros com @nome quando precisar receber valores."
+    )
+    notes.push(
+      normalizedReturnType === "BIT"
+        ? "RETURN 1;"
+        : normalizedReturnType.includes("CHAR") || normalizedReturnType.includes("TEXT")
+          ? "RETURN 'ok';"
+          : "RETURN 1;"
+    )
+    return notes.join("\n")
+  }
+
+  if (databaseType === "mysql" || databaseType === "mariadb") {
+    notes.push(
+      normalizedParameters.includes("p_value")
+        ? "-- use p_value para acessar o parâmetro."
+        : "-- defina parâmetros quando precisar receber valores de entrada."
+    )
+    notes.push(
+      normalizedReturnType.includes("CHAR") || normalizedReturnType.includes("TEXT")
+        ? "RETURN 'ok';"
+        : "RETURN 1;"
+    )
+    return notes.join("\n")
+  }
+
+  notes.push("-- sua lógica aqui")
+  notes.push("RETURN 1;")
+  return notes.join("\n")
+}
+
 function normalizeIndexDrafts(form: CreateTableDraft) {
   return form.indexes
     .map((index) => ({
@@ -1105,6 +1235,42 @@ function normalizeCompletedTriggerDrafts(form: CreateTableDraft) {
   return normalizeTriggerDrafts(form).filter(
     (trigger) => trigger.name.trim() && trigger.timing.trim() && trigger.event.trim() && trigger.body.trim()
   )
+}
+
+function normalizeFunctionDrafts(form: CreateTableDraft) {
+  return form.functions
+    .map((item) => ({
+      ...item,
+      name: item.name.trim(),
+      description: item.description.trim(),
+      parameters: item.parameters.trim(),
+      returnType: item.returnType.trim().toUpperCase(),
+      body: item.body.trim(),
+    }))
+    .filter(
+      (item) => item.name || item.description || item.parameters || item.returnType || item.body
+    )
+    .map((item) => ({
+      name: item.name,
+      description: item.description,
+      parameters: item.parameters,
+      returnType: item.returnType,
+      body: item.body,
+    }))
+}
+
+function normalizeCompletedFunctionDrafts(form: CreateTableDraft) {
+  return normalizeFunctionDrafts(form).filter(
+    (item) => item.name.trim() && item.returnType.trim() && item.body.trim()
+  )
+}
+
+function buildFunctionPreviewDefinition(
+  connection: SavedConnection,
+  schemaName: string,
+  functionSpec: { name: string; description: string; parameters: string; returnType: string; body: string }
+) {
+  return buildCreateTableFunctionDefinition(connection, schemaName, functionSpec)
 }
 
 function buildTriggerPreviewDefinition(
@@ -1247,6 +1413,10 @@ function buildCreatePreviewStatements(
   const triggerDefinitions = triggers.map((trigger) =>
     `  ${buildTriggerPreviewDefinition(connection, form.tableName, trigger, form.schemaName)}`
   )
+  const functions = normalizeCompletedFunctionDrafts(form)
+  const functionDefinitions = functions.map((item) =>
+    `  ${buildFunctionPreviewDefinition(connection, form.schemaName, item)}`
+  )
 
   const statements: string[] = []
 
@@ -1289,6 +1459,10 @@ function buildCreatePreviewStatements(
 
   for (const triggerDefinition of triggerDefinitions) {
     statements.push(triggerDefinition + ";")
+  }
+
+  for (const functionDefinition of functionDefinitions) {
+    statements.push(functionDefinition + ";")
   }
 
   if (form.comment.trim() && connection.databaseType === "postgresql") {
@@ -1432,6 +1606,10 @@ function buildEditPreviewStatements(
   const triggerStatements = triggers.map((trigger) =>
     buildTriggerPreviewDefinition(connection, form.tableName, trigger, form.schemaName)
   )
+  const functions = normalizeCompletedFunctionDrafts(form)
+  const functionStatements = functions.map((item) =>
+    buildFunctionPreviewDefinition(connection, form.schemaName, item)
+  )
   const requiresRebuild =
     !isMySqlLike &&
     ((connection.databaseType === "sqlite" && removedColumns.length > 0) ||
@@ -1565,6 +1743,10 @@ function buildEditPreviewStatements(
       statements.push(`${triggerDefinition};`)
     }
 
+    for (const functionDefinition of functionStatements) {
+      statements.push(`${functionDefinition};`)
+    }
+
     return statements.length ? statements : ["-- Nenhuma alteração detectada."]
   }
 
@@ -1610,6 +1792,9 @@ function buildEditPreviewStatements(
     for (const triggerDefinition of triggerStatements) {
       statements.push(`${triggerDefinition};`)
     }
+    for (const functionDefinition of functionStatements) {
+      statements.push(`${functionDefinition};`)
+    }
     return statements
   }
 
@@ -1634,6 +1819,9 @@ function buildEditPreviewStatements(
     )
     for (const triggerDefinition of triggerStatements) {
       statements.push(`${triggerDefinition};`)
+    }
+    for (const functionDefinition of functionStatements) {
+      statements.push(`${functionDefinition};`)
     }
     return statements
   }
@@ -1670,6 +1858,9 @@ function buildEditPreviewStatements(
     for (const triggerDefinition of triggerStatements) {
       statements.push(`${triggerDefinition};`)
     }
+    for (const functionDefinition of functionStatements) {
+      statements.push(`${functionDefinition};`)
+    }
     return statements
   }
 
@@ -1690,6 +1881,9 @@ function buildEditPreviewStatements(
   )
   for (const triggerDefinition of triggerStatements) {
     statements.push(`${triggerDefinition};`)
+  }
+  for (const functionDefinition of functionStatements) {
+    statements.push(`${functionDefinition};`)
   }
   return statements
 }
@@ -2315,6 +2509,83 @@ export function CreateTableModal({
     })
   }
 
+  function addFunction() {
+    setForm((current) => {
+      const nextFunctionName = getNextGeneratedFunctionName(
+        current.tableName,
+        current.functions.length,
+        current.functions
+      )
+      const defaultParameters =
+        activeConnection.databaseType === "sqlserver" ? "@p_value INT" : "p_value INT"
+      const initialBody = getFunctionBodyTemplate(
+        activeConnection.databaseType,
+        defaultParameters,
+        "INT"
+      )
+
+      return {
+        ...current,
+        functions: [
+          ...current.functions,
+          createFunctionDraft({
+            name: nextFunctionName,
+            description: "",
+            parameters: defaultParameters,
+            returnType: "INT",
+            body: initialBody,
+          }),
+        ],
+      }
+    })
+  }
+
+  function updateFunction(index: number, field: keyof CreateTableFunctionDraft, value: string) {
+    setForm((current) => {
+      const nextFunctions = current.functions.map((item, currentIndex) =>
+        currentIndex === index ? { ...item, [field]: value } : item
+      )
+
+      if (field !== "parameters" && field !== "returnType" && field !== "description") {
+        return {
+          ...current,
+          functions: nextFunctions,
+        }
+      }
+
+      const previousFunction = current.functions[index]
+      const nextFunction = nextFunctions[index]
+      const currentTemplate = getFunctionBodyTemplate(
+        activeConnection.databaseType,
+        previousFunction?.parameters ?? "",
+        previousFunction?.returnType ?? "INT",
+        previousFunction?.description
+      )
+      const nextTemplate = getFunctionBodyTemplate(
+        activeConnection.databaseType,
+        nextFunction?.parameters ?? "",
+        nextFunction?.returnType ?? "INT",
+        nextFunction?.description
+      )
+      const shouldRefreshBody =
+        !previousFunction?.body.trim() || previousFunction.body.trim() === currentTemplate.trim()
+
+      return {
+        ...current,
+        functions: nextFunctions.map((item, currentIndex) =>
+          currentIndex === index && shouldRefreshBody ? { ...item, body: nextTemplate } : item
+        ),
+      }
+    })
+  }
+
+  function removeFunction(index: number) {
+    setForm((current) => ({
+      ...current,
+      functions: current.functions.filter((_, currentIndex) => currentIndex !== index),
+    }))
+  }
+
   function removeTrigger(index: number) {
     setForm((current) => ({
       ...current,
@@ -2390,7 +2661,7 @@ export function CreateTableModal({
       return
     }
 
-    const triggers = normalizeTriggerDrafts(form)
+    const triggers = normalizeCompletedTriggerDrafts(form)
     if (
       triggers.some(
         (trigger) =>
@@ -2401,6 +2672,21 @@ export function CreateTableModal({
       )
     ) {
       setErrorMessage("Complete a trigger ou remova a linha vazia.")
+      return
+    }
+
+    const functions = normalizeCompletedFunctionDrafts(form)
+    if (
+      functions.some(
+        (item) => !item.name.trim() || !item.returnType.trim() || !item.body.trim()
+      )
+    ) {
+      setErrorMessage("Complete a função ou remova a linha vazia.")
+      return
+    }
+
+    if (activeConnection.databaseType === "sqlite" && functions.length) {
+      setErrorMessage("SQLite não suporta criação de funções neste fluxo.")
       return
     }
 
@@ -2430,6 +2716,7 @@ export function CreateTableModal({
           foreignKeys,
           indexes,
           triggers,
+          functions,
         }),
       })
 
@@ -2560,7 +2847,6 @@ export function CreateTableModal({
                       <TabsTrigger value="indexes">Índices</TabsTrigger>
                       <TabsTrigger value="triggers">Triggers</TabsTrigger>
                       <TabsTrigger value="functions">Functions</TabsTrigger>
-                      <TabsTrigger value="advanced">Avançado</TabsTrigger>
                       <TabsTrigger value="sql-preview">SQL Preview</TabsTrigger>
                     </TabsList>
                   </div>
@@ -3154,25 +3440,121 @@ export function CreateTableModal({
 
                   <TabsContent value="functions">
                     <Card className="border-white/10 bg-white/5">
-                      <CardHeader>
-                        <CardTitle className="text-base text-white">Functions</CardTitle>
-                        <CardDescription>Funções disponíveis no mesmo schema.</CardDescription>
+                      <CardHeader className="pb-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <CardTitle className="text-base text-white">Functions</CardTitle>
+                            <CardDescription>
+                              Crie funções com nome, parâmetros, tipo de retorno e corpo SQL.
+                            </CardDescription>
+                          </div>
+                          <Button
+                            type="button"
+                            onClick={addFunction}
+                            variant="outline"
+                            className="border-white/10 bg-white/5 text-white hover:bg-white/10"
+                            disabled={activeConnection.databaseType === "sqlite"}
+                          >
+                            <Plus className="size-4" />
+                            Adicionar função
+                          </Button>
+                        </div>
                       </CardHeader>
-                      <CardContent>
-                        <MetadataList
-                          items={table?.functions ?? []}
-                          emptyText="Nenhuma função encontrada."
-                        />
-                      </CardContent>
-                    </Card>
-                  </TabsContent>
+                      <CardContent className="space-y-4 pt-0">
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-4 text-sm text-white/50">
+                          {activeConnection.databaseType === "sqlite"
+                            ? "SQLite não suporta criação de funções via SQL neste fluxo."
+                            : "As funções já existentes na tabela aparecem abaixo como referência."}
+                        </div>
 
-                  <TabsContent value="advanced">
-                    <Card className="border-white/10 bg-white/5">
-                      <CardHeader>
-                        <CardTitle className="text-base text-white">Avançado</CardTitle>
-                        <CardDescription>Opções avançadas da criação de tabela.</CardDescription>
-                      </CardHeader>
+                        {form.functions.length ? (
+                          <Table wrapperClassName="rounded-2xl border border-white/10">
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="w-64">Nome</TableHead>
+                                <TableHead className="w-80">Descrição</TableHead>
+                                <TableHead className="w-56">Parâmetros</TableHead>
+                                <TableHead className="w-40">Retorno</TableHead>
+                                <TableHead>Corpo</TableHead>
+                                <TableHead className="w-14" />
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {form.functions.map((item, index) => (
+                                <TableRow key={item.id ?? `${index}`} className="align-top">
+                                  <TableCell>
+                                    <Input
+                                      value={item.name}
+                                      onChange={(event) => updateFunction(index, "name", event.target.value)}
+                                      placeholder="fn_tabela_nome"
+                                      className="h-9"
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Input
+                                      value={item.description}
+                                      onChange={(event) =>
+                                        updateFunction(index, "description", event.target.value)
+                                      }
+                                      placeholder="Descrição opcional"
+                                      className="h-9"
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Input
+                                      value={item.parameters}
+                                      onChange={(event) =>
+                                        updateFunction(index, "parameters", event.target.value)
+                                      }
+                                      placeholder={
+                                        activeConnection.databaseType === "sqlserver"
+                                          ? "@p_value INT"
+                                          : "p_value INT"
+                                      }
+                                      className="h-9"
+                                      disabled={activeConnection.databaseType === "sqlite"}
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Input
+                                      value={item.returnType}
+                                      onChange={(event) =>
+                                        updateFunction(index, "returnType", event.target.value)
+                                      }
+                                      placeholder="INT"
+                                      className="h-9"
+                                      disabled={activeConnection.databaseType === "sqlite"}
+                                    />
+                                  </TableCell>
+                                  <TableCell>
+                                    <Textarea
+                                      value={item.body}
+                                      onChange={(event) => updateFunction(index, "body", event.target.value)}
+                                      placeholder="RETURN p_value;"
+                                      className="min-h-28 resize-y"
+                                      disabled={activeConnection.databaseType === "sqlite"}
+                                    />
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <button
+                                      type="button"
+                                      onClick={() => removeFunction(index)}
+                                      className="inline-flex size-8 items-center justify-center rounded-lg text-white/40 transition-colors hover:bg-white/5 hover:text-rose-300"
+                                      aria-label="Remover função"
+                                    >
+                                      <Trash2 className="size-4" />
+                                    </button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-5 text-sm text-white/45">
+                            Nenhuma função configurada.
+                          </div>
+                        )}
+                      </CardContent>
                     </Card>
                   </TabsContent>
 

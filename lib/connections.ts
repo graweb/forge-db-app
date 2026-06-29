@@ -26,6 +26,7 @@ import type {
   CreateDatabaseInput,
   CreateDatabaseResult,
   CreateTableInput,
+  CreateTableFunctionInput,
   CreateTableIndexInput,
   CreateTableTriggerInput,
   CreateTableResult,
@@ -73,6 +74,7 @@ import { buildSqliteCreateTableSql } from "@/helpers/create-table/sqlite"
 import {
   buildCreateTableColumnDefinition,
   buildCreateTableForeignKeyDefinition,
+  buildCreateTableFunctionDefinition,
   buildCreateTableIndexDefinition,
   buildCreateTableTriggerDefinition,
   buildDropTableIndexSql,
@@ -81,6 +83,7 @@ import {
   buildTableIndexName,
   type CreateTableColumnSpec,
   type CreateTableForeignKeySpec,
+  type CreateTableFunctionSpec,
   type CreateTableIndexSpec,
   type CreateTableTriggerSpec,
 } from "@/helpers/create-table/shared"
@@ -651,6 +654,7 @@ export async function updateTable(
     originalTableDetails.indexes.map((index) => index.name)
   )
   const normalizedTriggers = normalizeTableTriggersInput(input.triggers)
+  const normalizedFunctions = normalizeTableFunctionsInput(input.functions)
   const originalIndexes = originalTableDetails.indexes.filter((index) => !index.primaryKey)
   const originalIndexMap = new Map(
     originalIndexes.map((index) => [index.name.trim().toLowerCase(), index] as const)
@@ -868,6 +872,10 @@ export async function updateTable(
             )
           }
 
+          for (const item of normalizedFunctions) {
+            await client.query(buildCreateTableFunctionDefinition(connection, normalizedSchema, item))
+          }
+
           return {
             message: "Tabela atualizada com sucesso.",
             details:
@@ -965,6 +973,10 @@ export async function updateTable(
             )
           }
 
+          for (const item of normalizedFunctions) {
+            await client.query(buildCreateTableFunctionDefinition(connection, normalizedSchema, item))
+          }
+
           return {
             message: "Tabela atualizada com sucesso.",
             details:
@@ -1047,6 +1059,10 @@ export async function updateTable(
             )
           }
 
+          for (const item of normalizedFunctions) {
+            await pool.request().query(buildCreateTableFunctionDefinition(connection, normalizedSchema, item))
+          }
+
           return {
             message: "Tabela atualizada com sucesso.",
             details:
@@ -1087,6 +1103,10 @@ export async function updateTable(
             db.exec(buildCreateTableTriggerDefinition(connection, triggerTargetTableName, trigger, "main"))
           }
 
+          for (const item of normalizedFunctions) {
+            db.exec(buildCreateTableFunctionDefinition(connection, "main", item))
+          }
+
           return {
             message: "Tabela atualizada com sucesso.",
             details:
@@ -1125,7 +1145,9 @@ export async function updateTable(
           input.comment,
           normalizedColumns,
           normalizedForeignKeys,
-          normalizedIndexes
+          normalizedIndexes,
+          normalizedTriggers,
+          normalizedFunctions
         )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
@@ -1211,7 +1233,9 @@ export async function updateTable(
           input.comment,
           normalizedColumns,
           normalizedForeignKeys,
-          normalizedIndexes
+          normalizedIndexes,
+          normalizedTriggers,
+          normalizedFunctions
         )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
@@ -1269,7 +1293,9 @@ export async function updateTable(
           input.comment,
           normalizedColumns,
           normalizedForeignKeys,
-          normalizedIndexes
+          normalizedIndexes,
+          normalizedTriggers,
+          normalizedFunctions
         )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
@@ -1335,7 +1361,9 @@ export async function updateTable(
           input.comment,
           normalizedColumns,
           normalizedForeignKeys,
-          normalizedIndexes
+          normalizedIndexes,
+          normalizedTriggers,
+          normalizedFunctions
         )
 
         const copyColumns = normalizedColumns.filter((column) => Boolean(column.sourceName))
@@ -1578,6 +1606,20 @@ function normalizeTableTriggersInput(
     )
 }
 
+function normalizeTableFunctionsInput(
+  functions: Array<CreateTableFunctionInput | undefined> | undefined
+): CreateTableFunctionSpec[] {
+  return (functions ?? [])
+    .map((item) => ({
+      name: sanitizeDatabaseIdentifier(item?.name),
+      description: sanitizeSqlExpression(item?.description),
+      parameters: sanitizeSqlExpression(item?.parameters),
+      returnType: sanitizeSqlType(item?.returnType),
+      body: sanitizeSqlExpression(item?.body),
+    }))
+    .filter((item) => item.name && item.returnType && item.body)
+}
+
 function extractTriggerPayloadFromDefinition(
   definition: string,
   functionDefinition?: string
@@ -1774,6 +1816,7 @@ export async function createTable(
   const foreignKeys = normalizeForeignKeysInput(input.foreignKeys, schemaName)
   const indexes = normalizeTableIndexesInput(input.indexes, tableName)
   const triggers = normalizeTableTriggersInput(input.triggers)
+  const functions = normalizeTableFunctionsInput(input.functions)
 
   if (!tableName) {
     throw new Error("Informe um nome válido para a tabela.")
@@ -1807,7 +1850,8 @@ export async function createTable(
         columns,
         foreignKeys,
         indexes,
-        triggers
+        triggers,
+        functions
       )
 
     case "postgresql":
@@ -1819,7 +1863,8 @@ export async function createTable(
         columns,
         foreignKeys,
         indexes,
-        triggers
+        triggers,
+        functions
       )
 
     case "sqlserver":
@@ -1832,11 +1877,12 @@ export async function createTable(
         columns,
         foreignKeys,
         indexes,
-        triggers
+        triggers,
+        functions
       )
 
     case "sqlite":
-      return createSqliteTable(connection, tableName, comment, columns, foreignKeys, indexes, triggers)
+      return createSqliteTable(connection, tableName, comment, columns, foreignKeys, indexes, triggers, functions)
 
     default:
       throw new Error("Tipo de banco não suportado.")
@@ -1851,7 +1897,8 @@ async function createSqlTableLike(
   columns: CreateTableColumnSpec[],
   foreignKeys: CreateTableForeignKeySpec[] = [],
   indexes: CreateTableIndexSpec[] = [],
-  triggers: CreateTableTriggerSpec[] = []
+  triggers: CreateTableTriggerSpec[] = [],
+  functions: CreateTableFunctionSpec[] = []
 ): Promise<CreateTableResult> {
   return withMySqlLikeClient(connection, schemaName, async (client) => {
     const createTableSql = buildMySqlLikeCreateTableSql(
@@ -1872,6 +1919,9 @@ async function createSqlTableLike(
     for (const trigger of triggers) {
       await client.query(buildCreateTableTriggerDefinition(connection, tableName, trigger, schemaName))
     }
+    for (const item of functions) {
+      await client.query(buildCreateTableFunctionDefinition(connection, schemaName, item))
+    }
 
     return {
       message: "Tabela criada com sucesso.",
@@ -1890,7 +1940,8 @@ async function createPostgreSqlTable(
   columns: CreateTableColumnSpec[],
   foreignKeys: CreateTableForeignKeySpec[] = [],
   indexes: CreateTableIndexSpec[] = [],
-  triggers: CreateTableTriggerSpec[] = []
+  triggers: CreateTableTriggerSpec[] = [],
+  functions: CreateTableFunctionSpec[] = []
 ): Promise<CreateTableResult> {
   return withPostgresClient(connection, connection.databaseName.trim() || "postgres", async (client) => {
     const { createSchemaSql, createTableSql, commentSql } = buildPostgreSqlCreateTableSql(
@@ -1918,6 +1969,9 @@ async function createPostgreSqlTable(
     for (const trigger of triggers) {
       await client.query(buildCreateTableTriggerDefinition(connection, tableName, trigger, schemaName))
     }
+    for (const item of functions) {
+      await client.query(buildCreateTableFunctionDefinition(connection, schemaName, item))
+    }
 
     return {
       message: "Tabela criada com sucesso.",
@@ -1937,7 +1991,8 @@ async function createSqlServerTable(
   columns: CreateTableColumnSpec[],
   foreignKeys: CreateTableForeignKeySpec[] = [],
   indexes: CreateTableIndexSpec[] = [],
-  triggers: CreateTableTriggerSpec[] = []
+  triggers: CreateTableTriggerSpec[] = [],
+  functions: CreateTableFunctionSpec[] = []
 ): Promise<CreateTableResult> {
   return withSqlServerPool(
     connection,
@@ -1962,6 +2017,9 @@ async function createSqlServerTable(
       for (const trigger of triggers) {
         await pool.request().query(buildCreateTableTriggerDefinition(connection, tableName, trigger, schemaName))
       }
+      for (const item of functions) {
+        await pool.request().query(buildCreateTableFunctionDefinition(connection, schemaName, item))
+      }
 
       return {
         message: "Tabela criada com sucesso.",
@@ -1980,7 +2038,8 @@ async function createSqliteTable(
   columns: CreateTableColumnSpec[],
   foreignKeys: CreateTableForeignKeySpec[] = [],
   indexes: CreateTableIndexSpec[] = [],
-  triggers: CreateTableTriggerSpec[] = []
+  triggers: CreateTableTriggerSpec[] = [],
+  functions: CreateTableFunctionSpec[] = []
 ): Promise<CreateTableResult> {
   return withSqliteDatabase(connection, async (db) => {
     const { tablePath, createTableSql } = buildSqliteCreateTableSql(
@@ -1995,6 +2054,9 @@ async function createSqliteTable(
     }
     for (const trigger of triggers) {
       db.exec(buildCreateTableTriggerDefinition(connection, tableName, trigger, "main"))
+    }
+    for (const item of functions) {
+      db.exec(buildCreateTableFunctionDefinition(connection, "main", item))
     }
 
     return {

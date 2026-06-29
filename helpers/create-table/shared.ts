@@ -36,6 +36,14 @@ export type CreateTableTriggerSpec = {
   body: string
 }
 
+export type CreateTableFunctionSpec = {
+  name: string
+  description?: string
+  parameters?: string
+  returnType: string
+  body: string
+}
+
 export function normalizeDefaultValue(value: string) {
   const trimmed = value.trim()
 
@@ -289,6 +297,64 @@ export function buildDropTableTriggerSql(
   }
 
   return `DROP TRIGGER IF EXISTS ${quotedTriggerName}`
+}
+
+export function buildCreateTableFunctionDefinition(
+  connection: SavedConnection,
+  schemaName: string,
+  functionSpec: CreateTableFunctionSpec
+) {
+  const functionName = functionSpec.name.trim()
+  const returnType = functionSpec.returnType.trim()
+  const parameters = functionSpec.parameters?.trim() ?? ""
+  const body = functionSpec.body.trim()
+
+  if (!functionName || !returnType || !body) {
+    throw new Error("Informe nome, tipo de retorno e comando da função.")
+  }
+
+  if (connection.databaseType === "sqlite") {
+    throw new Error("SQLite não suporta criação de funções SQL neste fluxo.")
+  }
+
+  const quotedSchemaName = quoteIdentifier(connection.databaseType, schemaName)
+  const quotedFunctionName = quoteIdentifier(connection.databaseType, functionName)
+  const parameterClause = `(${parameters})`
+  const bodyLines: string[] = []
+  const description = functionSpec.description?.trim() ?? ""
+
+  if (description) {
+    bodyLines.push(`  -- ${description.replace(/\s+/g, " ")}`)
+  }
+
+  bodyLines.push(
+    ...body
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .map((line) => `  ${line}`)
+  )
+  const formattedBody = bodyLines.length ? bodyLines.join("\n") : "  "
+
+  if (connection.databaseType === "postgresql") {
+    return [
+      `CREATE OR REPLACE FUNCTION ${quotedSchemaName}.${quotedFunctionName}${parameterClause} RETURNS ${returnType} AS $$`,
+      "BEGIN",
+      formattedBody,
+      "END;",
+      `$$ LANGUAGE plpgsql`,
+    ].join("\n")
+  }
+
+  if (connection.databaseType === "sqlserver") {
+    return `CREATE OR ALTER FUNCTION ${quotedSchemaName}.${quotedFunctionName}${parameterClause} RETURNS ${returnType} AS BEGIN
+${formattedBody}
+END`
+  }
+
+  return `DROP FUNCTION IF EXISTS ${quotedSchemaName}.${quotedFunctionName};\nCREATE FUNCTION ${quotedSchemaName}.${quotedFunctionName}${parameterClause} RETURNS ${returnType} DETERMINISTIC BEGIN
+${formattedBody}
+END`
 }
 
 export function buildCreateTableForeignKeyDefinition(
