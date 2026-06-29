@@ -36,53 +36,17 @@ import type {
   SavedConnection,
   TableDetails,
 } from "@/types/connections"
+import type {
+  DragSource,
+  DropPosition,
+  ForeignKeySummary,
+  FilterConnector,
+  JoinType,
+  SelectedTable,
+  SourceTable,
+  ViewFilter,
+} from "@/types/dashboard-view"
 import type { CreateViewModalProps } from "@/types/dashboard-modals"
-
-type TableColumnPreview = {
-  name: string
-  dataType: string
-  size: string
-}
-
-type SourceTable = {
-  id: string
-  schemaName: string
-  tableName: string
-  reference: string
-  columns: TableColumnPreview[]
-}
-
-type JoinType = "LEFT JOIN" | "INNER JOIN" | "JOIN" | "CROSS JOIN"
-
-type SelectedTable = SourceTable & {
-  joinType: JoinType
-  joinCondition: string
-}
-
-type ViewFilter = {
-  id: string
-  expression: string
-}
-
-type DragSource = "palette" | "canvas"
-type DropPosition = "before" | "after"
-
-type JoinLine = {
-  id: string
-  d: string
-  label: string
-  labelX: number
-  labelY: number
-}
-
-type ForeignKeySummary = {
-  constraintName: string
-  sourceColumn: string
-  referencedTableName: string
-  referencedColumnName: string
-  onDelete: string
-  onUpdate: string
-}
 
 const JOIN_OPTIONS: Array<{ value: JoinType; label: string }> = [
   { value: "LEFT JOIN", label: "LEFT JOIN" },
@@ -113,11 +77,15 @@ export function CreateViewModal({
   const [draggedTableId, setDraggedTableId] = useState<string | null>(null)
   const [dragSource, setDragSource] = useState<DragSource | null>(null)
   const [dropTarget, setDropTarget] = useState<{ id: string; position: DropPosition } | null>(null)
-  const [joinLines, setJoinLines] = useState<JoinLine[]>([])
   const [tableDetailsById, setTableDetailsById] = useState<Record<string, TableDetails | null>>({})
   const canvasRef = useRef<HTMLDivElement | null>(null)
-  const tableCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const manualSqlSyncVersionRef = useRef(0)
   const resolvedSchemaName = schemaName?.trim() || (connection ? getFallbackSchemaName(connection) : "public")
+  const catalog = useMemo(
+    () => (connection ? buildCatalog(connection, database, resolvedSchemaName) : []),
+    [connection, database, resolvedSchemaName]
+  )
+  const catalogTables = catalog.flatMap((group) => group.tables)
 
   useEffect(() => {
     if (!open || !connection) {
@@ -143,7 +111,6 @@ export function CreateViewModal({
       setDraggedTableId(null)
       setDragSource(null)
       setDropTarget(null)
-      setJoinLines([])
       setTableDetailsById({})
       setSqlText(buildViewSql(connection, databaseName, resolvedSchemaName, "nova_view", [], []))
     })
@@ -174,6 +141,53 @@ export function CreateViewModal({
       cancelled = true
     }
   }, [open, connection, databaseName, resolvedSchemaName, viewName, selectedTables, filters, isManualSql])
+
+  useEffect(() => {
+    if (!open || !connection || !isManualSql) {
+      return
+    }
+
+    const syncVersion = ++manualSqlSyncVersionRef.current
+    const parsedTables = parseSelectedTablesFromSql(sqlText, catalogTables, resolvedSchemaName)
+    const parsedFilters = parseFiltersFromSql(sqlText)
+    const normalizedSql = sqlText.trim()
+
+    queueMicrotask(() => {
+      if (manualSqlSyncVersionRef.current !== syncVersion) {
+        return
+      }
+
+      if (!normalizedSql) {
+        setSelectedTables([])
+        setFilters([])
+        return
+      }
+
+      if (parsedTables) {
+        setSelectedTables((current) => {
+          if (areSelectedTablesEqual(current, parsedTables)) {
+            return current
+          }
+
+          return parsedTables
+        })
+      }
+
+      if (parsedFilters !== null) {
+        setFilters((current) => {
+          if (areViewFiltersEqual(current, parsedFilters)) {
+            return current
+          }
+
+          return parsedFilters
+        })
+      }
+    })
+
+    return () => {
+      manualSqlSyncVersionRef.current += 1
+    }
+  }, [open, connection, isManualSql, sqlText, catalogTables, resolvedSchemaName])
 
   useEffect(() => {
     if (!open || !connection || !selectedTables.length) {
@@ -233,96 +247,6 @@ export function CreateViewModal({
     }
   }, [open, connection, databaseName, selectedTables, tableDetailsById])
 
-  useEffect(() => {
-    if (!open || !connection) {
-      queueMicrotask(() => {
-        setJoinLines([])
-      })
-      return
-    }
-
-    const updateJoinLines = () => {
-      const canvasElement = canvasRef.current
-      if (!canvasElement || selectedTables.length < 2) {
-        queueMicrotask(() => {
-          setJoinLines([])
-        })
-        return
-      }
-
-      const canvasRect = canvasElement.getBoundingClientRect()
-      const nextLines: JoinLine[] = []
-      const parsedForeignKeys = selectedTables.flatMap((table) => {
-        const tableDetails = tableDetailsById[table.id]
-        const foreignKeys = tableDetails?.foreignKeys ?? []
-
-        return foreignKeys
-          .map((value) => parseForeignKeySummary(value))
-          .filter((foreignKey): foreignKey is ForeignKeySummary => Boolean(foreignKey))
-          .map((foreignKey, index) => ({
-            ...foreignKey,
-            sourceTableId: table.id,
-            sourceTableName: table.tableName,
-            sourceIndex: index,
-          }))
-      })
-
-      for (const foreignKey of parsedForeignKeys) {
-        const sourceCard = tableCardRefs.current[foreignKey.sourceTableId]
-        const targetTable = selectedTables.find((table) => table.tableName === foreignKey.referencedTableName)
-        if (!targetTable) {
-          continue
-        }
-
-        const targetCard = tableCardRefs.current[targetTable.id]
-
-        if (!sourceCard || !targetCard) {
-          continue
-        }
-
-        const fromRect = sourceCard.getBoundingClientRect()
-        const toRect = targetCard.getBoundingClientRect()
-
-        const startX = fromRect.left - canvasRect.left + fromRect.width
-        const startY = fromRect.top - canvasRect.top + fromRect.height / 2
-        const endX = toRect.left - canvasRect.left
-        const endY = toRect.top - canvasRect.top + toRect.height / 2
-        const curveOffset = Math.max(72, Math.abs(endX - startX) * 0.45)
-        const control1X = startX + curveOffset
-        const control2X = endX - curveOffset
-
-        nextLines.push({
-          id: `${foreignKey.sourceTableId}->${targetTable.id}:${foreignKey.sourceColumn}:${foreignKey.referencedColumnName}`,
-          d: `M ${startX} ${startY} C ${control1X} ${startY}, ${control2X} ${endY}, ${endX} ${endY}`,
-          label: `${foreignKey.sourceColumn} → ${foreignKey.referencedColumnName}`,
-          labelX: (startX + endX) / 2,
-          labelY: (startY + endY) / 2 - 16,
-        })
-      }
-
-      setJoinLines(nextLines)
-    }
-
-    const raf = window.requestAnimationFrame(updateJoinLines)
-    const observer = new ResizeObserver(() => updateJoinLines())
-
-    if (canvasRef.current) {
-      observer.observe(canvasRef.current)
-    }
-
-    window.addEventListener("resize", updateJoinLines)
-
-    return () => {
-      window.cancelAnimationFrame(raf)
-      observer.disconnect()
-      window.removeEventListener("resize", updateJoinLines)
-    }
-  }, [open, connection, selectedTables, tableDetailsById, isCanvasDropActive, dropTarget, draggedTableId])
-
-  const catalog = useMemo(
-    () => (connection ? buildCatalog(connection, database, resolvedSchemaName) : []),
-    [connection, database, resolvedSchemaName]
-  )
   const filteredCatalog = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase()
 
@@ -359,6 +283,7 @@ export function CreateViewModal({
 
   function addTable(table: SourceTable) {
     setErrorMessage(null)
+    exitManualSqlMode()
     setSelectedTables((current) => {
       if (current.some((item) => item.id === table.id)) {
         return current
@@ -377,6 +302,7 @@ export function CreateViewModal({
 
   function insertSelectedTable(table: SourceTable, index: number) {
     setErrorMessage(null)
+    exitManualSqlMode()
     setSelectedTables((current) => {
       if (current.some((item) => item.id === table.id)) {
         return current
@@ -403,6 +329,7 @@ export function CreateViewModal({
 
   function moveSelectedTable(tableId: string, targetId: string, position: DropPosition) {
     setErrorMessage(null)
+    exitManualSqlMode()
     setSelectedTables((current) => {
       const draggedIndex = current.findIndex((item) => item.id === tableId)
       const targetIndex = current.findIndex((item) => item.id === targetId)
@@ -536,12 +463,14 @@ export function CreateViewModal({
     setDropTarget(null)
   }
 
-  function setTableCardRef(tableId: string, element: HTMLDivElement | null) {
-    tableCardRefs.current[tableId] = element
+  function exitManualSqlMode() {
+    manualSqlSyncVersionRef.current += 1
+    setIsManualSql(false)
   }
 
   function toggleTable(table: SourceTable) {
     setErrorMessage(null)
+    exitManualSqlMode()
     setSelectedTables((current) =>
       current.some((item) => item.id === table.id)
         ? current.filter((item) => item.id !== table.id)
@@ -558,6 +487,7 @@ export function CreateViewModal({
 
   function updateSelectedTable(index: number, patch: Partial<SelectedTable>) {
     setErrorMessage(null)
+    exitManualSqlMode()
     setSelectedTables((current) =>
       current.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
     )
@@ -565,34 +495,60 @@ export function CreateViewModal({
 
   function removeSelectedTable(index: number) {
     setErrorMessage(null)
+    exitManualSqlMode()
     setSelectedTables((current) => current.filter((_, itemIndex) => itemIndex !== index))
   }
 
   function addFilter() {
     setErrorMessage(null)
+    exitManualSqlMode()
     setFilters((current) => [
       ...current,
       {
         id: createId(),
         expression: "",
+        connector: current.length ? "AND" : undefined,
       },
     ])
   }
 
   function updateFilter(index: number, value: string) {
     setErrorMessage(null)
+    exitManualSqlMode()
     setFilters((current) =>
       current.map((item, itemIndex) => (itemIndex === index ? { ...item, expression: value } : item))
     )
   }
 
+  function updateFilterConnector(index: number, connector: FilterConnector) {
+    setErrorMessage(null)
+    exitManualSqlMode()
+    setFilters((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, connector: index === 0 ? undefined : connector } : item
+      )
+    )
+  }
+
   function removeFilter(index: number) {
     setErrorMessage(null)
-    setFilters((current) => current.filter((_, itemIndex) => itemIndex !== index))
+    exitManualSqlMode()
+    setFilters((current) => {
+      const next = current.filter((_, itemIndex) => itemIndex !== index)
+
+      if (next.length) {
+        next[0] = {
+          ...next[0],
+          connector: undefined,
+        }
+      }
+
+      return next
+    })
   }
 
   function syncGeneratedSql() {
-    setIsManualSql(false)
+    exitManualSqlMode()
     setSqlText(generatedSql)
   }
 
@@ -652,7 +608,7 @@ export function CreateViewModal({
         <div className="flex h-full min-h-0 flex-col overflow-hidden">
           <div className="shrink-0 border-b border-white/10 px-5 py-4 lg:px-6">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-              <div className="space-y-2">
+              <div className="space-y-4">
                 <div className="flex items-center gap-3">
                   <div className="flex size-11 items-center justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 text-sky-300">
                     <Sparkles className="size-5" />
@@ -664,32 +620,32 @@ export function CreateViewModal({
                     </div>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-white/45">
-                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
-                    {connection.connectionName}
-                  </span>
-                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
-                    {connection.databaseType.toUpperCase()}
-                  </span>
-                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
-                    {resolvedSchemaName}
-                  </span>
+                <div className="w-full max-w-xs space-y-2">
+                  <Label className="text-xs uppercase tracking-[0.2em] text-white/35">
+                    Nome da view
+                  </Label>
+                  <Input
+                    value={viewName}
+                    onChange={(event) => {
+                      setViewName(event.target.value)
+                      setIsManualSql(false)
+                    }}
+                    placeholder="nova_view"
+                    className="h-11 w-full border-white/10 bg-white/5 text-white placeholder:text-white/30"
+                  />
                 </div>
               </div>
 
-              <div className="w-full max-w-xs space-y-2 xl:pt-1">
-                <Label className="text-xs uppercase tracking-[0.2em] text-white/35">
-                  Nome da view
-                </Label>
-                <Input
-                  value={viewName}
-                  onChange={(event) => {
-                    setViewName(event.target.value)
-                    setIsManualSql(false)
-                  }}
-                  placeholder="nova_view"
-                  className="h-11 border-white/10 bg-white/5 text-white placeholder:text-white/30"
-                />
+              <div className="flex flex-wrap items-center gap-2 text-xs text-white/45 xl:pt-7 mt-6">
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                  {connection.connectionName}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                  {connection.databaseType.toUpperCase()}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                  {resolvedSchemaName}
+                </span>
               </div>
             </div>
           </div>
@@ -711,7 +667,7 @@ export function CreateViewModal({
                 value="builder"
                 className="mt-0 flex h-full min-h-0 overflow-y-auto xl:overflow-hidden"
               >
-                <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[350px_380px_minmax(0,1fr)]">
+                <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[380px_420px_minmax(0,1fr)]">
                   <div className="flex min-h-0 flex-col gap-4">
                     <Card className="flex min-h-72 flex-1 flex-col border-white/10 bg-white/4">
                       <CardHeader className="shrink-0 space-y-4 pb-3">
@@ -889,7 +845,7 @@ export function CreateViewModal({
                       </CardContent>
                     </Card>
 
-                    <Card className="flex shrink-0 flex-col border-white/10 bg-white/4 xl:min-h-56">
+                    <Card className="flex h-64 shrink-0 flex-col border-white/10 bg-white/4">
                       <CardHeader className="shrink-0 pb-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="space-y-1">
@@ -919,11 +875,27 @@ export function CreateViewModal({
                               className="flex items-start gap-2 rounded-2xl border border-white/10 bg-white/3 p-3"
                             >
                               <Filter className="mt-2 size-4 shrink-0 text-sky-300/80" />
+                              {index > 0 ? (
+                                <Select
+                                  value={filter.connector ?? "AND"}
+                                  onValueChange={(value) =>
+                                    updateFilterConnector(index, value as FilterConnector)
+                                  }
+                                >
+                                  <SelectTrigger className="h-10 w-20 border-white/10 bg-white/5 text-[11px] text-white">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="AND">AND</SelectItem>
+                                    <SelectItem value="OR">OR</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              ) : null}
                               <Input
                                 value={filter.expression}
                                 onChange={(event) => updateFilter(index, event.target.value)}
                                 placeholder="status = 'ativo'"
-                                className="h-10 border-white/10 bg-white/5 text-white placeholder:text-white/30"
+                                className="h-10 flex-1 border-white/10 bg-white/5 text-white placeholder:text-white/30"
                               />
                               <button
                                 type="button"
@@ -981,59 +953,6 @@ export function CreateViewModal({
                         ref={canvasRef}
                       >
                         <div className="pointer-events-none absolute inset-0 opacity-40 bg-[radial-gradient(rgba(255,255,255,0.08)_1px,transparent_1px)] bg-size-[20px_20px]" />
-                        {joinLines.length ? (
-                          <svg
-                            className="pointer-events-none absolute inset-0 z-0 h-full w-full overflow-visible"
-                            aria-hidden="true"
-                          >
-                            <defs>
-                              <marker
-                                id="view-join-arrow"
-                                markerWidth="8"
-                                markerHeight="8"
-                                refX="6"
-                                refY="4"
-                                orient="auto"
-                                markerUnits="strokeWidth"
-                              >
-                                <path d="M 0 0 L 8 4 L 0 8 z" fill="rgba(56,189,248,0.95)" />
-                              </marker>
-                            </defs>
-                            {joinLines.map((line) => (
-                              <g key={line.id}>
-                                <path
-                                  d={line.d}
-                                  fill="none"
-                                  stroke="rgba(56,189,248,0.72)"
-                                  strokeWidth="2.5"
-                                  strokeDasharray="7 7"
-                                  markerEnd="url(#view-join-arrow)"
-                                />
-                                <g transform={`translate(${line.labelX} ${line.labelY})`}>
-                                  <rect
-                                    x="-42"
-                                    y="-12"
-                                    width="84"
-                                    height="24"
-                                    rx="999"
-                                    fill="rgba(8,15,26,0.95)"
-                                    stroke="rgba(56,189,248,0.2)"
-                                  />
-                                  <text
-                                    x="0"
-                                    y="4"
-                                    fill="rgba(226,232,240,0.95)"
-                                    fontSize="10"
-                                    textAnchor="middle"
-                                    style={{ fontFamily: "Arial, Helvetica, sans-serif", letterSpacing: "0.12em" }}
-                                  >
-                                    {line.label}
-                                  </text>
-                                </g>
-                              </g>
-                            ))}
-                          </svg>
-                        ) : null}
                         <div className="relative flex h-full min-h-0 items-stretch justify-stretch">
                           {selectedTables.length ? (
                             <div className="relative z-10 grid w-full gap-2 self-start sm:grid-cols-2 2xl:grid-cols-3">
@@ -1042,6 +961,30 @@ export function CreateViewModal({
                                 const outgoingForeignKeys = (tableDetails?.foreignKeys ?? [])
                                   .map((value) => parseForeignKeySummary(value))
                                   .filter((foreignKey): foreignKey is ForeignKeySummary => Boolean(foreignKey))
+                                const outgoingForeignKeyColumns = new Set(
+                                  outgoingForeignKeys.map((foreignKey) => foreignKey.sourceColumn)
+                                )
+                                const incomingForeignKeys = selectedTables.flatMap((sourceTable) => {
+                                  const sourceDetails = tableDetailsById[sourceTable.id]
+                                  const sourceForeignKeys = (sourceDetails?.foreignKeys ?? [])
+                                    .map((value) => parseForeignKeySummary(value))
+                                    .filter((foreignKey): foreignKey is ForeignKeySummary => Boolean(foreignKey))
+
+                                  return sourceForeignKeys
+                                    .filter(
+                                      (foreignKey) =>
+                                        foreignKey.referencedTableName === table.tableName ||
+                                        foreignKey.referencedTableName === table.reference ||
+                                        foreignKey.referencedTableName.endsWith(`.${table.tableName}`)
+                                    )
+                                    .map((foreignKey) => ({
+                                      ...foreignKey,
+                                      sourceTableId: sourceTable.id,
+                                    }))
+                                })
+                                const incomingForeignKeyColumns = new Set(
+                                  incomingForeignKeys.map((foreignKey) => foreignKey.referencedColumnName)
+                                )
                                 const incomingCount = selectedTables.reduce((count, sourceTable) => {
                                   const sourceDetails = tableDetailsById[sourceTable.id]
                                   const sourceForeignKeys = (sourceDetails?.foreignKeys ?? [])
@@ -1064,7 +1007,6 @@ export function CreateViewModal({
                                     onDragEnd={handleDragEnd}
                                     onDragOver={(event) => handleSelectedTableDragOver(event, table.id)}
                                     onDrop={(event) => handleSelectedTableDrop(event, table.id)}
-                                    ref={(element) => setTableCardRef(table.id, element)}
                                     className={cn(
                                       "relative rounded-xl border border-white/10 bg-[#0a1321]/90 p-3 shadow-[0_12px_40px_-28px_rgba(0,0,0,0.9)] transition-transform",
                                       index === 0 && "sm:col-span-2 2xl:col-span-1",
@@ -1099,7 +1041,7 @@ export function CreateViewModal({
                                         {table.columns.length} colunas
                                       </span>
                                       {outgoingForeignKeys.length ? (
-                                        <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2 py-0.5 text-sky-200">
+                                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-0.5 text-emerald-200">
                                           {outgoingForeignKeys.length} FK
                                         </span>
                                       ) : null}
@@ -1115,11 +1057,11 @@ export function CreateViewModal({
                                         {outgoingForeignKeys.slice(0, 2).map((foreignKey) => (
                                           <div
                                             key={`${table.id}-${foreignKey.sourceColumn}-${foreignKey.referencedTableName}-${foreignKey.referencedColumnName}`}
-                                            className="rounded-lg border border-sky-400/15 bg-sky-400/8 px-2.5 py-1.5 text-[11px] leading-4 text-sky-50/85"
+                                            className="rounded-lg border border-emerald-400/15 bg-emerald-400/8 px-2.5 py-1.5 text-[11px] leading-4 text-emerald-50/85"
                                           >
-                                            <span className="font-medium text-sky-200">{foreignKey.sourceColumn}</span>
+                                            <span className="font-medium text-emerald-200">{foreignKey.sourceColumn}</span>
                                             <span className="text-white/45"> → </span>
-                                            <span className="font-medium text-white/80">
+                                            <span className="font-medium text-emerald-100">
                                               {foreignKey.referencedTableName}.{foreignKey.referencedColumnName}
                                             </span>
                                           </div>
@@ -1137,10 +1079,34 @@ export function CreateViewModal({
                                       {table.columns.slice(0, 3).map((column) => (
                                         <div
                                           key={`${table.id}-${column.name}`}
-                                          className="flex items-center justify-between rounded-lg border border-white/8 bg-white/3 px-2.5 py-1.5"
+                                          className={cn(
+                                            "flex items-center justify-between rounded-lg border px-2.5 py-1.5",
+                                            outgoingForeignKeyColumns.has(column.name) ||
+                                              incomingForeignKeyColumns.has(column.name)
+                                              ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-50"
+                                              : "border-white/8 bg-white/3"
+                                          )}
                                         >
-                                          <span className="truncate text-white/80">{column.name}</span>
-                                          <span className="ml-3 shrink-0 text-[11px] text-white/35">
+                                          <span
+                                            className={cn(
+                                              "truncate",
+                                              outgoingForeignKeyColumns.has(column.name) ||
+                                                incomingForeignKeyColumns.has(column.name)
+                                                ? "text-emerald-100"
+                                                : "text-white/80"
+                                            )}
+                                          >
+                                            {column.name}
+                                          </span>
+                                          <span
+                                            className={cn(
+                                              "ml-3 shrink-0 text-[11px]",
+                                              outgoingForeignKeyColumns.has(column.name) ||
+                                                incomingForeignKeyColumns.has(column.name)
+                                                ? "text-emerald-200/80"
+                                                : "text-white/35"
+                                            )}
+                                          >
                                             {column.dataType}
                                             {column.size ? `(${column.size})` : ""}
                                           </span>
@@ -1179,7 +1145,7 @@ export function CreateViewModal({
               </TabsContent>
 
               <TabsContent value="sql" className="mt-0 flex h-full min-h-0">
-                <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
                   <Card className="flex min-h-0 flex-col border-white/10 bg-white/4">
                     <CardHeader className="shrink-0 pb-3">
                       <div className="flex items-start justify-between gap-3">
@@ -1455,18 +1421,433 @@ function buildViewSql(
 
   if (filters.length) {
     const filterExpressions = filters
-      .map((item) => item.expression.trim())
-      .filter(Boolean)
-      .map((expression) => `(${expression})`)
+      .map((item, index) => ({
+        connector: index === 0 ? null : item.connector ?? "AND",
+        expression: item.expression.trim(),
+      }))
+      .filter((item) => item.expression)
+      .map((item) => ({
+        connector: item.connector,
+        expression: `(${item.expression})`,
+      }))
 
     if (filterExpressions.length) {
-      clauses.push(`WHERE ${filterExpressions.join("\n  AND ")}`)
+      clauses.push(
+        `WHERE ${filterExpressions
+          .map((item, index) => (index === 0 ? item.expression : `${item.connector} ${item.expression}`))
+          .join("\n  ")}`
+      )
     }
   }
 
   clauses.push(";")
 
   return clauses.join("\n")
+}
+
+function parseSelectedTablesFromSql(
+  sqlText: string,
+  catalogTables: SourceTable[],
+  fallbackSchemaName: string
+) {
+  const normalizedSql = sqlText
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--.*$/gm, " ")
+    .trim()
+
+  if (!normalizedSql) {
+    return []
+  }
+
+  const clausePattern =
+    /\b(?:FROM|(?:LEFT|RIGHT|INNER|FULL|CROSS)\s+JOIN|JOIN)\b/gi
+  const clauseMatches = [...normalizedSql.matchAll(clausePattern)]
+
+  const parsedTables: SelectedTable[] = []
+  const seenReferences = new Set<string>()
+
+  for (let index = 0; index < clauseMatches.length; index += 1) {
+    const match = clauseMatches[index]
+    const clauseKind = match[0].toUpperCase()
+    const clauseEnd = (match.index ?? 0) + match[0].length
+    const nextClauseStart = clauseMatches[index + 1]?.index ?? normalizedSql.length
+    const clauseText = normalizedSql.slice(clauseEnd, nextClauseStart).trim()
+
+    if (!clauseText) {
+      continue
+    }
+
+    const joinCondition = getJoinConditionFromClauseText(clauseText, clauseKind)
+    const tableReference = getTableReferenceFromClauseText(clauseText)
+
+    if (!tableReference) {
+      continue
+    }
+
+    const normalizedReference = normalizeSqlIdentifier(tableReference)
+    if (!normalizedReference || seenReferences.has(`${clauseKind}:${normalizedReference}`)) {
+      continue
+    }
+
+    seenReferences.add(`${clauseKind}:${normalizedReference}`)
+
+    const catalogTable =
+      findCatalogTableByReference(catalogTables, tableReference) ??
+      findCatalogTableByReference(catalogTables, stripTrailingAlias(tableReference))
+
+    if (catalogTable) {
+      parsedTables.push({
+        ...catalogTable,
+        joinType: getJoinTypeFromClauseKind(clauseKind),
+        joinCondition,
+      })
+      continue
+    }
+
+    const fallbackParts = stripIdentifierQuotes(tableReference)
+      .split(".")
+      .map((part) => part.trim())
+      .filter(Boolean)
+
+    const tableName = fallbackParts.at(-1) || tableReference
+    const schemaName = fallbackParts.length > 1 ? fallbackParts.at(-2) || fallbackSchemaName : fallbackSchemaName
+
+    parsedTables.push({
+      id: `sql-${parsedTables.length}-${normalizedReference}`,
+      schemaName,
+      tableName,
+      reference: tableReference,
+      columns: [],
+      joinType: getJoinTypeFromClauseKind(clauseKind),
+      joinCondition,
+    })
+  }
+
+  return parsedTables.length ? parsedTables : null
+}
+
+function parseFiltersFromSql(sqlText: string) {
+  const normalizedSql = sqlText
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--.*$/gm, " ")
+    .trim()
+
+  if (!normalizedSql) {
+    return []
+  }
+
+  const whereMatch = normalizedSql.match(
+    /\bWHERE\b([\s\S]*?)(?=\bGROUP\b|\bORDER\b|\bHAVING\b|\bLIMIT\b|\bOFFSET\b|;|$)/i
+  )
+
+  if (!whereMatch) {
+    return []
+  }
+
+  const expressions = splitSqlFilterExpressions(whereMatch[1])
+
+  return expressions
+    .map((item, index) => ({
+      connector: index === 0 ? undefined : item.connector,
+      expression: stripOuterSqlParens(item.expression.trim()),
+    }))
+    .filter((item) => item.expression)
+    .map((item) => ({
+      id: createId(),
+      expression: item.expression,
+      connector: item.connector,
+    }))
+}
+
+function splitSqlFilterExpressions(value: string) {
+  const parts: Array<{ connector?: FilterConnector; expression: string }> = []
+  let current = ""
+  let depth = 0
+  let inSingleQuote = false
+  let inDoubleQuote = false
+  let inBacktick = false
+  let inBracketQuote = false
+  let betweenActive = false
+  let pendingNot = false
+  let currentConnector: FilterConnector | undefined
+  let caseDepth = 0
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]
+    const prevChar = value[index - 1]
+
+    if (char === "'" && !inDoubleQuote && !inBacktick && prevChar !== "\\") {
+      inSingleQuote = !inSingleQuote
+      current += char
+      continue
+    }
+
+    if (char === '"' && !inSingleQuote && !inBacktick && prevChar !== "\\") {
+      inDoubleQuote = !inDoubleQuote
+      current += char
+      continue
+    }
+
+    if (char === "`" && !inSingleQuote && !inDoubleQuote && prevChar !== "\\") {
+      inBacktick = !inBacktick
+      current += char
+      continue
+    }
+
+    if (char === "[" && !inSingleQuote && !inDoubleQuote && !inBacktick) {
+      inBracketQuote = true
+      current += char
+      continue
+    }
+
+    if (char === "]" && inBracketQuote) {
+      inBracketQuote = false
+      current += char
+      continue
+    }
+
+    if (!inSingleQuote && !inDoubleQuote && !inBacktick && !inBracketQuote) {
+      if (char === "(") {
+        depth += 1
+      } else if (char === ")") {
+        depth = Math.max(0, depth - 1)
+      }
+
+      if (depth === 0 && isWordStart(char)) {
+        const { word, end } = readSqlWord(value, index)
+        const upperWord = word.toUpperCase()
+
+        if (upperWord === "CASE") {
+          caseDepth += 1
+          current += value.slice(index, end)
+          index = end - 1
+          pendingNot = false
+          continue
+        }
+
+        if (upperWord === "END" && caseDepth > 0) {
+          caseDepth = Math.max(0, caseDepth - 1)
+          current += value.slice(index, end)
+          index = end - 1
+          pendingNot = false
+          continue
+        }
+
+        if (caseDepth > 0) {
+          current += value.slice(index, end)
+          index = end - 1
+          pendingNot = false
+          continue
+        }
+
+        if (upperWord === "NOT") {
+          pendingNot = true
+          current += value.slice(index, end)
+          index = end - 1
+          continue
+        }
+
+        if (upperWord === "BETWEEN") {
+          betweenActive = true
+          pendingNot = false
+          current += value.slice(index, end)
+          index = end - 1
+          continue
+        }
+
+        if (upperWord === "AND" || upperWord === "OR") {
+          if (betweenActive && upperWord === "AND") {
+            betweenActive = false
+            pendingNot = false
+            current += value.slice(index, end)
+            index = end - 1
+            continue
+          }
+
+          if (pendingNot && upperWord === "AND") {
+            pendingNot = false
+            current += value.slice(index, end)
+            index = end - 1
+            continue
+          }
+
+          const trimmed = current.trim()
+          if (trimmed) {
+            parts.push({ connector: currentConnector, expression: trimmed })
+          }
+
+          current = ""
+          currentConnector = upperWord as FilterConnector
+          betweenActive = false
+          pendingNot = false
+          index = end - 1
+          continue
+        }
+
+        current += value.slice(index, end)
+        index = end - 1
+        pendingNot = false
+        continue
+      }
+    }
+
+    current += char
+  }
+
+  const trimmed = current.trim()
+  if (trimmed) {
+    parts.push({ connector: currentConnector, expression: trimmed })
+  }
+
+  return parts
+}
+
+function readSqlWord(value: string, startIndex: number) {
+  let end = startIndex
+
+  while (end < value.length && /[A-Za-z0-9_]/.test(value[end])) {
+    end += 1
+  }
+
+  return {
+    word: value.slice(startIndex, end),
+    end,
+  }
+}
+
+function isWordStart(char: string) {
+  return /[A-Za-z_]/.test(char)
+}
+
+function stripOuterSqlParens(value: string) {
+  let expression = value.trim()
+
+  while (expression.startsWith("(") && expression.endsWith(")") && hasBalancedOuterParens(expression)) {
+    expression = expression.slice(1, -1).trim()
+  }
+
+  return expression
+}
+
+function hasBalancedOuterParens(value: string) {
+  let depth = 0
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]
+
+    if (char === "(") {
+      depth += 1
+    } else if (char === ")") {
+      depth -= 1
+      if (depth === 0 && index < value.length - 1) {
+        return false
+      }
+    }
+
+    if (depth < 0) {
+      return false
+    }
+  }
+
+  return depth === 0
+}
+
+function areViewFiltersEqual(left: ViewFilter[], right: ViewFilter[]) {
+  if (left.length !== right.length) {
+    return false
+  }
+
+  return left.every((filter, index) => {
+    const next = right[index]
+    return (
+      filter.expression === next?.expression &&
+      (filter.connector ?? undefined) === (next?.connector ?? undefined)
+    )
+  })
+}
+
+function getTableReferenceFromClauseText(clauseText: string) {
+  const segment = clauseText.replace(/\s+\bON\b[\s\S]*$/i, "").trim()
+  const match = segment.match(/^([^\s;()]+(?:\.[^\s;()]+)*)(?:\s+(?:AS\s+)?([^\s,()]+))?$/i)
+
+  return match?.[1]?.trim() ?? null
+}
+
+function getJoinConditionFromClauseText(clauseText: string, clauseKind: string) {
+  if (clauseKind === "FROM" || clauseKind === "CROSS JOIN") {
+    return "1 = 1"
+  }
+
+  const onMatch = clauseText.match(/\bON\b\s+([\s\S]+)$/i)
+  return onMatch?.[1]?.trim() || "1 = 1"
+}
+
+function getJoinTypeFromClauseKind(clauseKind: string): JoinType {
+  if (clauseKind === "CROSS JOIN") {
+    return "CROSS JOIN"
+  }
+
+  if (clauseKind === "INNER JOIN") {
+    return "INNER JOIN"
+  }
+
+  if (clauseKind === "RIGHT JOIN" || clauseKind === "FULL JOIN") {
+    return "JOIN"
+  }
+
+  if (clauseKind === "LEFT JOIN") {
+    return "LEFT JOIN"
+  }
+
+  return clauseKind === "JOIN" ? "JOIN" : "LEFT JOIN"
+}
+
+function areSelectedTablesEqual(left: SelectedTable[], right: SelectedTable[]) {
+  if (left.length !== right.length) {
+    return false
+  }
+
+  return left.every(
+    (table, index) =>
+      table.id === right[index]?.id &&
+      table.reference === right[index]?.reference &&
+      table.joinType === right[index]?.joinType &&
+      table.joinCondition === right[index]?.joinCondition
+  )
+}
+
+function findCatalogTableByReference(catalogTables: SourceTable[], reference: string) {
+  const normalizedReference = normalizeSqlIdentifier(reference)
+
+  if (!normalizedReference) {
+    return null
+  }
+
+  return (
+    catalogTables.find((table) => {
+      const candidates = [table.reference, table.tableName, `${table.schemaName}.${table.tableName}`]
+      return candidates.some((candidate) => {
+        const normalizedCandidate = normalizeSqlIdentifier(candidate)
+        return (
+          normalizedCandidate === normalizedReference ||
+          normalizedCandidate.endsWith(`.${normalizedReference}`) ||
+          normalizedReference.endsWith(`.${normalizedCandidate}`)
+        )
+      })
+    }) ?? null
+  )
+}
+
+function stripTrailingAlias(reference: string) {
+  return reference.trim().replace(/\s+(?:AS\s+)?[^\s,()]+$/i, "")
+}
+
+function stripIdentifierQuotes(value: string) {
+  return value.replace(/[\[\]"`]/g, "")
+}
+
+function normalizeSqlIdentifier(value: string) {
+  return stripIdentifierQuotes(value).replace(/\s+/g, "").toLowerCase()
 }
 
 function getTableAlias(index: number) {
