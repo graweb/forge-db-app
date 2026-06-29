@@ -58,6 +58,7 @@ export function DashboardSidebar({
   treeResetToken,
   onCreateDatabase,
   onCreateTable,
+  onCreateView,
   onEditTable,
   onDeleteTable,
   onSelect100Rows,
@@ -79,6 +80,7 @@ export function DashboardSidebar({
     connectionAvailabilityById,
     onCreateDatabase,
     onCreateTable,
+    onCreateView,
     onEditTable,
     onDeleteTable,
     onSelect100Rows,
@@ -469,9 +471,7 @@ function buildGroupNode(
         />
       ) : isAvailable && isViewGroup ? (
         <ViewGroupContextMenu
-          connection={connection}
-          schemaName={schemaName}
-          onOpenSqlInNewTab={actions.onOpenSqlInNewTab}
+          onCreateView={() => actions.onCreateView(connection, database, schemaName)}
           onRefreshStructure={actions.onRefreshDatabaseStructure}
         />
       ) : null,
@@ -532,12 +532,14 @@ function buildGroupNode(
               contextActions: renderTableItemContextMenu(),
             }))
           : undefined
+      const isLeafItem = !columnChildren?.length
 
       return {
         id: `${connection.id}-${schemaName}-${group.label}-${item}`,
         label: item,
         icon: Table2,
         children: columnChildren,
+        isLeaf: isLeafItem,
         onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
         contextActions: isTableGroup ? renderTableItemContextMenu() : (
           <TreeContextMenu
@@ -553,48 +555,17 @@ function buildGroupNode(
   }
 }
 
-function buildCreateViewSqlTemplate(connection: SavedConnection, schemaName: string) {
-  const quotedSchema =
-    connection.databaseType === "sqlite"
-      ? ""
-      : `${quoteIdentifier(connection.databaseType, schemaName)}.`
-  const viewName = quoteIdentifier(connection.databaseType, "nova_view")
-  const sourceTable = quoteIdentifier(connection.databaseType, "sua_tabela")
-
-  switch (connection.databaseType) {
-    case "mysql":
-    case "mariadb":
-    case "postgresql":
-      return `CREATE OR REPLACE VIEW ${quotedSchema}${viewName} AS\nSELECT *\nFROM ${quotedSchema}${sourceTable};`
-    case "sqlserver":
-      return `CREATE OR ALTER VIEW ${quotedSchema}${viewName} AS\nSELECT *\nFROM ${quotedSchema}${sourceTable};`
-    case "sqlite":
-      return `CREATE VIEW ${viewName} AS\nSELECT *\nFROM ${sourceTable};`
-    default:
-      return `CREATE VIEW ${viewName} AS\nSELECT *\nFROM ${sourceTable};`
-  }
-}
-
 function ViewGroupContextMenu({
-  connection,
-  schemaName,
-  onOpenSqlInNewTab,
+  onCreateView,
   onRefreshStructure,
 }: {
-  connection: SavedConnection
-  schemaName: string
-  onOpenSqlInNewTab: (sql: string, title?: string) => void
+  onCreateView: () => void
   onRefreshStructure: () => void
 }) {
   return (
     <div className="min-w-52 p-1">
       <ContextMenuItem
-        onSelect={() =>
-          onOpenSqlInNewTab(
-            buildCreateViewSqlTemplate(connection, schemaName),
-            "Criar view"
-          )
-        }
+        onSelect={onCreateView}
       >
         Criar view
       </ContextMenuItem>

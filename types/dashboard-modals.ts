@@ -100,6 +100,16 @@ export type CreateTableModalProps = {
   onSaved: (details: { message: string; details: string }) => void | Promise<void>
 }
 
+export type CreateViewModalProps = {
+  open: boolean
+  connection: SavedConnection | null
+  database?: DatabaseStructureDatabase | null
+  databaseName?: string
+  schemaName?: string
+  onOpenChange: (open: boolean) => void
+  onSaved: (details: { message: string; details: string }) => void | Promise<void>
+}
+
 export type DeleteDatabaseModalProps = {
   open: boolean
   connection: SavedConnection | null

@@ -19,6 +19,11 @@ export type DashboardSidebarProps = {
     database: DatabaseStructureDatabase,
     schemaName: string
   ) => void
+  onCreateView: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string
+  ) => void
   onEditTable: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
@@ -59,6 +64,11 @@ export type DashboardSidebarActions = {
   connectionAvailabilityById: Record<string, ConnectionAvailability>
   onCreateDatabase: (connection: SavedConnection) => void
   onCreateTable: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string
+  ) => void
+  onCreateView: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
     schemaName: string

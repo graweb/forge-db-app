@@ -12,6 +12,7 @@ import type { DashboardShellProps, ShellNotice, TableTarget } from "@/types/dash
 
 import { ConnectionModal } from "@/components/connections/connection-modal"
 import { CreateDatabaseModal } from "./create-database-modal"
+import { CreateViewModal } from "./create-view-modal"
 import { CreateUserModal } from "./create-user-modal"
 import { CreateTableModal } from "./create-table-modal"
 import { DeleteTableModal } from "./delete-table-modal"
@@ -53,6 +54,8 @@ export function DashboardShell({
   const [databaseModalKey, setDatabaseModalKey] = useState(0)
   const [isTableModalOpen, setIsTableModalOpen] = useState(false)
   const [tableModalKey, setTableModalKey] = useState(0)
+  const [isViewModalOpen, setIsViewModalOpen] = useState(false)
+  const [viewModalKey, setViewModalKey] = useState(0)
   const [isUserModalOpen, setIsUserModalOpen] = useState(false)
   const [userModalKey, setUserModalKey] = useState(0)
   const [tableTargetConnection, setTableTargetConnection] = useState<SavedConnection | null>(null)
@@ -62,6 +65,11 @@ export function DashboardShell({
   const [tableTargetSchema, setTableTargetSchema] = useState<string>("")
   const [tableTarget, setTableTarget] = useState<TableTarget | null>(null)
   const [tableModalMode, setTableModalMode] = useState<"create" | "edit">("create")
+  const [viewTargetConnection, setViewTargetConnection] = useState<SavedConnection | null>(null)
+  const [viewTargetDatabase, setViewTargetDatabase] = useState<DatabaseStructureDatabase | null>(
+    null
+  )
+  const [viewTargetSchema, setViewTargetSchema] = useState<string>("")
   const [userTargetConnection, setUserTargetConnection] = useState<SavedConnection | null>(null)
   const [userTargetDatabaseName, setUserTargetDatabaseName] = useState<string>("")
   const [userTargetSchemaName, setUserTargetSchemaName] = useState<string>("")
@@ -178,6 +186,13 @@ export function DashboardShell({
                 setDatabaseTarget(null)
                 setDatabaseModalKey((current) => current + 1)
                 setIsDatabaseModalOpen(true)
+              }}
+              onCreateView={(connectionToUse, databaseToUse, schemaName) => {
+                setViewTargetConnection(connectionToUse)
+                setViewTargetDatabase(databaseToUse)
+                setViewTargetSchema(schemaName)
+                setViewModalKey((current) => current + 1)
+                setIsViewModalOpen(true)
               }}
               onCreateUser={(connectionToUse, target) => {
                 setUserTargetConnection(connectionToUse)
@@ -529,6 +544,34 @@ export function DashboardShell({
               tableModalMode === "edit"
                 ? "A estrutura foi atualizada após a edição da tabela."
                 : "A estrutura foi atualizada após a criação da tabela.",
+          })
+        }}
+      />
+
+      <CreateViewModal
+        key={`${viewTargetConnection?.id ?? "none"}-${viewTargetDatabase?.name ?? "none"}-${viewTargetSchema}-${viewModalKey}`}
+        open={isViewModalOpen}
+        connection={viewTargetConnection}
+        database={viewTargetDatabase}
+        databaseName={viewTargetDatabase?.name}
+        schemaName={viewTargetSchema}
+        onOpenChange={(open) => {
+          setIsViewModalOpen(open)
+          if (!open) {
+            setViewTargetConnection(null)
+            setViewTargetDatabase(null)
+            setViewTargetSchema("")
+          }
+        }}
+        onSaved={async ({ message, details }) => {
+          setIsViewModalOpen(false)
+          setViewTargetConnection(null)
+          setViewTargetDatabase(null)
+          setViewTargetSchema("")
+          router.refresh()
+          showNotice({
+            title: message,
+            message: details,
           })
         }}
       />
