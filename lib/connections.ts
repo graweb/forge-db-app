@@ -48,6 +48,7 @@ import type {
   UpdateDatabaseResult,
   UpdateTableInput,
   UpdateTableResult,
+  ViewDetails,
 } from "@/types/connections"
 import {
   buildMySqlLikeConnectionOptions,
@@ -779,6 +780,35 @@ export async function getTableDetails(
       return getSqlServerTableDetails(connection, normalizedDatabase, normalizedSchema, normalizedTable)
     case "sqlite":
       return getSqliteTableDetails(connection, normalizedTable)
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function getViewDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  viewName: string
+): Promise<ViewDetails> {
+  const normalizedDatabase = sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim()
+  const normalizedSchema = sanitizeDatabaseIdentifier(schemaName) || getFallbackSchemaName(connection)
+  const normalizedView = sanitizeDatabaseIdentifier(viewName)
+
+  if (!normalizedView) {
+    throw new Error("Informe uma view válida.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb":
+      return getMySqlLikeViewDetails(connection, normalizedDatabase, normalizedSchema, normalizedView)
+    case "postgresql":
+      return getPostgreSqlViewDetails(connection, normalizedDatabase, normalizedSchema, normalizedView)
+    case "sqlserver":
+      return getSqlServerViewDetails(connection, normalizedDatabase, normalizedSchema, normalizedView)
+    case "sqlite":
+      return getSqliteViewDetails(connection, normalizedView)
     default:
       throw new Error("Tipo de banco não suportado.")
   }
@@ -4033,6 +4063,204 @@ async function getSqliteTableDetails(
   } finally {
     db.close()
   }
+}
+
+async function getMySqlLikeViewDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  viewName: string
+): Promise<ViewDetails> {
+  const client =
+    connection.databaseType === "mysql"
+      ? await mysql.createConnection({
+          host: sanitizeText(connection.host) || "localhost",
+          port: parsePort(connection.port) ?? 3306,
+          user: sanitizeText(connection.user),
+          password: connection.password ?? "",
+          database: databaseName,
+          connectTimeout: 5000,
+          ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+        })
+      : await mariadb.createConnection({
+          host: sanitizeText(connection.host) || "localhost",
+          port: parsePort(connection.port) ?? 3306,
+          user: sanitizeText(connection.user),
+          password: connection.password ?? "",
+          database: databaseName,
+          connectTimeout: 5000,
+          ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+        })
+
+  try {
+    const qualifiedView = `${quoteIdentifier(connection.databaseType, schemaName)}.${quoteIdentifier(
+      connection.databaseType,
+      viewName
+    )}`
+    const rows = await runMySqlLikeMetadataQuery(
+      client,
+      connection.databaseType,
+      `SHOW CREATE VIEW ${qualifiedView}`,
+      []
+    )
+    const row = (rows[0] ?? {}) as Record<string, unknown>
+    const definition = String(row["Create View"] ?? row.definition ?? row.Definition ?? "").trim()
+
+    if (!definition) {
+      throw new Error("Não foi possível carregar a definição da view.")
+    }
+
+    return {
+      databaseName,
+      schemaName,
+      viewName,
+      sqlText: ensureSqlTerminator(definition),
+    }
+  } finally {
+    await client.end()
+  }
+}
+
+async function getPostgreSqlViewDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  viewName: string
+): Promise<ViewDetails> {
+  const client = new PostgresClient({
+    host: sanitizeText(connection.host) || "localhost",
+    port: parsePort(connection.port) ?? 5432,
+    user: sanitizeText(connection.user),
+    password: connection.password ?? "",
+    database: databaseName || undefined,
+    connectionTimeoutMillis: 5000,
+    ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+  })
+
+  await client.connect()
+
+  try {
+    const result = await client.query(
+      `
+        SELECT pg_get_viewdef((quote_ident($1) || '.' || quote_ident($2))::regclass, true) AS definition
+      `,
+      [schemaName, viewName]
+    )
+    const definition = String(result.rows[0]?.definition ?? result.rows[0]?.DEFINITION ?? "").trim()
+
+    if (!definition) {
+      throw new Error("Não foi possível carregar a definição da view.")
+    }
+
+    const qualifiedViewName = `${quoteIdentifier("postgresql", schemaName)}.${quoteIdentifier(
+      "postgresql",
+      viewName
+    )}`
+
+    return {
+      databaseName,
+      schemaName,
+      viewName,
+      sqlText: `CREATE OR REPLACE VIEW ${qualifiedViewName} AS\n${definition.replace(/;+\s*$/, "")};`,
+    }
+  } finally {
+    await client.end()
+  }
+}
+
+async function getSqlServerViewDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  viewName: string
+): Promise<ViewDetails> {
+  const pool = await sql.connect({
+    user: sanitizeText(connection.user),
+    password: connection.password ?? "",
+    server: sanitizeText(connection.host) || "localhost",
+    port: parsePort(connection.port) ?? 1433,
+    database: databaseName || "master",
+    options: {
+      encrypt: Boolean(connection.useSsl),
+      trustServerCertificate: true,
+    },
+    connectionTimeout: 5000,
+    requestTimeout: 5000,
+  })
+
+  try {
+    const result = await pool.request().query(`
+      SELECT OBJECT_DEFINITION(OBJECT_ID(${quoteSqlLiteral(
+        `${quoteSqlServerIdentifier(schemaName)}.${quoteSqlServerIdentifier(viewName)}`
+      )})) AS definition
+    `)
+    const definition = String(result.recordset[0]?.definition ?? result.recordset[0]?.DEFINITION ?? "").trim()
+
+    if (!definition) {
+      throw new Error("Não foi possível carregar a definição da view.")
+    }
+
+    return {
+      databaseName,
+      schemaName,
+      viewName,
+      sqlText: ensureSqlTerminator(definition),
+    }
+  } finally {
+    await pool.close()
+  }
+}
+
+async function getSqliteViewDetails(
+  connection: SavedConnection,
+  viewName: string
+): Promise<ViewDetails> {
+  const filePath = sanitizeText(connection.databaseFile)
+  if (!filePath) {
+    throw new Error("Informe o arquivo SQLite da conexão.")
+  }
+
+  const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
+  const db = new Database(resolvedPath)
+
+  try {
+    const rows = db
+      .prepare(
+        `
+          SELECT sql
+          FROM sqlite_master
+          WHERE type = 'view'
+            AND name = ${quoteSqlLiteral(viewName)}
+          LIMIT 1
+        `
+      )
+      .all() as Array<{ sql?: string }>
+
+    const definition = String(rows[0]?.sql ?? "").trim()
+
+    if (!definition) {
+      throw new Error("Não foi possível carregar a definição da view.")
+    }
+
+    return {
+      databaseName: connection.databaseFile || "main",
+      schemaName: "main",
+      viewName,
+      sqlText: ensureSqlTerminator(definition),
+    }
+  } finally {
+    db.close()
+  }
+}
+
+function ensureSqlTerminator(sqlText: string) {
+  const normalized = sqlText.trim()
+
+  if (!normalized) {
+    return normalized
+  }
+
+  return normalized.endsWith(";") ? normalized : `${normalized};`
 }
 
 export function getConnectionById(id: string): SavedConnection | null {

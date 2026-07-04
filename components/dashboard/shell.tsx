@@ -5,6 +5,7 @@ import { AlertTriangle } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 
 import type { DatabaseStructureDatabase, SavedConnection } from "@/types/connections"
+import type { ViewDetails } from "@/types/connections"
 import type {
   DashboardEditorWorkspaceHandle,
 } from "@/types/dashboard-editor"
@@ -16,6 +17,7 @@ import { CreateViewModal } from "./create-view-modal"
 import { CreateUserModal } from "./create-user-modal"
 import { CreateTableModal } from "./create-table-modal"
 import { DeleteTableModal } from "./delete-table-modal"
+import { DeleteViewModal } from "./delete-view-modal"
 import { DeleteDatabaseModal } from "./delete-database-modal"
 import { DashboardEditorWorkspace } from "./editor-workspace"
 import { DashboardSidebar } from "./sidebar"
@@ -55,6 +57,7 @@ export function DashboardShell({
   const [isTableModalOpen, setIsTableModalOpen] = useState(false)
   const [tableModalKey, setTableModalKey] = useState(0)
   const [isViewModalOpen, setIsViewModalOpen] = useState(false)
+  const [viewModalMode, setViewModalMode] = useState<"create" | "edit">("create")
   const [viewModalKey, setViewModalKey] = useState(0)
   const [isUserModalOpen, setIsUserModalOpen] = useState(false)
   const [userModalKey, setUserModalKey] = useState(0)
@@ -70,6 +73,15 @@ export function DashboardShell({
     null
   )
   const [viewTargetSchema, setViewTargetSchema] = useState<string>("")
+  const [viewTarget, setViewTarget] = useState<ViewDetails | null>(null)
+  const [deleteViewTarget, setDeleteViewTarget] = useState<{
+    connection: SavedConnection
+    database: DatabaseStructureDatabase
+    schemaName: string
+    viewPath: string
+    viewName: string
+  } | null>(null)
+  const [isDeleteViewModalOpen, setIsDeleteViewModalOpen] = useState(false)
   const [userTargetConnection, setUserTargetConnection] = useState<SavedConnection | null>(null)
   const [userTargetDatabaseName, setUserTargetDatabaseName] = useState<string>("")
   const [userTargetSchemaName, setUserTargetSchemaName] = useState<string>("")
@@ -191,8 +203,69 @@ export function DashboardShell({
                 setViewTargetConnection(connectionToUse)
                 setViewTargetDatabase(databaseToUse)
                 setViewTargetSchema(schemaName)
+                setViewTarget(null)
+                setViewModalMode("create")
                 setViewModalKey((current) => current + 1)
                 setIsViewModalOpen(true)
+              }}
+              onEditView={async (connectionToUse, databaseToUse, schemaName, _viewPath, viewName) => {
+                const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
+
+                setActivePane("editor")
+                setViewTargetConnection(connectionToUse)
+                setViewTargetDatabase(databaseToUse)
+                setViewTargetSchema(schemaName)
+                setViewModalMode("edit")
+                setViewModalKey((current) => current + 1)
+
+                try {
+                  const response = await fetch(
+                    `/api/connections/${connectionToUse.id}/views/${encodeURIComponent(viewName)}?databaseName=${encodeURIComponent(
+                      databaseName
+                    )}&schemaName=${encodeURIComponent(schemaName)}`
+                  )
+
+                  const payload: {
+                    success: boolean
+                    message?: string
+                    details?: string
+                    databaseName?: string
+                    schemaName?: string
+                    viewName?: string
+                    sqlText?: string
+                  } = await response.json()
+
+                  if (!response.ok || !payload.success || !payload.sqlText) {
+                    showNotice({
+                      title: "Não foi possível carregar a view",
+                      message: payload.details || payload.message || "Tente novamente em instantes.",
+                    })
+                    return
+                  }
+
+                  setViewTarget({
+                    databaseName: payload.databaseName || databaseName,
+                    schemaName: payload.schemaName || schemaName,
+                    viewName: payload.viewName || viewName,
+                    sqlText: payload.sqlText,
+                  })
+                  setIsViewModalOpen(true)
+                } catch {
+                  showNotice({
+                    title: "Erro ao carregar view",
+                    message: "Não foi possível abrir a view para edição.",
+                  })
+                }
+              }}
+              onDeleteView={(connectionToUse, databaseToUse, schemaName, viewPath, viewName) => {
+                setDeleteViewTarget({
+                  connection: connectionToUse,
+                  database: databaseToUse,
+                  schemaName,
+                  viewPath,
+                  viewName,
+                })
+                setIsDeleteViewModalOpen(true)
               }}
               onCreateUser={(connectionToUse, target) => {
                 setUserTargetConnection(connectionToUse)
@@ -552,15 +625,19 @@ export function DashboardShell({
         key={`${viewTargetConnection?.id ?? "none"}-${viewTargetDatabase?.name ?? "none"}-${viewTargetSchema}-${viewModalKey}`}
         open={isViewModalOpen}
         connection={viewTargetConnection}
+        mode={viewModalMode}
         database={viewTargetDatabase}
         databaseName={viewTargetDatabase?.name}
         schemaName={viewTargetSchema}
+        initialView={viewModalMode === "edit" ? viewTarget : null}
         onOpenChange={(open) => {
           setIsViewModalOpen(open)
           if (!open) {
             setViewTargetConnection(null)
             setViewTargetDatabase(null)
             setViewTargetSchema("")
+            setViewTarget(null)
+            setViewModalMode("create")
           }
         }}
         onSaved={async ({ message, details }) => {
@@ -568,6 +645,8 @@ export function DashboardShell({
           setViewTargetConnection(null)
           setViewTargetDatabase(null)
           setViewTargetSchema("")
+          setViewTarget(null)
+          setViewModalMode("create")
           router.refresh()
           showNotice({
             title: message,
@@ -641,6 +720,45 @@ export function DashboardShell({
           showNotice({
             title: "Banco de dados excluído",
             message: "A estrutura foi atualizada após a exclusão.",
+          })
+        }}
+      />
+
+      <DeleteViewModal
+        open={isDeleteViewModalOpen}
+        connection={deleteViewTarget?.connection ?? null}
+        database={deleteViewTarget?.database ?? null}
+        schemaName={deleteViewTarget?.schemaName}
+        viewName={deleteViewTarget?.viewName}
+        viewPath={deleteViewTarget?.viewPath}
+        onOpenChange={(open) => {
+          setIsDeleteViewModalOpen(open)
+          if (!open) {
+            setDeleteViewTarget(null)
+          }
+        }}
+        onDeleted={async () => {
+          if (!deleteViewTarget) {
+            return
+          }
+
+          const databaseName = getEffectiveTableDatabaseName(
+            deleteViewTarget.connection,
+            deleteViewTarget.database
+          )
+
+          setActivePane("editor")
+          await editorWorkspaceRef.current?.executeSqlText(`DROP VIEW ${deleteViewTarget.viewPath};`, {
+            title: `Excluir view: ${deleteViewTarget.viewName}`,
+            databaseName,
+            insertIntoEditor: true,
+          })
+          setIsDeleteViewModalOpen(false)
+          setDeleteViewTarget(null)
+          router.refresh()
+          showNotice({
+            title: "View excluída",
+            message: "A estrutura foi atualizada após a exclusão da view.",
           })
         }}
       />

@@ -17,6 +17,7 @@ export type JoinType = "LEFT JOIN" | "INNER JOIN" | "JOIN" | "CROSS JOIN"
 export type SelectedTable = SourceTable & {
   joinType: JoinType
   joinCondition: string
+  alias?: string
 }
 
 export type FilterConnector = "AND" | "OR"
@@ -25,6 +26,11 @@ export type ViewFilter = {
   id: string
   expression: string
   connector?: FilterConnector
+}
+
+export type ColumnJoinAnchor = {
+  tableId: string
+  columnName: string
 }
 
 export type DragSource = "palette" | "canvas"

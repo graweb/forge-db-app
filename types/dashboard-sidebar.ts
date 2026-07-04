@@ -24,6 +24,20 @@ export type DashboardSidebarProps = {
     database: DatabaseStructureDatabase,
     schemaName: string
   ) => void
+  onEditView: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    viewPath: string,
+    viewName: string
+  ) => void
+  onDeleteView: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    viewPath: string,
+    viewName: string
+  ) => void
   onEditTable: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
@@ -72,6 +86,20 @@ export type DashboardSidebarActions = {
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
     schemaName: string
+  ) => void
+  onEditView: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    viewPath: string,
+    viewName: string
+  ) => void
+  onDeleteView: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    viewPath: string,
+    viewName: string
   ) => void
   onEditTable: (
     connection: SavedConnection,

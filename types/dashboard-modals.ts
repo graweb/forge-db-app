@@ -2,6 +2,7 @@ import type {
   DatabaseStructureDatabase,
   SavedConnection,
   TableDetails,
+  ViewDetails,
 } from "@/types/connections"
 
 export type CreateTableColumnDraft = {
@@ -103,9 +104,11 @@ export type CreateTableModalProps = {
 export type CreateViewModalProps = {
   open: boolean
   connection: SavedConnection | null
+  mode: "create" | "edit"
   database?: DatabaseStructureDatabase | null
   databaseName?: string
   schemaName?: string
+  initialView?: ViewDetails | null
   onOpenChange: (open: boolean) => void
   onSaved: (details: { message: string; details: string }) => void | Promise<void>
 }
@@ -124,6 +127,17 @@ export type DeleteTableModalProps = {
   database: DatabaseStructureDatabase | null
   schemaName?: string
   tableName?: string
+  onOpenChange: (open: boolean) => void
+  onDeleted: () => void | Promise<void>
+}
+
+export type DeleteViewModalProps = {
+  open: boolean
+  connection: SavedConnection | null
+  database: DatabaseStructureDatabase | null
+  schemaName?: string
+  viewName?: string
+  viewPath?: string
   onOpenChange: (open: boolean) => void
   onDeleted: () => void | Promise<void>
 }

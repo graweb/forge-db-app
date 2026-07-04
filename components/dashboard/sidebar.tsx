@@ -64,6 +64,8 @@ export function DashboardSidebar({
   onSelect100Rows,
   onEditDatabase,
   onDeleteDatabase,
+  onEditView,
+  onDeleteView,
   onCreateUser,
   onDisconnectConnection,
   onSelectConnection,
@@ -86,6 +88,8 @@ export function DashboardSidebar({
     onSelect100Rows,
     onEditDatabase,
     onDeleteDatabase,
+    onEditView,
+    onDeleteView,
     onCreateUser,
     onDisconnectConnection,
     onSelectConnection,
@@ -114,7 +118,7 @@ export function DashboardSidebar({
             type="button"
             onClick={onAddConnection}
             className={cn(
-              "group flex w-full min-h-16 flex-col items-center justify-center rounded-xl border bg-white/3 px-3 py-4 text-white transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/6",
+              "group flex w-full min-h-14 items-center justify-center gap-2 rounded-xl border bg-white/2 px-3 py-3 text-sm text-white/85 transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/5 hover:text-white",
               "border-white/10"
             )}
           >
@@ -521,6 +525,13 @@ function buildGroupNode(
           }
         />
       )
+      const renderViewItemContextMenu = () => (
+        <ViewItemContextMenu
+          onSelect100Rows={() => actions.onSelect100Rows(connection, database, schemaName, item)}
+          onEditView={() => actions.onEditView(connection, database, schemaName, tableReference, item)}
+          onDeleteView={() => actions.onDeleteView(connection, database, schemaName, tableReference, item)}
+        />
+      )
       const columnChildren =
         isTableGroup && columnDetails.length
           ? columnDetails.map((column) => ({
@@ -541,7 +552,9 @@ function buildGroupNode(
         children: columnChildren,
         isLeaf: isLeafItem,
         onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
-        contextActions: isTableGroup ? renderTableItemContextMenu() : (
+        contextActions: isTableGroup ? renderTableItemContextMenu() : isViewGroup ? (
+          renderViewItemContextMenu()
+        ) : (
           <TreeContextMenu
             objectPath={tableReference}
             onInsertText={() => actions.onInsertText(`SELECT *\nFROM ${tableReference};`)}
@@ -570,6 +583,24 @@ function ViewGroupContextMenu({
         Criar view
       </ContextMenuItem>
       <ContextMenuItem onSelect={onRefreshStructure}>Atualizar</ContextMenuItem>
+    </div>
+  )
+}
+
+function ViewItemContextMenu({
+  onSelect100Rows,
+  onEditView,
+  onDeleteView,
+}: {
+  onSelect100Rows: () => void
+  onEditView: () => void
+  onDeleteView: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem onSelect={onSelect100Rows}>Selecionar 100 linhas</ContextMenuItem>
+      <ContextMenuItem onSelect={onEditView}>Editar</ContextMenuItem>
+      <ContextMenuItem onSelect={onDeleteView}>Excluir</ContextMenuItem>
     </div>
   )
 }

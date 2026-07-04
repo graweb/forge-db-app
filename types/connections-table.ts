@@ -109,6 +109,13 @@ export type TableDetails = {
   functions: string[]
 }
 
+export type ViewDetails = {
+  databaseName: string
+  schemaName: string
+  viewName: string
+  sqlText: string
+}
+
 export type UpdateTableInput = {
   databaseName: string
   schemaName: string
