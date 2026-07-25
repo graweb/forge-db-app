@@ -22,6 +22,21 @@ export function getDatabaseIcon(databaseType: DatabaseType): LucideIcon {
   return databaseIcons[databaseType] ?? SquareTerminal
 }
 
+export function getDatabaseLogoPath(databaseType: DatabaseType) {
+  switch (databaseType) {
+    case "mysql":
+      return "/logos/mysql.svg"
+    case "mariadb":
+      return "/logos/mariadb.svg"
+    case "postgresql":
+      return "/logos/postgresql.svg"
+    case "sqlserver":
+      return "/logos/sqlserver.svg"
+    case "sqlite":
+      return "/logos/sqlite.svg"
+  }
+}
+
 export function getConnectionSubtitle(connection: SavedConnection) {
   if (connection.databaseType === "sqlite") {
     return connection.databaseFile || "SQLite local"

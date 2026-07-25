@@ -1,5 +1,6 @@
 "use client"
 
+import Image from "next/image"
 import {
   Eye,
   Database,
@@ -28,7 +29,7 @@ import {
 } from "@/components/ui/context-menu"
 import { TreeView } from "@/components/ui/tree-view"
 
-import { getDatabaseLabel } from "@/helpers/dashboard"
+import { getDatabaseLabel, getDatabaseLogoPath } from "@/helpers/dashboard"
 import { quoteIdentifier } from "@/helpers/connections"
 import type {
   DatabaseStructure,
@@ -70,6 +71,7 @@ export function DashboardSidebar({
   onDisconnectConnection,
   onSelectConnection,
   onEditConnection,
+  onDeleteConnection,
   onRefreshStructure,
   onRefreshDatabaseStructure,
   onInsertText,
@@ -94,6 +96,7 @@ export function DashboardSidebar({
     onDisconnectConnection,
     onSelectConnection,
     onEditConnection,
+    onDeleteConnection,
     onRefreshStructure,
     onRefreshDatabaseStructure,
     onInsertText,
@@ -109,38 +112,48 @@ export function DashboardSidebar({
         <section className="space-y-3">
           
 
-          <div className="flex items-center justify-between text-xs uppercase tracking-[0.24em] text-white/40">
-            <span>Conexões</span>
-            <Badge className="border-sky-400/35 bg-white/5 text-white/65">Forge DB</Badge>
+          <div className="flex items-center justify-center py-1">
+            <Image
+              src="/logo.png"
+              alt="Forge DB"
+              width={160}
+              height={48}
+              priority
+              className="h-20 w-auto object-contain"
+            />
           </div>
 
-          <Button
-            type="button"
-            onClick={onAddConnection}
-            className={cn(
-              "group flex w-full min-h-14 items-center justify-center gap-2 rounded-xl border bg-white/2 px-3 py-3 text-sm text-white/85 transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/5 hover:text-white",
-              "border-white/10"
-            )}
-          >
-            <Plus className="size-6" />
-            Adicionar conexão
-          </Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              type="button"
+              onClick={onAddConnection}
+              className={cn(
+                "group flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border bg-white/2 px-2 py-2 text-xs text-white/85 transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/5 hover:text-white",
+                "border-white/10"
+              )}
+            >
+              <Plus className="size-4 shrink-0" />
+              Adicionar
+            </Button>
 
-          <Button
-            type="button"
-            onClick={onRefreshConnections}
-            className={cn(
-              "group flex w-full min-h-14 items-center justify-center gap-2 rounded-xl border bg-white/2 px-3 py-3 text-sm text-white/85 transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/5 hover:text-white",
-              "border-white/10"
-            )}
-          >
-            <RefreshCw className="size-4 transition-transform duration-300 group-hover:rotate-180" />
-            Atualizar conexões
-          </Button>
-
-          <div className="rounded-2xl border border-white/8 bg-white/2 p-2">
-            <TreeView nodes={treeNodes} resetToken={treeResetToken} />
+            <Button
+              type="button"
+              onClick={onRefreshConnections}
+              className={cn(
+                "group flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border bg-white/2 px-2 py-2 text-xs text-white/85 transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/5 hover:text-white",
+                "border-white/10"
+              )}
+            >
+              <RefreshCw className="size-4 shrink-0 transition-transform duration-300 group-hover:rotate-180" />
+              Atualizar
+            </Button>
           </div>
+
+          {connections.length ? (
+            <div className="rounded-2xl border border-white/8 bg-white/2 p-2">
+              <TreeView nodes={treeNodes} resetToken={treeResetToken} />
+            </div>
+          ) : null}
         </section>
       </div>
     </aside>
@@ -173,6 +186,7 @@ function buildTreeNodes(
     const canCreateDatabase = isAvailable && connection.databaseType !== "sqlite"
     const connectionSubtitle = getConnectionTreeSubtitle(connection)
     const isActive = connection.id === activeConnectionId
+    const isConnected = isAvailable && isActive
     const usersNode = buildUsersNode(connection, databaseStructure, actions)
 
     const childNodes =
@@ -222,6 +236,8 @@ function buildTreeNodes(
       label: connection.connectionName,
       subtitle: connectionSubtitle,
       icon: Database,
+      logoSrc: getDatabaseLogoPath(connection.databaseType),
+      logoAlt: `${getDatabaseLabel(connection.databaseType)} logo`,
       badge: (
         <Badge
           className={
@@ -239,7 +255,7 @@ function buildTreeNodes(
         </Badge>
       ),
       defaultExpanded: false,
-      expandOnClick: isAvailable,
+      expandOnClick: isConnected,
       unavailable: !isAvailable,
       selected: isActive,
       onSelect: () => actions.onSelectConnection(connection),
@@ -250,9 +266,10 @@ function buildTreeNodes(
           onConnect={() => actions.onSelectConnection(connection)}
           onDisconnect={actions.onDisconnectConnection}
           onEdit={() => actions.onEditConnection(connection)}
+          onDelete={() => actions.onDeleteConnection(connection)}
         />
       ),
-      children: childNodes,
+      children: isConnected ? childNodes : undefined,
     }
   })
 }
@@ -263,12 +280,14 @@ function ConnectionTreeContextMenu({
   onConnect,
   onDisconnect,
   onEdit,
+  onDelete,
 }: {
   isActive: boolean
   canConnect: boolean
   onConnect: () => void
   onDisconnect: () => void
   onEdit: () => void
+  onDelete: () => void
 }) {
   return (
     <div className="min-w-52 p-1">
@@ -280,6 +299,7 @@ function ConnectionTreeContextMenu({
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={onEdit}>Editar</ContextMenuItem>
+      <ContextMenuItem onSelect={onDelete}>Remover</ContextMenuItem>
     </div>
   )
 }
@@ -486,6 +506,7 @@ function buildGroupNode(
         item,
         connection.databaseType === "sqlserver" ? database.name : undefined
       )
+      const queryDatabaseName = getEffectiveDatabaseName(connection, database)
       const tableSchemaName = connection.databaseType === "sqlite" ? "main" : schemaName
       const tableName = item
       const columnDetails = group.columnsDetailsByItem?.[item] ?? []
@@ -497,7 +518,7 @@ function buildGroupNode(
             actions.onDeleteTable(connection, database, tableSchemaName, tableName)
           }
           onSelect100Rows={() =>
-            actions.onSelect100Rows(connection, database, tableSchemaName, tableName)
+            actions.onSelect100Rows(connection, database, tableSchemaName, tableName, "table")
           }
           onGenerateSelectSql={() =>
             actions.onOpenSqlInNewTab(
@@ -527,7 +548,7 @@ function buildGroupNode(
       )
       const renderViewItemContextMenu = () => (
         <ViewItemContextMenu
-          onSelect100Rows={() => actions.onSelect100Rows(connection, database, schemaName, item)}
+          onSelect100Rows={() => actions.onSelect100Rows(connection, database, schemaName, item, "view")}
           onEditView={() => actions.onEditView(connection, database, schemaName, tableReference, item)}
           onDeleteView={() => actions.onDeleteView(connection, database, schemaName, tableReference, item)}
         />
@@ -551,7 +572,9 @@ function buildGroupNode(
         icon: Table2,
         children: columnChildren,
         isLeaf: isLeafItem,
-        onDoubleClick: isTableGroup ? () => void actions.onRunTableQuery(tableReference) : undefined,
+        onDoubleClick: supportsQueryActions
+          ? () => void actions.onRunTableQuery(tableReference, queryDatabaseName, isViewGroup ? "view" : "table")
+          : undefined,
         contextActions: isTableGroup ? renderTableItemContextMenu() : isViewGroup ? (
           renderViewItemContextMenu()
         ) : (
@@ -697,6 +720,21 @@ function getDefaultSchemaName(connection: SavedConnection) {
   }
 
   return connection.databaseName.trim() || "schema_1"
+}
+
+function getEffectiveDatabaseName(
+  connection: SavedConnection,
+  database: DatabaseStructureDatabase
+) {
+  if (
+    connection.databaseType === "mysql" ||
+    connection.databaseType === "mariadb" ||
+    connection.databaseType === "sqlserver"
+  ) {
+    return database.name
+  }
+
+  return connection.databaseName || database.name
 }
 
 function sortDatabaseGroups(groups: DatabaseStructureGroup[]) {

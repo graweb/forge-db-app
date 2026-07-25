@@ -2311,6 +2311,23 @@ export async function updateConnection(id: string, input: ConnectionInput) {
   return { id, ...result }
 }
 
+export function deleteConnection(id: string) {
+  const existingConnection = getConnectionById(id)
+
+  if (!existingConnection) {
+    throw new Error("Conexão não encontrada.")
+  }
+
+  const db = ensureAppDatabase()
+  db.prepare("DELETE FROM connections WHERE id = ?").run(id)
+
+  return {
+    id,
+    message: "Conexão removida",
+    details: `A conexão ${existingConnection.connectionName} foi removida com sucesso.`,
+  }
+}
+
 function persistConnectionRecord(id: string, input: ConnectionInput, isNewRecord: boolean) {
   const now = new Date().toISOString()
   const db = ensureAppDatabase()

@@ -1,17 +1,20 @@
 "use client"
 
+import dynamic from "next/dynamic"
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { DragEvent } from "react"
+import type * as Monaco from "monaco-editor"
 import {
-  ArrowRight,
   Code2,
+  Eye,
   Filter,
+  Link2,
   Loader2,
+  Play,
   Plus,
   Sparkles,
   Table2,
   Trash2,
-  Wand2,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -28,11 +31,12 @@ import {
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
+import { QueryResults } from "@/components/dashboard/query-results"
 import { cn } from "@/helpers/utils"
 import { quoteIdentifier } from "@/helpers/connections"
 import type {
   DatabaseStructureDatabase,
+  QueryExecutionResult,
   SavedConnection,
   TableDetails,
 } from "@/types/connections"
@@ -56,6 +60,15 @@ const JOIN_OPTIONS: Array<{ value: JoinType; label: string }> = [
   { value: "CROSS JOIN", label: "CROSS JOIN" },
 ]
 
+const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full min-h-80 items-center justify-center rounded-xl border border-white/10 bg-[#050913] text-sm text-white/45">
+      Carregando editor SQL...
+    </div>
+  ),
+})
+
 export function CreateViewModal({
   open,
   connection,
@@ -71,10 +84,16 @@ export function CreateViewModal({
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedTables, setSelectedTables] = useState<SelectedTable[]>([])
   const [selectedColumnsByTable, setSelectedColumnsByTable] = useState<Record<string, string[]>>({})
+  const [wildcardColumnTableIds, setWildcardColumnTableIds] = useState<Set<string>>(() => new Set())
   const [columnJoinAnchor, setColumnJoinAnchor] = useState<ColumnJoinAnchor | null>(null)
   const [filters, setFilters] = useState<ViewFilter[]>([])
   const [sqlText, setSqlText] = useState("")
   const [isManualSql, setIsManualSql] = useState(false)
+  const [activeTab, setActiveTab] = useState("builder")
+  const [previewResult, setPreviewResult] = useState<QueryExecutionResult | null>(null)
+  const [previewErrorMessage, setPreviewErrorMessage] = useState<string | null>(null)
+  const [previewDurationMs, setPreviewDurationMs] = useState<number | null>(null)
+  const [executingPreview, setExecutingPreview] = useState(false)
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [isDraggingTable, setIsDraggingTable] = useState(false)
@@ -84,13 +103,14 @@ export function CreateViewModal({
   const [dropTarget, setDropTarget] = useState<{ id: string; position: DropPosition } | null>(null)
   const [tableDetailsById, setTableDetailsById] = useState<Record<string, TableDetails | null>>({})
   const canvasRef = useRef<HTMLDivElement | null>(null)
+  const sqlEditorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const manualSqlSyncVersionRef = useRef(0)
   const resolvedSchemaName = schemaName?.trim() || (connection ? getFallbackSchemaName(connection) : "public")
   const catalog = useMemo(
     () => (connection ? buildCatalog(connection, database, resolvedSchemaName) : []),
     [connection, database, resolvedSchemaName]
   )
-  const catalogTables = catalog.flatMap((group) => group.tables)
+  const catalogTables = useMemo(() => catalog.flatMap((group) => group.tables), [catalog])
 
   useEffect(() => {
     if (!open || !connection) {
@@ -111,16 +131,22 @@ export function CreateViewModal({
         : []
       const parsedColumns =
         initialSql && parsedTables.length
-          ? parseSelectedColumnsFromSql(initialSql, parsedTables, catalogTables)
+          ? parseSelectedColumnsFromSql(initialSql, parsedTables)
           : null
       const parsedFilters = initialSql ? parseFiltersFromSql(initialSql) : []
 
       setViewName(mode === "edit" ? initialView?.viewName || "nova_view" : "nova_view")
       setSearchTerm("")
       setSelectedTables(parsedTables)
-      setSelectedColumnsByTable(parsedColumns ?? {})
+      setSelectedColumnsByTable(parsedColumns?.columnsByTable ?? {})
+      setWildcardColumnTableIds(parsedColumns?.wildcardTableIds ?? new Set())
       setColumnJoinAnchor(null)
       setFilters(parsedFilters ?? [])
+      setActiveTab("builder")
+      setPreviewResult(null)
+      setPreviewErrorMessage(null)
+      setPreviewDurationMs(null)
+      setExecutingPreview(false)
       setErrorMessage(null)
       setSaving(false)
       setIsManualSql(mode === "edit" && Boolean(initialSql))
@@ -190,9 +216,7 @@ export function CreateViewModal({
 
     const syncVersion = ++manualSqlSyncVersionRef.current
     const parsedTables = parseSelectedTablesFromSql(sqlText, catalogTables, resolvedSchemaName)
-    const parsedColumns = parsedTables
-      ? parseSelectedColumnsFromSql(sqlText, parsedTables, catalogTables)
-      : null
+    const parsedColumns = parseSelectedColumnsFromSql(sqlText, parsedTables ?? selectedTables)
     const parsedFilters = parseFiltersFromSql(sqlText)
     const normalizedSql = sqlText.trim()
 
@@ -204,6 +228,7 @@ export function CreateViewModal({
       if (!normalizedSql) {
         setSelectedTables([])
         setSelectedColumnsByTable({})
+        setWildcardColumnTableIds(new Set())
         setColumnJoinAnchor(null)
         setFilters([])
         return
@@ -221,12 +246,17 @@ export function CreateViewModal({
 
       if (parsedColumns) {
         setSelectedColumnsByTable((current) => {
-          if (areSelectedColumnSelectionsEqual(current, parsedColumns)) {
+          if (areSelectedColumnSelectionsEqual(current, parsedColumns.columnsByTable)) {
             return current
           }
 
-          return parsedColumns
+          return parsedColumns.columnsByTable
         })
+        setWildcardColumnTableIds((current) =>
+          areWildcardTableIdsEqual(current, parsedColumns.wildcardTableIds)
+            ? current
+            : parsedColumns.wildcardTableIds
+        )
       }
 
       if (parsedFilters !== null) {
@@ -243,7 +273,7 @@ export function CreateViewModal({
     return () => {
       manualSqlSyncVersionRef.current += 1
     }
-  }, [open, connection, isManualSql, sqlText, catalogTables, resolvedSchemaName])
+  }, [open, connection, isManualSql, sqlText, catalogTables, resolvedSchemaName, selectedTables])
 
   useEffect(() => {
     if (!open || !connection || !selectedTables.length) {
@@ -303,6 +333,54 @@ export function CreateViewModal({
     }
   }, [open, connection, databaseName, selectedTables, tableDetailsById])
 
+  useEffect(() => {
+    if (!open || !connection || isManualSql || selectedTables.length < 2) {
+      return
+    }
+
+    const databaseType = connection.databaseType
+    let cancelled = false
+
+    queueMicrotask(() => {
+      if (cancelled) {
+        return
+      }
+
+      setSelectedTables((current) => {
+        let changed = false
+        const next = current.map((table, index) => {
+          if (index === 0 || !shouldAutoFillJoinCondition(table.joinCondition)) {
+            return table
+          }
+
+          const inferredJoinCondition = inferJoinConditionForTable(
+            index,
+            current,
+            tableDetailsById,
+            databaseType
+          )
+
+          if (!inferredJoinCondition) {
+            return table
+          }
+
+          changed = true
+          return {
+            ...table,
+            joinType: table.joinType === "CROSS JOIN" ? "LEFT JOIN" : table.joinType,
+            joinCondition: inferredJoinCondition,
+          }
+        })
+
+        return changed ? next : current
+      })
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, connection, isManualSql, selectedTables, tableDetailsById])
+
   const filteredCatalog = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase()
 
@@ -325,14 +403,19 @@ export function CreateViewModal({
         connection,
         databaseName,
         resolvedSchemaName,
-        viewName || "nova_view",
+        viewName.trim() || "nova_view",
         selectedTables,
         selectedColumnsByTable,
         filters
       )
     : ""
   const effectiveSql = isManualSql ? sqlText : generatedSql
-  const canCreateView = Boolean(effectiveSql.trim()) && (isManualSql || selectedTables.length > 0)
+  const previewSql = getPreviewSqlFromViewSql(effectiveSql)
+  const canExecutePreview = Boolean(previewSql.trim())
+  const hasPreviewExecution =
+    executingPreview || Boolean(previewResult) || Boolean(previewErrorMessage) || previewDurationMs !== null
+  const canCreateView =
+    Boolean(viewName.trim()) && Boolean(effectiveSql.trim()) && (isManualSql || selectedTables.length > 0)
   const dialogTitle = mode === "edit" ? "Editar View" : "Nova View"
   const dialogDescription =
     mode === "edit"
@@ -367,9 +450,25 @@ export function CreateViewModal({
   function toggleSelectedColumn(tableId: string, columnName: string) {
     setErrorMessage(null)
     exitManualSqlMode()
+    const table = selectedTables.find((item) => item.id === tableId)
+    const allColumnNames = table?.columns.map((column) => column.name) ?? []
+    const isWildcardSelection =
+      wildcardColumnTableIds.has(tableId) || !Object.prototype.hasOwnProperty.call(selectedColumnsByTable, tableId)
+
+    setWildcardColumnTableIds((current) => {
+      if (!current.has(tableId)) {
+        return current
+      }
+
+      const next = new Set(current)
+      next.delete(tableId)
+      return next
+    })
     setSelectedColumnsByTable((current) => {
       const next = { ...current }
-      const currentColumns = new Set(next[tableId] ?? [])
+      const currentColumns = new Set(
+        isWildcardSelection && allColumnNames.length ? allColumnNames : next[tableId] ?? []
+      )
 
       if (currentColumns.has(columnName)) {
         currentColumns.delete(columnName)
@@ -386,6 +485,31 @@ export function CreateViewModal({
 
       return next
     })
+  }
+
+  function selectOnlyIdColumn(table: SelectedTable) {
+    setErrorMessage(null)
+    exitManualSqlMode()
+
+    const idColumn = table.columns.find((column) => column.name.trim().toLowerCase() === "id")
+    if (!idColumn) {
+      setErrorMessage(`A tabela ${table.tableName} não possui uma coluna id.`)
+      return
+    }
+
+    setWildcardColumnTableIds((current) => {
+      if (!current.has(table.id)) {
+        return current
+      }
+
+      const next = new Set(current)
+      next.delete(table.id)
+      return next
+    })
+    setSelectedColumnsByTable((current) => ({
+      ...current,
+      [table.id]: [idColumn.name],
+    }))
   }
 
   function handleColumnJoinClick(tableId: string, columnName: string) {
@@ -651,6 +775,15 @@ export function CreateViewModal({
       })
 
       setColumnJoinAnchor((anchor) => (anchor?.tableId === removed.id ? null : anchor))
+      setWildcardColumnTableIds((current) => {
+        if (!current.has(removed.id)) {
+          return current
+        }
+
+        const next = new Set(current)
+        next.delete(removed.id)
+        return next
+      })
     }
 
     setSelectedTables((current) => current.filter((_, itemIndex) => itemIndex !== index))
@@ -704,17 +837,97 @@ export function CreateViewModal({
     })
   }
 
-  function syncGeneratedSql() {
-    exitManualSqlMode()
-    setSqlText(generatedSql)
+  async function handleExecutePreview() {
+    if (!previewSql.trim()) {
+      setPreviewResult(null)
+      setPreviewErrorMessage("Não há SQL para executar.")
+      setActiveTab("result")
+      return
+    }
+
+    setExecutingPreview(true)
+    setActiveTab("result")
+    setPreviewErrorMessage(null)
+    setPreviewDurationMs(null)
+
+    const startedAt = performance.now()
+
+    try {
+      const response = await fetch(`/api/connections/${activeConnection.id}/query`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sql: previewSql,
+          databaseName: databaseName || activeConnection.databaseName,
+        }),
+      })
+
+      const payload: {
+        success: boolean
+        message: string
+        details?: string
+        columns?: string[]
+        rows?: QueryExecutionResult["rows"]
+        rowCount?: number
+        affectedRows?: number
+      } = await response.json()
+
+      setPreviewDurationMs(Math.round(performance.now() - startedAt))
+
+      if (!response.ok || !payload.success) {
+        setPreviewResult(null)
+        setPreviewErrorMessage(payload.details || payload.message || "Não foi possível executar a consulta.")
+        return
+      }
+
+      setPreviewResult({
+        columns: payload.columns ?? [],
+        rows: payload.rows ?? [],
+        rowCount: payload.rowCount ?? payload.rows?.length ?? 0,
+        affectedRows: payload.affectedRows,
+        message: payload.message,
+      })
+    } catch {
+      setPreviewResult(null)
+      setPreviewErrorMessage("Não foi possível executar a consulta.")
+    } finally {
+      setExecutingPreview(false)
+    }
   }
 
-  function formatSqlText() {
-    setSqlText((current) => current.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim())
-    setIsManualSql(true)
+  function handleSqlEditorMount(
+    editor: Monaco.editor.IStandaloneCodeEditor,
+    monaco: typeof Monaco
+  ) {
+    sqlEditorRef.current = editor
+
+    editor.addAction({
+      id: "execute-view-preview",
+      label: "Executar prévia da view",
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+      contextMenuGroupId: "navigation",
+      contextMenuOrder: 1.5,
+      run: () => {
+        void handleExecutePreview()
+      },
+    })
   }
 
   async function handleCreateView() {
+    const normalizedViewName = viewName.trim()
+
+    if (!normalizedViewName) {
+      setErrorMessage("Informe o nome da view antes de continuar.")
+      return
+    }
+
+    if (viewNameAlreadyExists(database, resolvedSchemaName, normalizedViewName, initialView, mode)) {
+      setErrorMessage(`Já existe uma view chamada ${normalizedViewName} neste schema.`)
+      return
+    }
+
     setSaving(true)
     setErrorMessage(null)
 
@@ -744,6 +957,7 @@ export function CreateViewModal({
       await onSaved({
         message: payload.message || "View criada",
         details: payload.details || "A view foi criada com sucesso.",
+        viewName: normalizedViewName,
       })
     } catch {
       setErrorMessage("Não foi possível executar o SQL da view.")
@@ -756,52 +970,49 @@ export function CreateViewModal({
     <Drawer open={open} onOpenChange={onOpenChange}>
       <DrawerContent
         side="bottom"
-        className="h-[calc(100dvh-0.75rem)] overflow-hidden border-t border-white/10 bg-[#050a14] p-0 text-white shadow-[0_-36px_90px_-45px_rgba(0,0,0,0.95)]"
+        className="h-[calc(100dvh-0.5rem)] overflow-hidden border-t border-white/10 bg-[#050a14] p-0 text-white shadow-[0_-36px_90px_-45px_rgba(0,0,0,0.95)]"
       >
         <div className="flex h-full min-h-0 flex-col overflow-hidden">
-          <div className="shrink-0 border-b border-white/10 px-5 py-4 lg:px-6">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-              <div className="space-y-4">
+          <div className="shrink-0 border-b border-white/10 px-4 py-2.5 lg:px-5">
+            <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] xl:items-end">
+              <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="flex size-11 items-center justify-center rounded-2xl border border-sky-400/20 bg-sky-400/10 text-sky-300">
-                    <Sparkles className="size-5" />
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-sky-400/20 bg-sky-400/10 text-sky-300">
+                    <Eye className="size-5" />
                   </div>
-                  <div>
-                    <div className="text-xl font-semibold text-white">{dialogTitle}</div>
-                    <div className="text-sm text-white/55">{dialogDescription}</div>
+                  <div className="min-w-0">
+                    <div className="text-lg font-semibold text-white sm:text-xl">{dialogTitle}</div>
+                    <div className="line-clamp-1 text-sm text-white/55">{dialogDescription}</div>
                   </div>
-                </div>
-                <div className="w-full max-w-xs space-y-2">
-                  <Label className="text-xs uppercase tracking-[0.2em] text-white/35">
-                    Nome da view
-                  </Label>
-                  <Input
-                    value={viewName}
-                    onChange={(event) => {
-                      setViewName(event.target.value)
-                      setIsManualSql(false)
-                    }}
-                    placeholder="nova_view"
-                    className="h-11 w-full border-white/10 bg-white/5 text-white placeholder:text-white/30"
-                  />
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 text-xs text-white/45 xl:pt-7 mt-6">
-                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+              <div className="flex min-w-0 flex-wrap items-center gap-2 pr-10 text-xs text-white/45 xl:justify-end xl:pr-12">
+                <span
+                  className="max-w-[min(14rem,45vw)] truncate rounded-full border border-white/10 bg-white/5 px-2.5 py-1"
+                  title={activeConnection.connectionName}
+                >
                   {activeConnection.connectionName}
                 </span>
                 <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
                   {activeConnection.databaseType.toUpperCase()}
                 </span>
-                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1">
+                <span
+                  className="max-w-[min(12rem,35vw)] truncate rounded-full border border-white/10 bg-white/5 px-2.5 py-1"
+                  title={resolvedSchemaName}
+                >
                   {resolvedSchemaName}
                 </span>
               </div>
             </div>
           </div>
 
-          <Tabs defaultValue="builder" className="flex min-h-0 flex-1 flex-col">
+          <Tabs
+            defaultValue="builder"
+            value={activeTab}
+            onValueChange={setActiveTab}
+            className="flex min-h-0 flex-1 flex-col"
+          >
             <div className="shrink-0 border-b border-white/10 px-5 lg:px-6">
               <TabsList className="h-auto rounded-none border-0 bg-transparent p-0">
                 <TabsTrigger value="builder" className="h-11 rounded-none px-5">
@@ -810,17 +1021,17 @@ export function CreateViewModal({
                 <TabsTrigger value="sql" className="h-11 rounded-none px-5">
                   SQL Editor
                 </TabsTrigger>
+                <TabsTrigger value="result" className="h-11 rounded-none px-5">
+                  Resultado
+                </TabsTrigger>
               </TabsList>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-5 lg:px-6">
-              <TabsContent
-                value="builder"
-                className="mt-0 flex h-full min-h-0 overflow-y-auto xl:overflow-hidden"
-              >
-                <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[380px_420px_minmax(0,1fr)]">
-                  <div className="flex min-h-0 flex-col gap-4">
-                    <Card className="flex min-h-72 flex-1 flex-col border-white/10 bg-white/4">
+            <div className="min-h-0 flex-1 overflow-hidden px-3 py-3 sm:px-4 lg:px-5">
+              <TabsContent value="builder" className="mt-0 flex h-full min-h-0 overflow-y-auto">
+                <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[minmax(15rem,20rem)_minmax(0,1fr)] xl:grid-cols-[minmax(14rem,18rem)_minmax(17rem,21rem)_minmax(0,1fr)] 2xl:grid-cols-[320px_360px_minmax(0,1fr)]">
+                  <div className="order-1 flex min-h-0 flex-col gap-4">
+                    <Card className="flex min-h-64 flex-1 flex-col border-white/10 bg-white/4">
                       <CardHeader className="shrink-0 space-y-4 pb-3">
                         <div className="space-y-1">
                           <CardTitle className="text-base text-white">Estrutura do Banco</CardTitle>
@@ -911,7 +1122,7 @@ export function CreateViewModal({
                     </Card>
                   </div>
 
-                  <div className="flex min-h-0 flex-col gap-4">
+                  <div className="order-3 flex min-h-0 flex-col gap-3 lg:col-span-2 xl:order-2 xl:col-span-1">
                     <Card className="flex min-h-0 flex-1 flex-col border-white/10 bg-white/4">
                       <CardHeader className="shrink-0 pb-3">
                         <div className="flex items-start justify-between gap-3">
@@ -996,7 +1207,7 @@ export function CreateViewModal({
                       </CardContent>
                     </Card>
 
-                    <Card className="flex h-64 shrink-0 flex-col border-white/10 bg-white/4">
+                    <Card className="flex min-h-52 shrink-0 flex-col border-white/10 bg-white/4 lg:h-[clamp(12rem,24dvh,16rem)]">
                       <CardHeader className="shrink-0 pb-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="space-y-1">
@@ -1067,8 +1278,8 @@ export function CreateViewModal({
                     </Card>
                   </div>
 
-                  <Card className="flex h-full min-h-0 flex-col border-white/10 bg-white/4">
-                    <CardHeader className="shrink-0 pb-3">
+                  <Card className="order-2 flex h-full min-h-0 flex-col border-white/10 bg-white/4 xl:order-3">
+                    <CardHeader className="shrink-0 pb-2.5">
                       <div className="flex items-start justify-between gap-3">
                         <div className="space-y-1">
                           <CardTitle className="text-base text-white">Tabelas e colunas selecionadas</CardTitle>
@@ -1080,11 +1291,12 @@ export function CreateViewModal({
                           type="button"
                           variant="outline"
                           size="sm"
-                          onClick={syncGeneratedSql}
+                          onClick={handleExecutePreview}
+                          disabled={executingPreview || !canExecutePreview}
                           className="border-white/10 bg-white/5 text-white hover:bg-white/10"
                         >
-                          <Wand2 className="size-4" />
-                          Gerar SQL
+                          {executingPreview ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+                          Executar
                         </Button>
                       </div>
                     </CardHeader>
@@ -1095,7 +1307,7 @@ export function CreateViewModal({
                         onDragLeave={handleCanvasDragLeave}
                         onDrop={handleCanvasDrop}
                         className={cn(
-                          "relative h-full min-h-[clamp(16rem,36dvh,30rem)] overflow-hidden rounded-3xl border bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.18),transparent_40%),linear-gradient(180deg,rgba(6,11,20,0.96),rgba(4,8,14,0.96))] p-3 transition-colors",
+                          "relative h-full min-h-[clamp(22rem,52dvh,34rem)] overflow-auto rounded-2xl border bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.18),transparent_40%),linear-gradient(180deg,rgba(6,11,20,0.96),rgba(4,8,14,0.96))] p-2.5 transition-colors",
                           isCanvasDropActive
                             ? "border-sky-400/40 shadow-[0_0_0_1px_rgba(56,189,248,0.2),0_18px_60px_-30px_rgba(56,189,248,0.35)]"
                           : "border-white/10",
@@ -1104,24 +1316,16 @@ export function CreateViewModal({
                         ref={canvasRef}
                       >
                         <div className="pointer-events-none absolute inset-0 opacity-40 bg-[radial-gradient(rgba(255,255,255,0.08)_1px,transparent_1px)] bg-size-[20px_20px]" />
-                        {columnJoinAnchor ? (
-                          <div className="absolute left-3 top-3 z-20 rounded-full border border-sky-400/25 bg-sky-400/10 px-3 py-1 text-[11px] text-sky-100 shadow-[0_10px_20px_-16px_rgba(56,189,248,0.7)]">
-                            Selecionando join:{" "}
-                            {selectedTables.find((table) => table.id === columnJoinAnchor.tableId)?.tableName ??
-                              columnJoinAnchor.tableId}
-                            .{columnJoinAnchor.columnName}
-                          </div>
-                        ) : null}
                         <div className="relative flex h-full min-h-0 items-stretch justify-stretch">
                           {selectedTables.length ? (
-                            <div className="relative z-10 grid w-full gap-2 self-start sm:grid-cols-2 2xl:grid-cols-3">
+                            <div className="relative z-10 grid w-full gap-2 self-start xl:grid-cols-2 2xl:grid-cols-3">
                               {selectedTables.map((table, index) => {
                                 const tableDetails = tableDetailsById[table.id]
                                 const outgoingForeignKeys = (tableDetails?.foreignKeys ?? [])
                                   .map((value) => parseForeignKeySummary(value))
                                   .filter((foreignKey): foreignKey is ForeignKeySummary => Boolean(foreignKey))
-                                const outgoingForeignKeyColumns = new Set(
-                                  outgoingForeignKeys.map((foreignKey) => foreignKey.sourceColumn)
+                                const outgoingForeignKeyColumnNames = new Set(
+                                  outgoingForeignKeys.map((foreignKey) => foreignKey.sourceColumn.trim().toLowerCase())
                                 )
                                 const incomingForeignKeys = selectedTables.flatMap((sourceTable) => {
                                   const sourceDetails = tableDetailsById[sourceTable.id]
@@ -1141,15 +1345,11 @@ export function CreateViewModal({
                                       sourceTableId: sourceTable.id,
                                     }))
                                 })
-                                const incomingForeignKeyColumns = new Set(
-                                  incomingForeignKeys.map((foreignKey) => foreignKey.referencedColumnName)
-                                )
                                 const selectedColumnNames = selectedColumnsByTable[table.id] ?? []
                                 const selectedColumnSet = new Set(selectedColumnNames)
-                                const relatedColumnNames = new Set([
-                                  ...outgoingForeignKeyColumns,
-                                  ...incomingForeignKeyColumns,
-                                ])
+                                const usesWildcardColumns =
+                                  wildcardColumnTableIds.has(table.id) ||
+                                  !Object.prototype.hasOwnProperty.call(selectedColumnsByTable, table.id)
 
                                 return (
                                   <div
@@ -1160,8 +1360,7 @@ export function CreateViewModal({
                                     onDragOver={(event) => handleSelectedTableDragOver(event, table.id)}
                                     onDrop={(event) => handleSelectedTableDrop(event, table.id)}
                                     className={cn(
-                                      "relative rounded-xl border border-white/10 bg-[#0a1321]/90 p-3 shadow-[0_12px_40px_-28px_rgba(0,0,0,0.9)] transition-transform",
-                                      index === 0 && "sm:col-span-2 2xl:col-span-1",
+                                      "relative rounded-md border border-white/10 bg-[#0a1321]/90 p-2 shadow-[0_8px_24px_-20px_rgba(0,0,0,0.9)] transition-transform",
                                       isDraggingTable && "cursor-grab active:cursor-grabbing",
                                       dropTarget?.id === table.id && "border-sky-400/40 bg-[#0c1728]"
                                     )}
@@ -1169,36 +1368,44 @@ export function CreateViewModal({
                                     {dropTarget?.id === table.id && dropTarget.position === "before" ? (
                                       <div className="absolute left-3 right-3 top-1 rounded-full border-t-2 border-sky-400/80" />
                                     ) : null}
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div className="space-y-1">
-                                        <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-sky-300/80">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="min-w-0 space-y-0.5">
+                                        <div className="flex items-center gap-1 text-[11px] uppercase tracking-[0.12em] text-sky-300/80">
                                           <Sparkles className="size-3" />
                                           t{index + 1}
                                         </div>
-                                        <div className="text-base font-semibold text-white">{table.tableName}</div>
-                                        <div className="text-xs text-white/45">{table.reference}</div>
+                                        <div className="truncate text-sm font-semibold text-white">{table.tableName}</div>
+                                        <div className="truncate text-xs text-white/45">{table.reference}</div>
                                       </div>
                                       <button
                                         type="button"
                                         onClick={() => removeSelectedTable(index)}
-                                        className="inline-flex size-7 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/45 transition-colors hover:bg-white/10 hover:text-rose-300"
+                                        className="inline-flex size-5 shrink-0 items-center justify-center rounded border border-white/10 bg-white/5 text-white/45 transition-colors hover:bg-white/10 hover:text-rose-300"
                                         aria-label={`Remover ${table.tableName}`}
                                       >
-                                        <Trash2 className="size-3.5" />
+                                        <Trash2 className="size-2.5" />
                                       </button>
                                     </div>
 
-                                    <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-[0.18em] text-white/45">
-                                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5">
+                                    <div className="mt-1 flex flex-wrap gap-1 text-[10px] uppercase tracking-[0.1em] text-white/45">
+                                      <button
+                                        type="button"
+                                        onClick={(event) => {
+                                          event.stopPropagation()
+                                          selectOnlyIdColumn(table)
+                                        }}
+                                        className="rounded-full border border-white/10 bg-white/5 px-1.5 py-px transition-colors hover:border-sky-400/30 hover:bg-sky-400/10 hover:text-sky-100"
+                                        title="Selecionar somente a coluna id"
+                                      >
                                         {table.columns.length} colunas
-                                      </span>
+                                      </button>
                                       {outgoingForeignKeys.length ? (
-                                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-0.5 text-emerald-200">
+                                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-1.5 py-px text-emerald-200">
                                           {outgoingForeignKeys.length} FK
                                         </span>
                                       ) : null}
                                       {incomingForeignKeys.length ? (
-                                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-0.5 text-emerald-200">
+                                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-1.5 py-px text-emerald-200">
                                           {incomingForeignKeys.length} ref
                                         </span>
                                       ) : null}
@@ -1208,14 +1415,16 @@ export function CreateViewModal({
                                       <div className="absolute inset-x-3 bottom-1 rounded-full border-b-2 border-sky-400/80" />
                                     ) : null}
 
-                                    <Separator className="my-3 bg-white/10" />
+                                    <Separator className="my-1.5 bg-white/10" />
 
-                                    <div className="space-y-2 text-sm text-white/70">
+                                    <div className="space-y-1 text-white/70">
                                       {table.columns.length ? (
-                                        <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                                        <div className="max-h-36 space-y-1 overflow-y-auto pr-1 xl:max-h-44">
                                           {table.columns.map((column) => {
-                                            const isSelected = selectedColumnSet.has(column.name)
-                                            const isRelated = relatedColumnNames.has(column.name)
+                                            const isSelected = usesWildcardColumns || selectedColumnSet.has(column.name)
+                                            const isForeignKeyColumn = outgoingForeignKeyColumnNames.has(
+                                              column.name.trim().toLowerCase()
+                                            )
                                             const isActiveAnchor =
                                               columnJoinAnchor?.tableId === table.id &&
                                               columnJoinAnchor.columnName === column.name
@@ -1224,39 +1433,38 @@ export function CreateViewModal({
                                               <div
                                                 key={`${table.id}-${column.name}`}
                                                 className={cn(
-                                                  "flex items-stretch gap-2 rounded-lg border p-1.5 transition-colors",
+                                                  "flex items-stretch gap-1 rounded border px-1 py-0.5 transition-colors",
                                                   isSelected
                                                     ? "border-sky-400/30 bg-sky-400/10"
-                                                    : isRelated
-                                                      ? "border-emerald-400/25 bg-emerald-400/10"
-                                                      : "border-white/8 bg-white/3"
+                                                    : "border-white/8 bg-white/3"
                                                 )}
                                               >
                                                 <button
                                                   type="button"
                                                   onClick={() => toggleSelectedColumn(table.id, column.name)}
-                                                  className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md px-2 py-1 text-left"
+                                                  className="flex min-w-0 flex-1 items-center justify-between gap-1.5 rounded px-1 py-0.5 text-left"
                                                 >
                                                   <span
                                                     className={cn(
-                                                      "truncate text-sm",
+                                                      "flex min-w-0 items-center gap-1.5 text-sm",
                                                       isSelected
                                                         ? "text-sky-100"
-                                                        : isRelated
-                                                          ? "text-emerald-100"
-                                                          : "text-white/80"
+                                                        : "text-white/80"
                                                     )}
                                                   >
-                                                    {column.name}
+                                                    <span className="truncate">{column.name}</span>
+                                                    {isForeignKeyColumn ? (
+                                                      <span className="shrink-0 rounded border border-amber-300/30 bg-amber-300/12 px-1 py-px text-[9px] font-semibold leading-none text-amber-100">
+                                                        FK
+                                                      </span>
+                                                    ) : null}
                                                   </span>
                                                   <span
                                                     className={cn(
-                                                      "shrink-0 text-[11px]",
+                                                      "shrink-0 text-[10px]",
                                                       isSelected
                                                         ? "text-sky-200/80"
-                                                        : isRelated
-                                                          ? "text-emerald-200/80"
-                                                          : "text-white/35"
+                                                        : "text-white/35"
                                                     )}
                                                   >
                                                     {column.dataType}
@@ -1267,14 +1475,24 @@ export function CreateViewModal({
                                                 <button
                                                   type="button"
                                                   onClick={() => handleColumnJoinClick(table.id, column.name)}
-                                                  className={cn(
-                                                    "inline-flex min-w-20 items-center justify-center rounded-md border px-2 text-[11px] uppercase tracking-[0.14em] transition-colors",
+                                                  aria-label={
                                                     isActiveAnchor
-                                                      ? "border-sky-400/30 bg-sky-400/15 text-sky-100"
+                                                      ? "Coluna de origem selecionada. Clique em outra coluna para criar o join."
+                                                      : "Relacionar coluna. Clique para iniciar ou completar um join manual."
+                                                  }
+                                                  className={cn(
+                                                    "group relative inline-flex size-6 shrink-0 items-center justify-center rounded border transition-colors",
+                                                    isActiveAnchor
+                                                      ? "border-amber-300/80 bg-amber-300/15 text-amber-100 shadow-[0_0_0_1px_rgba(252,211,77,0.2)]"
                                                       : "border-white/10 bg-white/5 text-white/50 hover:bg-white/10 hover:text-white"
                                                   )}
                                                 >
-                                                  {isActiveAnchor ? "Âncora" : "Ligar"}
+                                                  <Link2 className="size-3" />
+                                                  <span className="pointer-events-none absolute right-0 top-full z-[9999] mt-2 w-52 rounded-lg border border-white/10 bg-[#111827] px-2.5 py-2 text-left text-[11px] normal-case leading-4 tracking-normal text-white/80 opacity-0 shadow-[0_16px_40px_-24px_rgba(0,0,0,0.9)] transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                                                    {isActiveAnchor
+                                                      ? "Origem selecionada. Clique em outra coluna para criar o join."
+                                                      : "Criar join manual entre esta coluna e outra coluna."}
+                                                  </span>
                                                 </button>
                                               </div>
                                             )
@@ -1313,7 +1531,7 @@ export function CreateViewModal({
               </TabsContent>
 
               <TabsContent value="sql" className="mt-0 flex h-full min-h-0">
-                <div className="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+                <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
                   <Card className="flex min-h-0 flex-col border-white/10 bg-white/4">
                     <CardHeader className="shrink-0 pb-3">
                       <div className="flex items-start justify-between gap-3">
@@ -1323,48 +1541,55 @@ export function CreateViewModal({
                             Revise o comando final antes de executar.
                           </CardDescription>
                         </div>
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={syncGeneratedSql}
-                            className="border-white/10 bg-white/5 text-white hover:bg-white/10"
-                          >
-                            <Wand2 className="size-4" />
-                            Gerar SQL
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={formatSqlText}
-                            className="border-white/10 bg-white/5 text-white hover:bg-white/10"
-                          >
-                            <Code2 className="size-4" />
-                            Formatar
-                          </Button>
-                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={handleExecutePreview}
+                          disabled={executingPreview || !canExecutePreview}
+                          className="border-white/10 bg-white/5 text-white hover:bg-white/10"
+                        >
+                          {executingPreview ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
+                          Executar
+                        </Button>
                       </div>
                     </CardHeader>
                     <CardContent className="min-h-0 flex-1 pt-0">
-                      <div className="flex h-full min-h-112 flex-col rounded-2xl border border-white/10 bg-[#02050c]">
-                        <Textarea
-                          value={effectiveSql}
-                          onChange={(event) => {
-                            setSqlText(event.target.value)
-                            setIsManualSql(true)
-                          }}
-                          className="min-h-112 flex-1 resize-none rounded-2xl border-0 bg-transparent p-4 font-mono text-sm leading-6 text-white/80 placeholder:text-white/25 focus-visible:ring-0"
-                          placeholder="-- O SQL da view será gerado aqui"
-                        />
-                      </div>
-                      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-white/40">
-                        <span className="flex items-center gap-2">
-                          <ArrowRight className="size-3.5" />
-                          {isManualSql ? "Edição manual ativa" : "Sincronizado com o builder visual"}
-                        </span>
-                        <span>{effectiveSql.split("\n").length} linhas</span>
+                      <div className="flex h-full min-h-[clamp(15rem,40dvh,24rem)] flex-col rounded-2xl border border-white/10 bg-[#07111d] p-2 shadow-[0_16px_50px_-34px_rgba(0,0,0,0.95)] sm:p-3">
+                        <div className="h-full min-h-0 overflow-hidden rounded-xl border border-white/10 bg-[#050913]">
+                          <MonacoEditor
+                            value={effectiveSql}
+                            onChange={(value) => {
+                              setSqlText(value ?? "")
+                              setIsManualSql(true)
+                            }}
+                            defaultLanguage="sql"
+                            language="sql"
+                            theme="vs-dark"
+                            onMount={handleSqlEditorMount}
+                            options={{
+                              automaticLayout: true,
+                              fontSize: 14,
+                              minimap: { enabled: false },
+                              scrollBeyondLastLine: false,
+                              wordWrap: "on",
+                              smoothScrolling: true,
+                              lineNumbers: "on",
+                              renderLineHighlight: "all",
+                              tabSize: 2,
+                              padding: { top: 16, bottom: 16 },
+                              overviewRulerBorder: false,
+                              roundedSelection: false,
+                              cursorSmoothCaretAnimation: "on",
+                              suggestOnTriggerCharacters: true,
+                              quickSuggestions: true,
+                              parameterHints: { enabled: true },
+                              wordBasedSuggestions: "currentDocument",
+                            }}
+                            className="h-full min-h-45"
+                            loading={<div className="p-4 text-sm text-white/45">Carregando editor SQL...</div>}
+                          />
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
@@ -1421,17 +1646,69 @@ export function CreateViewModal({
                   </Card>
                 </div>
               </TabsContent>
+
+              <TabsContent value="result" className="mt-0 flex h-full min-h-0 overflow-hidden">
+                <Card className="flex min-h-0 min-w-0 flex-1 flex-col border-white/10 bg-white/4">
+                  <CardHeader className="shrink-0 pb-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <CardTitle className="text-base text-white">Resultado</CardTitle>
+                        <CardDescription className="text-white/50">
+                          Prévia dos dados retornados pelo SELECT da view.
+                        </CardDescription>
+                      </div>
+                      {previewDurationMs !== null ? (
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-white/45">
+                          {previewDurationMs} ms
+                        </span>
+                      ) : null}
+                    </div>
+                  </CardHeader>
+
+                  <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden pt-0">
+                    {!hasPreviewExecution ? (
+                      <div className="flex h-full min-h-[clamp(18rem,48dvh,28rem)] items-center justify-center rounded-2xl border border-dashed border-white/10 bg-[#07111d] px-6 text-center text-sm leading-6 text-white/50">
+                        Clique em Executar nas abas Selecionar Tabelas ou SQL Editor para visualizar o resultado aqui.
+                      </div>
+                    ) : executingPreview ? (
+                      <div className="flex h-full min-h-[clamp(18rem,48dvh,28rem)] items-center justify-center rounded-2xl border border-white/10 bg-[#07111d] text-sm text-white/55">
+                        <Loader2 className="mr-2 size-4 animate-spin text-sky-300" />
+                        Executando consulta...
+                      </div>
+                    ) : previewErrorMessage ? (
+                      <div className="rounded-2xl border border-rose-400/20 bg-rose-400/10 px-5 py-4 text-sm leading-6 text-rose-100">
+                        {previewErrorMessage}
+                      </div>
+                    ) : (
+                      <div className="flex h-full min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
+                        <QueryResults result={previewResult} showActions={false} />
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
             </div>
           </Tabs>
 
-          <div className="shrink-0 border-t border-white/10 px-5 py-4 lg:px-6">
+          <div className="shrink-0 border-t border-white/10 px-4 py-3 lg:px-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-xs text-white/45">
                 <Code2 className="size-3.5" />
                 {effectiveSql.split("\n").length} linhas no editor
               </div>
 
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="w-full min-w-56 max-w-xs sm:w-64">
+                  <Input
+                    value={viewName}
+                    onChange={(event) => {
+                      setViewName(event.target.value)
+                      setIsManualSql(false)
+                    }}
+                    placeholder="Informe o nome da view"
+                    className="h-11 w-full border-white/10 bg-white/5 text-white placeholder:text-white/30"
+                  />
+                </div>
                 <Button
                   type="button"
                   variant="outline"
@@ -1490,6 +1767,134 @@ function parseForeignKeySummary(value: string): ForeignKeySummary | null {
     onDelete: deleteMatch?.[1]?.trim() ?? "",
     onUpdate: updateMatch?.[1]?.trim() ?? "",
   }
+}
+
+function shouldAutoFillJoinCondition(value: string) {
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase()
+  return !normalized || normalized === "1 = 1"
+}
+
+function inferJoinConditionForTable(
+  tableIndex: number,
+  selectedTables: SelectedTable[],
+  tableDetailsById: Record<string, TableDetails | null>,
+  databaseType: SavedConnection["databaseType"]
+) {
+  const currentTable = selectedTables[tableIndex]
+  const currentDetails = tableDetailsById[currentTable.id]
+
+  for (let previousIndex = tableIndex - 1; previousIndex >= 0; previousIndex -= 1) {
+    const previousTable = selectedTables[previousIndex]
+    const previousDetails = tableDetailsById[previousTable.id]
+
+    const currentToPrevious = findForeignKeyRelation(currentTable, currentDetails, previousTable)
+    if (currentToPrevious.length) {
+      return buildJoinConditionFromForeignKeys(
+        previousIndex,
+        tableIndex,
+        currentToPrevious.map((foreignKey) => ({
+          leftColumnName: foreignKey.referencedColumnName,
+          rightColumnName: foreignKey.sourceColumn,
+        })),
+        databaseType
+      )
+    }
+
+    const previousToCurrent = findForeignKeyRelation(previousTable, previousDetails, currentTable)
+    if (previousToCurrent.length) {
+      return buildJoinConditionFromForeignKeys(
+        previousIndex,
+        tableIndex,
+        previousToCurrent.map((foreignKey) => ({
+          leftColumnName: foreignKey.sourceColumn,
+          rightColumnName: foreignKey.referencedColumnName,
+        })),
+        databaseType
+      )
+    }
+  }
+
+  return ""
+}
+
+function findForeignKeyRelation(
+  sourceTable: SelectedTable,
+  sourceDetails: TableDetails | null | undefined,
+  targetTable: SelectedTable
+) {
+  const matchingForeignKeys = (sourceDetails?.foreignKeys ?? [])
+    .map((value) => parseForeignKeySummary(value))
+    .filter((foreignKey): foreignKey is ForeignKeySummary => {
+      if (!foreignKey) {
+        return false
+      }
+
+      return (
+        Boolean(foreignKey.sourceColumn) &&
+        Boolean(foreignKey.referencedColumnName) &&
+        tableMatchesReference(targetTable, foreignKey.referencedTableName)
+      )
+    })
+
+  if (!matchingForeignKeys.length) {
+    return []
+  }
+
+  const firstConstraintName = matchingForeignKeys[0].constraintName
+  if (firstConstraintName) {
+    return matchingForeignKeys.filter((foreignKey) => foreignKey.constraintName === firstConstraintName)
+  }
+
+  return [matchingForeignKeys[0]]
+}
+
+function buildJoinConditionFromForeignKeys(
+  leftTableIndex: number,
+  rightTableIndex: number,
+  columnPairs: Array<{ leftColumnName: string; rightColumnName: string }>,
+  databaseType: SavedConnection["databaseType"]
+) {
+  const leftAlias = getTableAlias(leftTableIndex)
+  const rightAlias = getTableAlias(rightTableIndex)
+
+  return columnPairs
+    .map(
+      (pair) =>
+        `${leftAlias}.${quoteIdentifier(databaseType, pair.leftColumnName)} = ${rightAlias}.${quoteIdentifier(
+          databaseType,
+          pair.rightColumnName
+        )}`
+    )
+    .join(" AND ")
+}
+
+function tableMatchesReference(table: SourceTable, referencedTableName: string) {
+  const normalizedReference = normalizeIdentifierPath(referencedTableName)
+
+  if (!normalizedReference) {
+    return false
+  }
+
+  const candidates = [
+    table.tableName,
+    table.reference,
+    `${table.schemaName}.${table.tableName}`,
+  ].map((value) => normalizeIdentifierPath(value))
+
+  if (candidates.includes(normalizedReference)) {
+    return true
+  }
+
+  return !normalizedReference.includes(".") && normalizeIdentifierPath(table.tableName) === normalizedReference
+}
+
+function normalizeIdentifierPath(value: string) {
+  return value
+    .split(".")
+    .map((part) => part.trim().replace(/^[`"[]+|[`"\]]+$/g, ""))
+    .filter(Boolean)
+    .join(".")
+    .toLowerCase()
 }
 
 function findTableById(groups: Array<{ tables: SourceTable[] }>, tableId: string) {
@@ -1635,6 +2040,59 @@ function buildViewSql(
   clauses.push(";")
 
   return clauses.join("\n")
+}
+
+function getPreviewSqlFromViewSql(sqlText: string) {
+  const trimmedSql = sqlText.trim()
+
+  if (!trimmedSql) {
+    return ""
+  }
+
+  if (/^select\b/i.test(trimmedSql) || /^with\b/i.test(trimmedSql)) {
+    return trimmedSql
+  }
+
+  const createViewMatch = trimmedSql.match(/\bAS\s+((?:SELECT|WITH)\b[\s\S]*)$/i)
+  if (!createViewMatch?.[1]) {
+    return trimmedSql
+  }
+
+  return createViewMatch[1].trim()
+}
+
+function viewNameAlreadyExists(
+  database: DatabaseStructureDatabase | null | undefined,
+  schemaName: string,
+  viewName: string,
+  initialView: CreateViewModalProps["initialView"],
+  mode: CreateViewModalProps["mode"]
+) {
+  const normalizedViewName = normalizeObjectName(viewName)
+
+  if (!database || !normalizedViewName) {
+    return false
+  }
+
+  if (mode === "edit" && normalizeObjectName(initialView?.viewName ?? "") === normalizedViewName) {
+    return false
+  }
+
+  return getExistingViewNames(database, schemaName).some(
+    (existingViewName) => normalizeObjectName(existingViewName) === normalizedViewName
+  )
+}
+
+function getExistingViewNames(database: DatabaseStructureDatabase, schemaName: string) {
+  const schema = database.schemas.find((item) => normalizeObjectName(item.name) === normalizeObjectName(schemaName))
+  const groups = schema?.groups ?? database.groups
+  const viewsGroup = groups.find((group) => group.label === "Views")
+
+  return viewsGroup?.items ?? []
+}
+
+function normalizeObjectName(value: string) {
+  return value.trim().replace(/^[`"[]+|[`"\]]+$/g, "").toLowerCase()
 }
 
 function parseSelectedTablesFromSql(
@@ -1808,8 +2266,7 @@ function findTopLevelTableClauseMatches(sqlText: string) {
 
 function parseSelectedColumnsFromSql(
   sqlText: string,
-  selectedTables: SelectedTable[],
-  catalogTables: SourceTable[]
+  selectedTables: SelectedTable[]
 ) {
   const normalizedSql = sqlText
     .replace(/\/\*[\s\S]*?\*\//g, " ")
@@ -1827,7 +2284,7 @@ function parseSelectedColumnsFromSql(
 
   const selectItems = splitTopLevelSqlItems(selectBody)
   const nextColumnsByTable: Record<string, string[]> = {}
-  let matchedAnyColumn = false
+  const wildcardTableIds = new Set<string>()
 
   for (const rawItem of selectItems) {
     const item = rawItem.trim()
@@ -1842,12 +2299,7 @@ function parseSelectedColumnsFromSql(
 
     if (expression === "*") {
       selectedTables.forEach((table) => {
-        const catalogTable = findCatalogTableByReference(catalogTables, table.reference)
-        const columnNames = catalogTable?.columns.map((column) => column.name) ?? []
-        if (columnNames.length) {
-          nextColumnsByTable[table.id] = columnNames
-          matchedAnyColumn = true
-        }
+        wildcardTableIds.add(table.id)
       })
       continue
     }
@@ -1856,12 +2308,7 @@ function parseSelectedColumnsFromSql(
     if (starMatch) {
       const sourceTable = findSelectedTableBySqlReference(selectedTables, starMatch[1])
       if (sourceTable) {
-        const catalogTable = findCatalogTableByReference(catalogTables, sourceTable.reference)
-        const columnNames = catalogTable?.columns.map((column) => column.name) ?? []
-        if (columnNames.length) {
-          nextColumnsByTable[sourceTable.id] = columnNames
-          matchedAnyColumn = true
-        }
+        wildcardTableIds.add(sourceTable.id)
       }
       continue
     }
@@ -1872,7 +2319,6 @@ function parseSelectedColumnsFromSql(
       if (sourceTable) {
         const columnName = stripIdentifierQuotes(columnMatch[2])
         nextColumnsByTable[sourceTable.id] = [...(nextColumnsByTable[sourceTable.id] ?? []), columnName]
-        matchedAnyColumn = true
       }
       continue
     }
@@ -1880,15 +2326,13 @@ function parseSelectedColumnsFromSql(
     if (selectedTables.length === 1 && /^[`"\[\]\w]+$/.test(expression)) {
       const columnName = stripIdentifierQuotes(expression)
       nextColumnsByTable[selectedTables[0].id] = [...(nextColumnsByTable[selectedTables[0].id] ?? []), columnName]
-      matchedAnyColumn = true
     }
   }
 
-  if (!matchedAnyColumn) {
-    return null
+  return {
+    columnsByTable: nextColumnsByTable,
+    wildcardTableIds,
   }
-
-  return nextColumnsByTable
 }
 
 function extractTopLevelSelectBody(sqlText: string) {
@@ -2083,6 +2527,20 @@ function areSelectedColumnSelectionsEqual(
 
     return leftColumns.length === rightColumns.length && leftColumns.every((column, columnIndex) => column === rightColumns[columnIndex])
   })
+}
+
+function areWildcardTableIdsEqual(left: Set<string>, right: Set<string>) {
+  if (left.size !== right.size) {
+    return false
+  }
+
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false
+    }
+  }
+
+  return true
 }
 
 function parseFiltersFromSql(sqlText: string) {
@@ -2326,21 +2784,21 @@ function areViewFiltersEqual(left: ViewFilter[], right: ViewFilter[]) {
 }
 
 function getTableReferenceFromClauseText(clauseText: string) {
-  const segment = clauseText.replace(/\s+\bON\b[\s\S]*$/i, "").trim()
+  const segment = normalizeTableClauseSegment(clauseText.replace(/\s+\bON\b[\s\S]*$/i, ""))
   const match = segment.match(/^([^\s;()]+(?:\.[^\s;()]+)*)(?:\s+(?:AS\s+)?([^\s,()]+))?$/i)
 
   return match?.[1]?.trim() ?? null
 }
 
 function getTableAliasFromClauseText(clauseText: string, tableReference: string | null) {
-  const segment = clauseText.replace(/\s+\bON\b[\s\S]*$/i, "").trim()
+  const segment = normalizeTableClauseSegment(clauseText.replace(/\s+\bON\b[\s\S]*$/i, ""))
   const match = segment.match(/^([^\s;()]+(?:\.[^\s;()]+)*)(?:\s+(?:AS\s+)?([^\s,()]+))?$/i)
 
   if (!match) {
     return null
   }
 
-  const alias = match[2]?.trim() ?? ""
+  const alias = normalizeSqlIdentifierToken(match[2] ?? "")
   const normalizedReference = normalizeSqlIdentifier(tableReference ?? "")
   const normalizedAlias = normalizeSqlIdentifier(alias)
 
@@ -2357,7 +2815,24 @@ function getJoinConditionFromClauseText(clauseText: string, clauseKind: string) 
   }
 
   const onMatch = clauseText.match(/\bON\b\s+([\s\S]+)$/i)
-  return onMatch?.[1]?.trim() || "1 = 1"
+  return normalizeSqlStatementTail(onMatch?.[1] ?? "")
+    .replace(/\s+\b(?:WHERE|GROUP|ORDER|HAVING|LIMIT|OFFSET|UNION)\b[\s\S]*$/i, "")
+    .trim() || "1 = 1"
+}
+
+function normalizeTableClauseSegment(value: string) {
+  return normalizeSqlStatementTail(value)
+    .replace(/\s+\b(?:WHERE|GROUP|ORDER|HAVING|LIMIT|OFFSET|UNION)\b[\s\S]*$/i, "")
+    .trim()
+    .replace(/\s+/g, " ")
+}
+
+function normalizeSqlStatementTail(value: string) {
+  return value.trim().replace(/;+\s*$/, "").trim()
+}
+
+function normalizeSqlIdentifierToken(value: string) {
+  return normalizeSqlStatementTail(value).replace(/^[`"[]+|[`"\]]+$/g, "")
 }
 
 function getJoinTypeFromClauseKind(clauseKind: string): JoinType {
@@ -2436,7 +2911,7 @@ function getTableAlias(index: number) {
 }
 
 function getTableAliasForTable(table: SelectedTable, index: number) {
-  const alias = table.alias?.trim()
+  const alias = normalizeSqlIdentifierToken(table.alias ?? "")
   return alias || getTableAlias(index)
 }
 

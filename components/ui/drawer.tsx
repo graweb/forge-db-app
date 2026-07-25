@@ -51,8 +51,8 @@ const DrawerContent = React.forwardRef<
       }}
       className={cn(
         side === "bottom"
-          ? "fixed inset-x-0 bottom-0 top-auto z-50 h-[min(92dvh,52rem)] w-full translate-y-0 rounded-t-[2rem] border-t border-white/10 bg-[#0b1221] outline-none"
-          : "fixed inset-y-0 right-0 z-50 h-[100dvh] w-[min(100vw-1rem,72rem)] translate-x-0 rounded-l-[2rem] border-l border-white/10 bg-[#0b1221] outline-none",
+          ? "fixed inset-x-0 bottom-0 top-auto z-50 h-[min(96dvh,54rem)] w-full translate-y-0 rounded-t-2xl border-t border-white/10 bg-[#0b1221] outline-none sm:rounded-t-[2rem]"
+          : "fixed inset-y-0 right-0 z-50 h-[100dvh] w-[min(100vw,56rem)] translate-x-0 rounded-l-2xl border-l border-white/10 bg-[#0b1221] outline-none sm:rounded-l-[2rem]",
         side === "bottom"
           ? "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-10"
           : "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-right-10",

@@ -110,7 +110,7 @@ export type CreateViewModalProps = {
   schemaName?: string
   initialView?: ViewDetails | null
   onOpenChange: (open: boolean) => void
-  onSaved: (details: { message: string; details: string }) => void | Promise<void>
+  onSaved: (details: { message: string; details: string; viewName: string }) => void | Promise<void>
 }
 
 export type DeleteDatabaseModalProps = {

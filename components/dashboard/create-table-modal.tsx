@@ -2750,8 +2750,8 @@ export function CreateTableModal({
         side="bottom"
         className="overflow-hidden rounded-t-[2rem] border-t border-white/10 bg-[#0b1221] p-0 text-white shadow-[0_24px_90px_-35px_rgba(0,0,0,0.95)]"
       >
-        <div className="flex h-full flex-col overflow-hidden">
-          <div className="border-b border-white/10 px-6 py-5 pr-16">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden">
+          <div className="shrink-0 border-b border-white/10 px-4 py-4 pr-14 sm:px-6 sm:pr-16">
             <DialogHeader className="text-left">
               <div className="flex items-start gap-4">
                 <div className="rounded-xl border border-sky-400/20 bg-sky-400/10 p-2 text-sky-300">
@@ -2770,14 +2770,14 @@ export function CreateTableModal({
             </DialogHeader>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
             <Card className="border-white/10 bg-white/5">
               <CardHeader className="pb-4">
                 <CardTitle className="text-base text-white">Detalhes da tabela</CardTitle>
                 <CardDescription>Defina schema, nome e comentário antes de montar as colunas.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className="grid gap-4 lg:grid-cols-3">
                   <div className="space-y-2">
                     <Label htmlFor="table-schema">Schema</Label>
                     {isSingleSchema || isEditMode ? (
@@ -3600,34 +3600,36 @@ export function CreateTableModal({
             </Card>
           </div>
 
-          <div className="flex items-center justify-between border-t border-white/10 px-6 py-4">
-            <div className="flex items-center gap-2 text-xs text-white/45">
-              <Table2 className="size-3.5" />
-              {databaseName || activeConnection.connectionName}
-            </div>
-            <div className="flex gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                size="lg"
-                onClick={() => onOpenChange(false)}
-                className="border-white/10 bg-white/5 text-white hover:bg-white/10"
-                disabled={saving}
-              >
-                Cancelar
-              </Button>
-              <Button
-                type="button"
-                size="lg"
-                onClick={handleSave}
-                disabled={saving}
-                className={cn(
-                  "bg-linear-to-r from-[#3f7bff] to-[#2a61ef] text-white shadow-[0_18px_45px_-18px_rgba(59,113,255,0.9)] hover:from-[#4a84ff] hover:to-[#2457da]"
-                )}
-              >
-                {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-                {saving ? (isEditMode ? "Salvando..." : "Criando...") : isEditMode ? "Salvar alterações" : "Criar Tabela"}
-              </Button>
+          <div className="shrink-0 border-t border-white/10 px-4 py-3 sm:px-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-center gap-2 text-xs text-white/45">
+                <Table2 className="size-3.5" />
+                <span className="truncate">{databaseName || activeConnection.connectionName}</span>
+              </div>
+              <div className="flex flex-wrap gap-3 sm:justify-end">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  onClick={() => onOpenChange(false)}
+                  className="border-white/10 bg-white/5 text-white hover:bg-white/10"
+                  disabled={saving}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  size="lg"
+                  onClick={handleSave}
+                  disabled={saving}
+                  className={cn(
+                    "bg-linear-to-r from-[#3f7bff] to-[#2a61ef] text-white shadow-[0_18px_45px_-18px_rgba(59,113,255,0.9)] hover:from-[#4a84ff] hover:to-[#2457da]"
+                  )}
+                >
+                  {saving ? <Loader2 className="size-4 animate-spin" /> : null}
+                  {saving ? (isEditMode ? "Salvando..." : "Criando...") : isEditMode ? "Salvar alterações" : "Criar Tabela"}
+                </Button>
+              </div>
             </div>
           </div>
         </div>

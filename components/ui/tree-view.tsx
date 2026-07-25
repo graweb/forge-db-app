@@ -1,6 +1,7 @@
 "use client"
 
 import { ChevronDown, ChevronRight } from "lucide-react"
+import Image from "next/image"
 import { useEffect, useRef, useState } from "react"
 
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu"
@@ -145,7 +146,19 @@ function TreeNode({
         }}
         className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-left"
       >
-        {Icon ? <Icon className="size-4 shrink-0 text-sky-300/90 transition-colors group-hover:text-sky-200" /> : null}
+        {node.logoSrc ? (
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-white/70 bg-white">
+            <Image
+              src={node.logoSrc}
+              alt={node.logoAlt ?? ""}
+              width={20}
+              height={20}
+              className="size-5 object-contain"
+            />
+          </span>
+        ) : Icon ? (
+          <Icon className="size-4 shrink-0 text-sky-300/90 transition-colors group-hover:text-sky-200" />
+        ) : null}
         <span className="min-w-0 flex-1 overflow-hidden">
           <span className="block truncate">{node.label}</span>
           {node.subtitle ? (

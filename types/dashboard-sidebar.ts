@@ -54,7 +54,8 @@ export type DashboardSidebarProps = {
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
     schemaName: string,
-    tableName: string
+    tableName: string,
+    sourceKind?: "table" | "view"
   ) => void
   onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
@@ -65,13 +66,14 @@ export type DashboardSidebarProps = {
   onDisconnectConnection: () => void
   onSelectConnection: (connection: SavedConnection) => void
   onEditConnection: (connection: SavedConnection) => void
+  onDeleteConnection: (connection: SavedConnection) => void
   onRefreshStructure: () => void
   onRefreshDatabaseStructure: () => void
   onInsertText: (text: string) => void
   onOpenSqlInNewTab: (sql: string, title?: string) => void
   onPreviewTable: (tablePath: string) => Promise<void> | void
   onExecuteTable: (tablePath: string) => Promise<void> | void
-  onRunTableQuery: (tablePath: string) => Promise<void> | void
+  onRunTableQuery: (tablePath: string, databaseName?: string, sourceKind?: "table" | "view") => Promise<void> | void
 }
 
 export type DashboardSidebarActions = {
@@ -117,7 +119,8 @@ export type DashboardSidebarActions = {
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
     schemaName: string,
-    tableName: string
+    tableName: string,
+    sourceKind?: "table" | "view"
   ) => void
   onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
@@ -128,11 +131,12 @@ export type DashboardSidebarActions = {
   onDisconnectConnection: () => void
   onSelectConnection: (connection: SavedConnection) => void
   onEditConnection: (connection: SavedConnection) => void
+  onDeleteConnection: (connection: SavedConnection) => void
   onRefreshStructure: () => void
   onRefreshDatabaseStructure: () => void
   onInsertText: (text: string) => void
   onOpenSqlInNewTab: (sql: string, title?: string) => void
   onPreviewTable: (tablePath: string) => Promise<void> | void
   onExecuteTable: (tablePath: string) => Promise<void> | void
-  onRunTableQuery: (tablePath: string) => Promise<void> | void
+  onRunTableQuery: (tablePath: string, databaseName?: string, sourceKind?: "table" | "view") => Promise<void> | void
 }

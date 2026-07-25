@@ -11,6 +11,8 @@ export type TreeViewNode = {
   label: string
   subtitle?: string
   icon?: LucideIcon
+  logoSrc?: string
+  logoAlt?: string
   badge?: ReactNode
   actions?: ReactNode
   contextActions?: ReactNode

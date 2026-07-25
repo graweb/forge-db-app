@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic"
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
 import type { ReactNode } from "react"
-import { Filter, Play, Plus, Settings2, Sparkles, X } from "lucide-react"
+import { Download, Filter, Play, Plus, Sparkles, X } from "lucide-react"
 import type * as Monaco from "monaco-editor"
 
 import { Button } from "@/components/ui/button"
@@ -61,6 +61,7 @@ type EditorTab = {
   id: string
   title: string
   sql: string
+  objectKey?: string
 }
 
 function createEditorTabId() {
@@ -596,6 +597,58 @@ export const DashboardEditorWorkspace = forwardRef<
     setActiveEditorTabId(tabId)
   }, [])
 
+  const openOrSelectObjectQueryEditorTab = useCallback(
+    (sql: string, options: { title: string; databaseName: string; objectPath: string; sourceKind: "table" | "view" }) => {
+      const statement = sql.trim()
+      const objectKey = getObjectQueryKey(options.databaseName, options.objectPath, options.sourceKind)
+      const normalizedStatement = normalizeSqlForComparison(statement)
+      const existingTab = editorTabs.find(
+        (tab) =>
+          tab.objectKey === objectKey ||
+          normalizeSqlForComparison(tab.sql) === normalizedStatement
+      )
+      const tabId = existingTab?.id ?? createEditorTabId()
+
+      if (!statement) {
+        return activeEditorTabId
+      }
+
+      setEditorTabs((current) => {
+        const currentExistingTab = current.find(
+          (tab) =>
+            tab.objectKey === objectKey ||
+            normalizeSqlForComparison(tab.sql) === normalizedStatement
+        )
+
+        if (currentExistingTab) {
+          return current.map((tab) =>
+            tab.id === currentExistingTab.id
+              ? {
+                  ...tab,
+                  title: options.title,
+                  sql: statement,
+                  objectKey,
+                }
+              : tab
+          )
+        }
+
+        return [
+          ...current,
+          {
+            id: tabId,
+            title: options.title,
+            sql: statement,
+            objectKey,
+          },
+        ]
+      })
+      setActiveEditorTabId(tabId)
+      return tabId
+    },
+    [activeEditorTabId, editorTabs]
+  )
+
   useEffect(() => {
     autocompleteContextRef.current = {
       connection,
@@ -615,6 +668,10 @@ export const DashboardEditorWorkspace = forwardRef<
 
       if (options?.insertIntoEditor) {
         syncEditorSql(statement)
+      }
+
+      if (options?.databaseName && availableDatabaseNames.includes(options.databaseName)) {
+        setSelectedDatabaseName(options.databaseName)
       }
 
       setExecuting(true)
@@ -657,6 +714,8 @@ export const DashboardEditorWorkspace = forwardRef<
               message: payload.details || payload.message || "Não foi possível executar a consulta.",
               durationMs,
               result: null,
+              sourceKind: options?.sourceKind ?? "query",
+              editorTabId: options?.editorTabId ?? activeEditorTabId,
             }
           : {
               id: createQueryTabId(),
@@ -672,6 +731,8 @@ export const DashboardEditorWorkspace = forwardRef<
                 affectedRows: payload.affectedRows,
                 message: payload.message,
               },
+              sourceKind: options?.sourceKind ?? "query",
+              editorTabId: options?.editorTabId ?? activeEditorTabId,
             }
 
         setQueryTabs((current) => {
@@ -695,7 +756,7 @@ export const DashboardEditorWorkspace = forwardRef<
         setExecuting(false)
       }
     }
-  }, [connection.id, effectiveSelectedDatabaseName, activeEditorTabId, syncEditorSql])
+  }, [connection.id, effectiveSelectedDatabaseName, activeEditorTabId, syncEditorSql, availableDatabaseNames])
 
   useImperativeHandle(
     ref,
@@ -721,6 +782,7 @@ export const DashboardEditorWorkspace = forwardRef<
           title: `Preview: ${getLeafName(tablePath)}`,
           insertIntoEditor: true,
           databaseName: effectiveSelectedDatabaseName,
+          sourceKind: "table",
         })
       },
       executeTable: async (tablePath: string) => {
@@ -728,20 +790,141 @@ export const DashboardEditorWorkspace = forwardRef<
           title: getLeafName(tablePath),
           insertIntoEditor: true,
           databaseName: effectiveSelectedDatabaseName,
+          sourceKind: "table",
         })
       },
-      runTableQuery: async (tablePath: string) => {
-        await executeSqlTextRef.current(`SELECT *\nFROM ${tablePath};`, {
-          title: getLeafName(tablePath),
-          insertIntoEditor: true,
-          databaseName: effectiveSelectedDatabaseName,
+      runTableQuery: async (tablePath: string, databaseName?: string, sourceKind = "table") => {
+        const resolvedDatabaseName = databaseName ?? effectiveSelectedDatabaseName
+        const statement = `SELECT *\nFROM ${tablePath};`
+        const title = getLeafName(tablePath)
+
+        const editorTabId = openOrSelectObjectQueryEditorTab(statement, {
+          title,
+          databaseName: resolvedDatabaseName,
+          objectPath: tablePath,
+          sourceKind,
         })
+
+        await executeSqlTextRef.current(statement, {
+          title,
+          databaseName: resolvedDatabaseName,
+          sourceKind,
+          editorTabId,
+        })
+      },
+      clearDeletedObjectQuery: (objectPath, objectName, sourceKind, databaseName) => {
+        const defaultSql = getDefaultQuery(connection.databaseType)
+        const objectKey = databaseName
+          ? getObjectQueryKey(databaseName, objectPath, sourceKind)
+          : null
+        const removedEditorTabIds = new Set(
+          editorTabs
+            .filter(
+              (tab) =>
+                (objectKey && tab.objectKey === objectKey) ||
+                sqlReferencesObject(tab.sql, objectPath, objectName)
+            )
+            .map((tab) => tab.id)
+        )
+
+        setEditorTabs((current) => {
+          const nextTabs = current.filter((tab) => !removedEditorTabIds.has(tab.id))
+
+          if (nextTabs.length) {
+            if (removedEditorTabIds.has(activeEditorTabId)) {
+              const removedIndex = current.findIndex((tab) => tab.id === activeEditorTabId)
+              const fallbackTab =
+                nextTabs[Math.max(0, removedIndex - 1)] ?? nextTabs[removedIndex] ?? nextTabs[0]
+              setActiveEditorTabId(fallbackTab.id)
+            }
+
+            return nextTabs
+          }
+
+          const tabId = createEditorTabId()
+          setActiveEditorTabId(tabId)
+          return [
+            {
+              id: tabId,
+              title: "Query 1.sql",
+              sql: defaultSql,
+            },
+          ]
+        })
+
+        if (removedEditorTabIds.has(activeEditorTabId)) {
+          editorRef.current?.setValue(defaultSql)
+        }
+
+        setQueryTabs((current) => {
+          const nextTabs = current.filter(
+            (tab) =>
+              !removedEditorTabIds.has(tab.editorTabId ?? "") &&
+              !queryTabReferencesDeletedObject(tab, objectPath, objectName, sourceKind)
+          )
+          const removedActiveTab = Boolean(
+            activeTabId && current.some((tab) => tab.id === activeTabId && !nextTabs.includes(tab))
+          )
+
+          if (removedActiveTab) {
+            setActiveTabId(nextTabs[0]?.id ?? null)
+          }
+
+          if (!nextTabs.length) {
+            setActiveTabId(null)
+          }
+
+          return nextTabs
+        })
+
+        if (removedEditorTabIds.size) {
+          setLastDurationMs(null)
+          setSummaryTone("neutral")
+          setExecutionSummary(
+            sourceKind === "view"
+              ? "A view foi excluída. A aba da consulta e os resultados foram fechados."
+              : "A tabela foi excluída. A aba da consulta e os resultados foram fechados."
+          )
+        }
       },
     }),
-    [effectiveSelectedDatabaseName, openSqlInNewEditorTab, syncEditorSql]
+    [
+      activeEditorTabId,
+      activeTabId,
+      connection.databaseType,
+      editorTabs,
+      effectiveSelectedDatabaseName,
+      openOrSelectObjectQueryEditorTab,
+      openSqlInNewEditorTab,
+      syncEditorSql,
+    ]
   )
 
   const activeTab = queryTabs.find((tab) => tab.id === activeTabId) ?? queryTabs[0] ?? null
+
+  async function handleExportActiveResult() {
+    if (!activeTab?.result?.rows.length) {
+      return
+    }
+
+    const XLSX = await import("xlsx")
+    const exportColumns = activeTab.result.columns.length
+      ? activeTab.result.columns
+      : Object.keys(activeTab.result.rows[0] ?? {})
+    const worksheet = XLSX.utils.json_to_sheet(
+      activeTab.result.rows.map((row) =>
+        Object.fromEntries(
+          exportColumns.map((column) => [column, row[column] ?? null])
+        )
+      ),
+      { header: exportColumns }
+    )
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Resultado")
+    XLSX.writeFile(workbook, `${sanitizeExportFileName(activeTab.title)}.xlsx`, {
+      compression: true,
+    })
+  }
 
   const handleCloseTab = (tabId: string) => {
     setQueryTabs((current) => {
@@ -752,6 +935,41 @@ export const DashboardEditorWorkspace = forwardRef<
         const fallbackTab = nextTabs[Math.max(0, removedIndex - 1)] ?? nextTabs[removedIndex] ?? null
 
         setActiveTabId(fallbackTab?.id ?? null)
+      }
+
+      return nextTabs
+    })
+  }
+
+  const handleCloseEditorTab = (tabId: string) => {
+    if (editorTabs.length <= 1) {
+      return
+    }
+
+    setEditorTabs((current) => {
+      const nextTabs = current.filter((tab) => tab.id !== tabId)
+
+      if (activeEditorTabId === tabId) {
+        const removedIndex = current.findIndex((tab) => tab.id === tabId)
+        const fallbackTab = nextTabs[Math.max(0, removedIndex - 1)] ?? nextTabs[removedIndex] ?? nextTabs[0] ?? null
+        setActiveEditorTabId(fallbackTab?.id ?? "")
+      }
+
+      return nextTabs
+    })
+
+    setQueryTabs((current) => {
+      const nextTabs = current.filter((tab) => tab.editorTabId !== tabId)
+      const removedActiveTab = Boolean(
+        activeTabId && current.some((tab) => tab.id === activeTabId && tab.editorTabId === tabId)
+      )
+
+      if (removedActiveTab) {
+        setActiveTabId(nextTabs[0]?.id ?? null)
+      }
+
+      if (!nextTabs.length) {
+        setActiveTabId(null)
       }
 
       return nextTabs
@@ -812,6 +1030,8 @@ export const DashboardEditorWorkspace = forwardRef<
             message: payload.details || payload.message || "Não foi possível executar a consulta.",
             durationMs,
             result: null,
+            sourceKind: "query",
+            editorTabId: activeEditorTabId,
           })
           continue
         }
@@ -832,6 +1052,8 @@ export const DashboardEditorWorkspace = forwardRef<
           message: payload.message,
           durationMs,
           result,
+          sourceKind: "query",
+          editorTabId: activeEditorTabId,
         })
       }
 
@@ -1029,13 +1251,13 @@ export const DashboardEditorWorkspace = forwardRef<
 
   return (
     <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden border-x border-white/10 bg-[linear-gradient(180deg,#0b1221_0%,#091019_100%)]">
-      <div className="flex items-center gap-2 overflow-x-auto border-b border-white/10 px-4 py-3">
-        <div className="min-w-56">
+      <div className="flex items-center gap-2 overflow-x-auto border-b border-white/10 px-3 py-2.5 lg:px-4">
+        <div className="min-w-44 sm:min-w-56">
           <Select
             value={effectiveSelectedDatabaseName}
             onValueChange={(value) => setSelectedDatabaseName(value)}
           >
-            <SelectTrigger className="h-9 min-w-56 border-white/10 bg-white/4 text-white hover:bg-white/8">
+            <SelectTrigger className="h-9 min-w-44 border-white/10 bg-white/4 text-white hover:bg-white/8 sm:min-w-56">
               <SelectValue placeholder="Selecionar banco" />
             </SelectTrigger>
             <SelectContent>
@@ -1086,7 +1308,7 @@ export const DashboardEditorWorkspace = forwardRef<
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="border-b border-white/10 px-4 pt-3">
+        <div className="border-b border-white/10 px-3 pt-2 lg:px-4">
           <div className="flex items-center gap-2 overflow-x-auto">
             {editorTabs.map((tab) => (
               <Tab
@@ -1095,16 +1317,7 @@ export const DashboardEditorWorkspace = forwardRef<
                 onClick={() => setActiveEditorTabId(tab.id)}
                 onClose={
                   editorTabs.length > 1
-                    ? () => {
-                        setEditorTabs((current) => {
-                          const nextTabs = current.filter((item) => item.id !== tab.id)
-                          if (activeEditorTabId === tab.id) {
-                            const nextActive = nextTabs[nextTabs.length - 1] ?? nextTabs[0] ?? null
-                            setActiveEditorTabId(nextActive?.id ?? "")
-                          }
-                          return nextTabs
-                        })
-                      }
+                    ? () => handleCloseEditorTab(tab.id)
                     : undefined
                 }
               >
@@ -1126,8 +1339,8 @@ export const DashboardEditorWorkspace = forwardRef<
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className="shrink-0 border-b border-white/10 px-4 py-4">
-            <div className="h-56 min-h-0 rounded-2xl border border-white/10 bg-[#07111d] p-3 shadow-[0_16px_50px_-34px_rgba(0,0,0,0.95)]">
+          <div className="shrink-0 border-b border-white/10 px-3 py-3 lg:px-4">
+            <div className="h-[clamp(10rem,28dvh,14rem)] min-h-0 rounded-2xl border border-white/10 bg-[#07111d] p-2 shadow-[0_16px_50px_-34px_rgba(0,0,0,0.95)] sm:p-3">
               <div className="h-full min-h-0 overflow-hidden rounded-xl border border-white/10 bg-[#050913]">
                 <MonacoEditor
                   value={activeEditorSql}
@@ -1183,13 +1396,18 @@ export const DashboardEditorWorkspace = forwardRef<
                   As execuções vão abrir abas com o nome da tabela encontrada na query.
                 </div>
               )}
-              <div className="ml-auto flex items-center gap-2 text-xs text-white/45">
-                <Settings2 className="size-4" />
+              <button
+                type="button"
+                onClick={() => void handleExportActiveResult()}
+                disabled={!activeTab?.result?.rows.length}
+                className="ml-auto flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-white/45 transition-colors hover:bg-white/5 hover:text-white disabled:pointer-events-none disabled:opacity-35"
+              >
+                <Download className="size-4" />
                 Exportar
-              </div>
+              </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-hidden p-4">
+            <div className="min-h-0 flex-1 overflow-hidden p-3 lg:p-4">
               {executing ? (
                 <QueryResultsLoading />
               ) : activeTab ? (
@@ -1227,7 +1445,7 @@ function QueryTabPanel({ tab }: { tab: QueryExecutionTab }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <QueryResults key={tab.id} result={tab.result} />
+      <QueryResults key={tab.id} result={tab.result} showActions={tab.sourceKind === "table"} />
     </div>
   )
 }
@@ -1369,6 +1587,69 @@ function insertTextIntoEditor(editor: Monaco.editor.IStandaloneCodeEditor, text:
 function getLeafName(tablePath: string) {
   const parts = tablePath.split(".").map((part) => part.trim()).filter(Boolean)
   return parts.at(-1) ?? tablePath
+}
+
+function queryTabReferencesDeletedObject(
+  tab: QueryExecutionTab,
+  objectPath: string,
+  objectName: string,
+  sourceKind: "table" | "view"
+) {
+  if (sqlReferencesObject(tab.sql, objectPath, objectName)) {
+    return true
+  }
+
+  return tab.sourceKind === sourceKind && normalizeObjectToken(tab.title) === normalizeObjectToken(objectName)
+}
+
+function sqlReferencesObject(sqlText: string, objectPath: string, objectName: string) {
+  const targets = new Set(
+    [objectPath, objectName, getLeafName(objectPath)]
+      .map((value) => normalizeObjectToken(value))
+      .filter(Boolean)
+  )
+
+  if (!targets.size) {
+    return false
+  }
+
+  return parseAutocompleteSources(sqlText).some((source) => {
+    const sourceReference = normalizeObjectToken(source.reference)
+    const sourceLeaf = normalizeObjectToken(getLeafName(source.reference))
+    return targets.has(sourceReference) || targets.has(sourceLeaf)
+  })
+}
+
+function normalizeObjectToken(value: string) {
+  return normalizeQualifiedIdentifier(value)
+    .replace(/;+\s*$/, "")
+    .trim()
+    .toLowerCase()
+}
+
+function getObjectQueryKey(databaseName: string, objectPath: string, sourceKind: "table" | "view") {
+  return [sourceKind, normalizeObjectToken(databaseName), normalizeObjectToken(objectPath)]
+    .filter(Boolean)
+    .join(":")
+}
+
+function normalizeSqlForComparison(value: string) {
+  return value
+    .trim()
+    .replace(/;+\s*$/, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase()
+}
+
+function sanitizeExportFileName(value: string) {
+  const normalized = value
+    .trim()
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+
+  return normalized || "resultado-consulta"
 }
 
 function upsertExecutionTabs(

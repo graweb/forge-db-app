@@ -79,7 +79,7 @@ export function DeleteTableModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="overflow-hidden rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(14,19,35,0.98),rgba(9,14,27,0.98))] p-0 text-white shadow-[0_24px_90px_-35px_rgba(0,0,0,0.95)]">
-        <div className="max-h-[calc(100vh-2rem)] overflow-y-auto">
+        <div className="max-h-[calc(100dvh-1rem)] overflow-y-auto">
           <div className="border-b border-white/10 px-5 py-4 pr-16">
             <DialogHeader className="text-left">
               <DialogTitle>Excluir tabela</DialogTitle>

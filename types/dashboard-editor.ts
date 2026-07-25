@@ -20,11 +20,19 @@ export type DashboardEditorWorkspaceHandle = {
       title?: string
       databaseName?: string
       insertIntoEditor?: boolean
+      sourceKind?: "table" | "view" | "query"
+      editorTabId?: string
     }
   ) => Promise<void>
   previewTable: (tablePath: string) => Promise<void>
   executeTable: (tablePath: string) => Promise<void>
-  runTableQuery: (tablePath: string) => Promise<void>
+  runTableQuery: (tablePath: string, databaseName?: string, sourceKind?: "table" | "view") => Promise<void>
+  clearDeletedObjectQuery: (
+    objectPath: string,
+    objectName: string,
+    sourceKind: "table" | "view",
+    databaseName?: string
+  ) => void
 }
 
 export type QueryTabStatus = "success" | "error"
@@ -37,6 +45,8 @@ export type QueryExecutionTab = {
   message: string
   durationMs: number
   result: QueryExecutionResult | null
+  sourceKind?: "table" | "view" | "query"
+  editorTabId?: string
 }
 
 export type SqlAutocompleteSuggestion = {
@@ -69,6 +79,8 @@ export type ExecuteSqlOptions = {
   title?: string
   databaseName?: string
   insertIntoEditor?: boolean
+  sourceKind?: "table" | "view" | "query"
+  editorTabId?: string
 }
 
 export type OpenSqlTabOptions = {
@@ -89,6 +101,7 @@ export type SqlStatementBlock = {
 
 export type QueryResultsProps = {
   result: QueryExecutionResult | null
+  showActions?: boolean
 }
 
 export type SortDirection = "asc" | "desc"

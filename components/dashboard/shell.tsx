@@ -1,10 +1,10 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { AlertTriangle } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 
-import type { DatabaseStructureDatabase, SavedConnection } from "@/types/connections"
+import type { DatabaseStructure, DatabaseStructureDatabase, SavedConnection } from "@/types/connections"
 import type { ViewDetails } from "@/types/connections"
 import type {
   DashboardEditorWorkspaceHandle,
@@ -19,6 +19,7 @@ import { CreateTableModal } from "./create-table-modal"
 import { DeleteTableModal } from "./delete-table-modal"
 import { DeleteViewModal } from "./delete-view-modal"
 import { DeleteDatabaseModal } from "./delete-database-modal"
+import { DeleteConnectionModal } from "./delete-connection-modal"
 import { DashboardEditorWorkspace } from "./editor-workspace"
 import { DashboardSidebar } from "./sidebar"
 import { DashboardStatusbar } from "./statusbar"
@@ -87,6 +88,8 @@ export function DashboardShell({
   const [userTargetSchemaName, setUserTargetSchemaName] = useState<string>("")
   const [isDeleteTableModalOpen, setIsDeleteTableModalOpen] = useState(false)
   const [editingConnection, setEditingConnection] = useState<SavedConnection | null>(null)
+  const [deleteConnectionTarget, setDeleteConnectionTarget] = useState<SavedConnection | null>(null)
+  const [isDeleteConnectionModalOpen, setIsDeleteConnectionModalOpen] = useState(false)
   const [databaseTargetConnection, setDatabaseTargetConnection] = useState<SavedConnection | null>(null)
   const [databaseTarget, setDatabaseTarget] = useState<DatabaseStructureDatabase | null>(null)
   const [deleteTargetConnection, setDeleteTargetConnection] = useState<SavedConnection | null>(null)
@@ -96,11 +99,45 @@ export function DashboardShell({
   const [isDeleteDatabaseModalOpen, setIsDeleteDatabaseModalOpen] = useState(false)
   const [workspaceSessionKey, setWorkspaceSessionKey] = useState(0)
   const [treeResetToken, setTreeResetToken] = useState(0)
+  const [localViewAdditions, setLocalViewAdditions] = useState<
+    Record<string, Array<{ databaseName: string; schemaName: string; viewName: string }>>
+  >({})
+  const [localObjectRemovals, setLocalObjectRemovals] = useState<
+    Record<string, Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views"; objectName: string }>>
+  >({})
   const [notice, setNotice] = useState<ShellNotice | null>(null)
   const editorWorkspaceRef = useRef<DashboardEditorWorkspaceHandle | null>(null)
   const noticeTimerRef = useRef<number | null>(null)
   const router = useRouter()
   const pathname = usePathname()
+  const localDatabaseStructuresById = useMemo(
+    () =>
+      Object.entries(localViewAdditions).reduce((structures, [connectionId, additions]) => {
+        const structure = structures[connectionId]
+
+        if (!structure || !additions.length) {
+          return structures
+        }
+
+        return {
+          ...structures,
+          [connectionId]: additions.reduce(
+            (nextStructure, addition) =>
+              addViewToDatabaseStructure(
+                nextStructure,
+                addition.databaseName,
+                addition.schemaName,
+                addition.viewName
+              ),
+            structure
+          ),
+        }
+      }, applyLocalObjectRemovals(databaseStructuresById, localObjectRemovals)),
+    [databaseStructuresById, localViewAdditions, localObjectRemovals]
+  )
+  const activeDatabaseStructure = connection
+    ? localDatabaseStructuresById[connection.id] ?? databaseStructure
+    : databaseStructure
 
   useEffect(() => {
     return () => {
@@ -123,8 +160,109 @@ export function DashboardShell({
     }, 4500)
   }
 
+  function addViewToLocalStructure({
+    connectionId,
+    databaseName,
+    schemaName,
+    viewName,
+  }: {
+    connectionId: string
+    databaseName: string
+    schemaName: string
+    viewName: string
+  }) {
+    const normalizedViewName = viewName.trim()
+
+    if (!normalizedViewName) {
+      return
+    }
+
+    setLocalViewAdditions((current) => {
+      const additions = current[connectionId] ?? []
+      const alreadyAdded = additions.some(
+        (addition) =>
+          addition.databaseName === databaseName &&
+          addition.schemaName === schemaName &&
+          addition.viewName === normalizedViewName
+      )
+
+      if (alreadyAdded) {
+        return current
+      }
+
+      return {
+        ...current,
+        [connectionId]: [...additions, { databaseName, schemaName, viewName: normalizedViewName }],
+      }
+    })
+  }
+
+  function removeObjectFromLocalStructure({
+    connectionId,
+    databaseName,
+    schemaName,
+    groupLabel,
+    objectName,
+  }: {
+    connectionId: string
+    databaseName: string
+    schemaName: string
+    groupLabel: "Tabelas" | "Views"
+    objectName: string
+  }) {
+    const normalizedObjectName = objectName.trim()
+
+    if (!normalizedObjectName) {
+      return
+    }
+
+    if (groupLabel === "Views") {
+      setLocalViewAdditions((current) => {
+        const additions = current[connectionId] ?? []
+        const nextAdditions = additions.filter(
+          (addition) =>
+            addition.databaseName !== databaseName ||
+            addition.schemaName !== schemaName ||
+            addition.viewName !== normalizedObjectName
+        )
+
+        if (nextAdditions.length === additions.length) {
+          return current
+        }
+
+        return {
+          ...current,
+          [connectionId]: nextAdditions,
+        }
+      })
+    }
+
+    setLocalObjectRemovals((current) => {
+      const removals = current[connectionId] ?? []
+      const alreadyRemoved = removals.some(
+        (removal) =>
+          removal.databaseName === databaseName &&
+          removal.schemaName === schemaName &&
+          removal.groupLabel === groupLabel &&
+          removal.objectName === normalizedObjectName
+      )
+
+      if (alreadyRemoved) {
+        return current
+      }
+
+      return {
+        ...current,
+        [connectionId]: [
+          ...removals,
+          { databaseName, schemaName, groupLabel, objectName: normalizedObjectName },
+        ],
+      }
+    })
+  }
+
   return (
-    <main className="relative h-dvh overflow-hidden bg-[linear-gradient(180deg,#060a11_0%,#080e17_100%)] text-white">
+    <main className="relative h-dvh min-w-0 overflow-hidden bg-[linear-gradient(180deg,#060a11_0%,#080e17_100%)] text-white">
       {notice ? (
         <div className="pointer-events-none absolute left-1/2 top-4 z-50 flex w-full max-w-2xl -translate-x-1/2 px-4">
           <div className="pointer-events-auto flex w-full items-start gap-3 rounded-2xl border border-amber-400/20 bg-[#111827]/95 px-4 py-3 shadow-[0_18px_60px_-30px_rgba(0,0,0,0.9)] backdrop-blur-md">
@@ -171,7 +309,7 @@ export function DashboardShell({
 
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
           <div
-            className={`min-h-0 overflow-hidden lg:h-full lg:w-[320px] lg:flex-none ${
+            className={`min-h-0 overflow-hidden lg:h-full lg:w-[clamp(17rem,22vw,20rem)] lg:flex-none ${
               activePane === "connections" ? "flex-1" : "hidden lg:block"
             }`}
           >
@@ -179,7 +317,7 @@ export function DashboardShell({
               activeConnectionId={hasActiveConnection ? connection?.id ?? null : null}
               connections={connections}
               connectionAvailabilityById={connectionAvailabilityById}
-              databaseStructuresById={databaseStructuresById}
+              databaseStructuresById={localDatabaseStructuresById}
               treeResetToken={treeResetToken}
               onAddConnection={() => {
                 setEditingConnection(null)
@@ -379,7 +517,7 @@ export function DashboardShell({
                 })
                 setIsDeleteTableModalOpen(true)
               }}
-              onSelect100Rows={(connectionToUse, databaseToUse, schemaName, tableName) => {
+              onSelect100Rows={(connectionToUse, databaseToUse, schemaName, tableName, sourceKind = "table") => {
                 const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
 
                 const tablePath =
@@ -394,6 +532,7 @@ export function DashboardShell({
                   title: `Selecionar 100 linhas: ${tableName}`,
                   databaseName,
                   insertIntoEditor: true,
+                  sourceKind,
                 })
               }}
               onEditDatabase={(connectionToUse, databaseToEdit) => {
@@ -442,6 +581,10 @@ export function DashboardShell({
                 setEditingConnection(connectionToEdit)
                 setIsConnectionModalOpen(true)
               }}
+              onDeleteConnection={(connectionToDelete) => {
+                setDeleteConnectionTarget(connectionToDelete)
+                setIsDeleteConnectionModalOpen(true)
+              }}
               onRefreshStructure={() => {
                 router.refresh()
                 showNotice({
@@ -472,9 +615,9 @@ export function DashboardShell({
                 setActivePane("editor")
                 return editorWorkspaceRef.current?.executeTable(tablePath)
               }}
-              onRunTableQuery={(tablePath) => {
+              onRunTableQuery={(tablePath, databaseName, sourceKind) => {
                 setActivePane("editor")
-                return editorWorkspaceRef.current?.runTableQuery(tablePath)
+                return editorWorkspaceRef.current?.runTableQuery(tablePath, databaseName, sourceKind)
               }}
             />
           </div>
@@ -483,12 +626,12 @@ export function DashboardShell({
               activePane === "editor" ? "flex" : "hidden lg:flex"
             }`}
           >
-            {hasActiveConnection && connection && databaseStructure ? (
+            {hasActiveConnection && connection && activeDatabaseStructure ? (
               <DashboardEditorWorkspace
                 key={`${connection.id}-${workspaceSessionKey}`}
                 ref={editorWorkspaceRef}
                 connection={connection}
-                databaseStructure={databaseStructure}
+                databaseStructure={activeDatabaseStructure}
               />
             ) : (
               <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_top,rgba(72,116,255,0.12),transparent_40%),linear-gradient(180deg,#060a11_0%,#080e17_100%)] px-6">
@@ -536,6 +679,41 @@ export function DashboardShell({
         }}
         onSaved={() => {
           router.refresh()
+        }}
+      />
+
+      <DeleteConnectionModal
+        open={isDeleteConnectionModalOpen}
+        connection={deleteConnectionTarget}
+        onOpenChange={(open) => {
+          setIsDeleteConnectionModalOpen(open)
+          if (!open) {
+            setDeleteConnectionTarget(null)
+          }
+        }}
+        onDeleted={async () => {
+          const deletedConnectionId = deleteConnectionTarget?.id
+
+          setIsDeleteConnectionModalOpen(false)
+          setDeleteConnectionTarget(null)
+
+          if (deletedConnectionId && connection?.id === deletedConnectionId) {
+            setTreeResetToken((current) => current + 1)
+            setWorkspaceSessionKey((current) => current + 1)
+            router.replace("/")
+            router.refresh()
+            showNotice({
+              title: "Conexão removida",
+              message: "A conexão foi removida e o editor voltou para a tela inicial.",
+            })
+            return
+          }
+
+          router.refresh()
+          showNotice({
+            title: "Conexão removida",
+            message: "A lista de conexões foi atualizada.",
+          })
         }}
       />
 
@@ -640,14 +818,24 @@ export function DashboardShell({
             setViewModalMode("create")
           }
         }}
-        onSaved={async ({ message, details }) => {
+        onSaved={async ({ message, details, viewName }) => {
+          if (viewModalMode === "create" && viewTargetConnection && viewTargetDatabase) {
+            addViewToLocalStructure({
+              connectionId: viewTargetConnection.id,
+              databaseName: viewTargetDatabase.name,
+              schemaName: viewTargetSchema,
+              viewName,
+            })
+          } else {
+            router.refresh()
+          }
+
           setIsViewModalOpen(false)
           setViewTargetConnection(null)
           setViewTargetDatabase(null)
           setViewTargetSchema("")
           setViewTarget(null)
           setViewModalMode("create")
-          router.refresh()
           showNotice({
             title: message,
             message: details,
@@ -691,12 +879,28 @@ export function DashboardShell({
           }
         }}
         onDeleted={async () => {
+          if (tableTarget) {
+            setActivePane("editor")
+            editorWorkspaceRef.current?.clearDeletedObjectQuery(
+              tableTarget.tableName,
+              tableTarget.tableName,
+              "table",
+              tableTarget.database.name
+            )
+            removeObjectFromLocalStructure({
+              connectionId: tableTarget.connection.id,
+              databaseName: tableTarget.database.name,
+              schemaName: tableTarget.schemaName,
+              groupLabel: "Tabelas",
+              objectName: tableTarget.tableName,
+            })
+          }
+
           setIsDeleteTableModalOpen(false)
           setTableTarget(null)
-          router.refresh()
           showNotice({
             title: "Tabela excluída",
-            message: "A estrutura foi atualizada após a exclusão da tabela.",
+            message: "A tabela foi removida da lista sem fechar o tree view.",
           })
         }}
       />
@@ -742,26 +946,208 @@ export function DashboardShell({
             return
           }
 
-          const databaseName = getEffectiveTableDatabaseName(
-            deleteViewTarget.connection,
-            deleteViewTarget.database
-          )
-
           setActivePane("editor")
-          await editorWorkspaceRef.current?.executeSqlText(`DROP VIEW ${deleteViewTarget.viewPath};`, {
-            title: `Excluir view: ${deleteViewTarget.viewName}`,
-            databaseName,
-            insertIntoEditor: true,
+          editorWorkspaceRef.current?.clearDeletedObjectQuery(
+            deleteViewTarget.viewPath,
+            deleteViewTarget.viewName,
+            "view",
+            deleteViewTarget.database.name
+          )
+          removeObjectFromLocalStructure({
+            connectionId: deleteViewTarget.connection.id,
+            databaseName: deleteViewTarget.database.name,
+            schemaName: deleteViewTarget.schemaName,
+            groupLabel: "Views",
+            objectName: deleteViewTarget.viewName,
           })
           setIsDeleteViewModalOpen(false)
           setDeleteViewTarget(null)
-          router.refresh()
           showNotice({
             title: "View excluída",
-            message: "A estrutura foi atualizada após a exclusão da view.",
+            message: "A view foi removida da lista sem fechar o tree view.",
           })
         }}
       />
     </main>
   )
+}
+
+function addViewToDatabaseStructure(
+  structure: DatabaseStructure,
+  databaseName: string,
+  schemaName: string,
+  viewName: string
+): DatabaseStructure {
+  return {
+    ...structure,
+    databases: structure.databases.map((database) => {
+      if (database.name !== databaseName) {
+        return database
+      }
+
+      return {
+        ...database,
+        groups: addViewToGroups(database.groups, viewName),
+        schemas: database.schemas.map((schema) => {
+          if (schemaName && schema.name !== schemaName) {
+            return schema
+          }
+
+          return {
+            ...schema,
+            groups: addViewToGroups(schema.groups, viewName),
+          }
+        }),
+      }
+    }),
+    groups: addViewToGroups(structure.groups, viewName),
+    schemas: structure.schemas.map((schema) => {
+      if (schemaName && schema.name !== schemaName) {
+        return schema
+      }
+
+      return {
+        ...schema,
+        groups: addViewToGroups(schema.groups, viewName),
+      }
+    }),
+  }
+}
+
+function applyLocalObjectRemovals(
+  structuresById: Record<string, DatabaseStructure>,
+  removalsByConnectionId: Record<
+    string,
+    Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views"; objectName: string }>
+  >
+) {
+  return Object.entries(removalsByConnectionId).reduce((structures, [connectionId, removals]) => {
+    const structure = structures[connectionId]
+
+    if (!structure || !removals.length) {
+      return structures
+    }
+
+    return {
+      ...structures,
+      [connectionId]: removals.reduce(
+        (nextStructure, removal) =>
+          removeObjectFromDatabaseStructure(
+            nextStructure,
+            removal.databaseName,
+            removal.schemaName,
+            removal.groupLabel,
+            removal.objectName
+          ),
+        structure
+      ),
+    }
+  }, structuresById)
+}
+
+function removeObjectFromDatabaseStructure(
+  structure: DatabaseStructure,
+  databaseName: string,
+  schemaName: string,
+  groupLabel: "Tabelas" | "Views",
+  objectName: string
+): DatabaseStructure {
+  return {
+    ...structure,
+    databases: structure.databases.map((database) => {
+      if (database.name !== databaseName) {
+        return database
+      }
+
+      return {
+        ...database,
+        groups: removeObjectFromGroups(database.groups, groupLabel, objectName),
+        schemas: database.schemas.map((schema) => {
+          if (schemaName && schema.name !== schemaName) {
+            return schema
+          }
+
+          return {
+            ...schema,
+            groups: removeObjectFromGroups(schema.groups, groupLabel, objectName),
+          }
+        }),
+      }
+    }),
+    groups: removeObjectFromGroups(structure.groups, groupLabel, objectName),
+    schemas: structure.schemas.map((schema) => {
+      if (schemaName && schema.name !== schemaName) {
+        return schema
+      }
+
+      return {
+        ...schema,
+        groups: removeObjectFromGroups(schema.groups, groupLabel, objectName),
+      }
+    }),
+  }
+}
+
+function removeObjectFromGroups(
+  groups: DatabaseStructure["groups"],
+  groupLabel: "Tabelas" | "Views",
+  objectName: string
+): DatabaseStructure["groups"] {
+  return groups.map((group) => {
+    if (group.label !== groupLabel) {
+      return group
+    }
+
+    return {
+      ...group,
+      items: group.items.filter((item) => item !== objectName),
+      columnsByItem: removeRecordKey(group.columnsByItem, objectName),
+      columnsDetailsByItem: removeRecordKey(group.columnsDetailsByItem, objectName),
+    }
+  })
+}
+
+function removeRecordKey<T>(record: Record<string, T> | undefined, key: string) {
+  if (!record || !(key in record)) {
+    return record
+  }
+
+  const next = { ...record }
+  delete next[key]
+  return next
+}
+
+function addViewToGroups(
+  groups: DatabaseStructure["groups"],
+  viewName: string
+): DatabaseStructure["groups"] {
+  let foundViewsGroup = false
+  const nextGroups = groups.map((group) => {
+    if (group.label !== "Views") {
+      return group
+    }
+
+    foundViewsGroup = true
+
+    if (group.items.includes(viewName)) {
+      return group
+    }
+
+    return {
+      ...group,
+      items: [...group.items, viewName].sort((left, right) => left.localeCompare(right)),
+    }
+  })
+
+  if (foundViewsGroup) {
+    return nextGroups
+  }
+
+  return [
+    ...groups,
+    {
+      label: "Views",
+      items: [viewName],
+    },
+  ]
 }

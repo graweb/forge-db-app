@@ -1,21 +1,16 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import type { ComponentType } from "react"
+import Image from "next/image"
 import { useRouter } from "next/navigation"
 import {
   ArrowRight,
   CheckCircle2,
-  Code2,
-  Database,
   Eye,
   EyeOff,
-  FileStack,
-  HardDrive,
   Info,
   Loader2,
   Plug,
-  Server,
   Shield,
   SquareTerminal,
   Zap,
@@ -34,6 +29,7 @@ import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { getDatabaseLogoPath } from "@/helpers/dashboard"
 import { cn } from "@/helpers/utils"
 import type {
   ConnectionForm,
@@ -46,23 +42,20 @@ const databaseOptions: Array<{
   id: DatabaseType
   label: string
   accent: string
-  icon: ComponentType<{ className?: string }>
 }> = [
-  { id: "mysql", label: "MySQL", accent: "from-[#4f8cff] to-[#1f6fff]", icon: Database },
-  { id: "mariadb", label: "MariaDB", accent: "from-[#ffb07a] to-[#ff7b54]", icon: Server },
+  { id: "mysql", label: "MySQL", accent: "from-[#4f8cff] to-[#1f6fff]" },
+  { id: "mariadb", label: "MariaDB", accent: "from-[#ffb07a] to-[#ff7b54]" },
   {
     id: "postgresql",
     label: "PostgreSQL",
     accent: "from-[#7db7ff] to-[#4a77ff]",
-    icon: HardDrive,
   },
   {
     id: "sqlserver",
     label: "SQL Server",
     accent: "from-[#ff6969] to-[#dd2e44]",
-    icon: FileStack,
   },
-  { id: "sqlite", label: "SQLite", accent: "from-[#8bc6ff] to-[#4d97ff]", icon: Code2 },
+  { id: "sqlite", label: "SQLite", accent: "from-[#8bc6ff] to-[#4d97ff]" },
 ]
 
 const defaultPorts: Record<Exclude<DatabaseType, "sqlite">, string> = {
@@ -275,20 +268,19 @@ export function ConnectionModal({
   return (
     <Dialog open={isOpen} onOpenChange={setOpen}>
       <DialogContent className="overflow-hidden rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(14,19,35,0.98),rgba(9,14,27,0.98))] p-0 text-white shadow-[0_24px_90px_-35px_rgba(0,0,0,0.95)]">
-        <div className="max-h-[calc(100vh-2rem)] overflow-y-auto">
-          <div className="border-b border-white/10 px-5 py-4 pr-16">
+        <div className="max-h-[calc(100dvh-1rem)] overflow-hidden">
+          <div className="border-b border-white/10 px-5 py-3 pr-16">
             <DialogHeader className="text-left">
               <DialogTitle>{title}</DialogTitle>
               <DialogDescription>{description}</DialogDescription>
             </DialogHeader>
           </div>
 
-          <div className="p-5">
-            <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-              <div className="space-y-6">
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          <div className="p-4">
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
                   {databaseOptions.map((option) => {
-                    const Icon = option.icon
                     const active = databaseType === option.id
 
                     return (
@@ -304,7 +296,7 @@ export function ConnectionModal({
                           setResult(null)
                         }}
                         className={cn(
-                          "group flex min-h-24 flex-col items-center justify-center gap-3 rounded-xl border bg-white/3 px-3 py-4 text-white transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/6",
+                          "group flex min-h-16 flex-col items-center justify-center gap-1.5 rounded-xl border bg-white/3 px-2 py-2 text-white transition-all hover:-translate-y-0.5 hover:border-sky-400/35 hover:bg-white/6 sm:min-h-18",
                           active
                             ? "border-sky-400/90 bg-[linear-gradient(180deg,rgba(58,99,255,0.24),rgba(13,22,43,0.92))] shadow-[0_0_0_1px_rgba(80,135,255,0.2),0_18px_40px_-20px_rgba(63,114,255,0.8)]"
                             : "border-white/10"
@@ -312,18 +304,22 @@ export function ConnectionModal({
                       >
                         <div
                           className={cn(
-                            "flex size-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/90 transition-transform group-hover:scale-105",
-                            active && "border-sky-400/25 bg-white/10"
+                            "flex size-8 items-center justify-center rounded-lg border border-white/70 bg-white text-white/90 shadow-[0_8px_24px_-16px_rgba(255,255,255,0.55)] transition-transform group-hover:scale-105",
+                            active && "border-sky-400/50 bg-white"
                           )}
                         >
-                          <Icon
-                            className={cn("size-6", active ? "text-white" : "text-white/82")}
+                          <Image
+                            src={getDatabaseLogoPath(option.id)}
+                            alt={`${option.label} logo`}
+                            width={20}
+                            height={20}
+                            className="size-5 object-contain"
                           />
                         </div>
-                        <div className="text-sm font-medium">{option.label}</div>
+                        <div className="text-xs font-medium sm:text-sm">{option.label}</div>
                         <div
                           className={cn(
-                            "h-1 w-14 rounded-full bg-linear-to-r opacity-35 transition-opacity",
+                            "h-0.5 w-10 rounded-full bg-linear-to-r opacity-35 transition-opacity",
                             option.accent,
                             active ? "opacity-100" : "opacity-0"
                           )}
@@ -333,8 +329,8 @@ export function ConnectionModal({
                   })}
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-1.5">
                     <Label htmlFor="connectionName">Nome da conexão</Label>
                     <Input
                       id="connectionName"
@@ -345,7 +341,7 @@ export function ConnectionModal({
                   </div>
 
                   {isSqlite ? (
-                    <div className="space-y-2 md:col-span-2">
+                    <div className="space-y-1.5 md:col-span-2">
                       <Label htmlFor="databaseFile">Arquivo do banco SQLite</Label>
                       <Input
                         id="databaseFile"
@@ -355,7 +351,7 @@ export function ConnectionModal({
                       />
                     </div>
                   ) : (
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <Label htmlFor="databaseName">Banco de dados</Label>
                       <Input
                         id="databaseName"
@@ -368,7 +364,7 @@ export function ConnectionModal({
 
                   {!isSqlite ? (
                     <>
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         <Label htmlFor="host">Host</Label>
                         <Input
                           id="host"
@@ -376,7 +372,7 @@ export function ConnectionModal({
                           onChange={(event) => updateForm("host", event.target.value)}
                         />
                       </div>
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         <Label htmlFor="port">Porta</Label>
                         <Input
                           id="port"
@@ -385,7 +381,7 @@ export function ConnectionModal({
                         />
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         <Label htmlFor="user">Usuário</Label>
                         <Input
                           id="user"
@@ -394,7 +390,7 @@ export function ConnectionModal({
                           placeholder="root"
                         />
                       </div>
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         <Label htmlFor="password">Senha</Label>
                         <div className="relative">
                           <Input
@@ -421,25 +417,25 @@ export function ConnectionModal({
                       </div>
                     </>
                   ) : (
-                    <div className="rounded-xl border border-dashed border-white/10 bg-white/4 p-4 text-sm leading-6 text-white/65 md:col-span-2">
+                    <div className="rounded-xl border border-dashed border-white/10 bg-white/4 p-3 text-sm leading-6 text-white/65 md:col-span-2">
                       SQLite usa um arquivo local. Host, porta, usuário e senha não são
                       necessários para esse teste.
                     </div>
                   )}
 
-                  <div className="space-y-2 md:col-span-2">
+                  <div className="space-y-1.5 md:col-span-2">
                     <Label htmlFor="additional">Parâmetros adicionais (opcional)</Label>
                     <Textarea
                       id="additional"
                       value={form.additional}
                       onChange={(event) => updateForm("additional", event.target.value)}
                       placeholder="Ex.: charset=utf8mb4&sslMode=require"
-                      className="min-h-24"
+                      className="h-16 min-h-16 resize-none"
                     />
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-6 border-t border-white/8 pt-4">
+                <div className="flex flex-wrap items-center gap-4 border-t border-white/8 pt-3">
                   <label className="inline-flex cursor-pointer items-center gap-3 text-sm text-white/78">
                     <Switch checked={useSsl} onClick={() => setUseSsl((current) => !current)} />
                     Usar SSL
@@ -453,7 +449,7 @@ export function ConnectionModal({
                 {result ? (
                   <div
                     className={cn(
-                      "rounded-2xl border p-4",
+                      "rounded-2xl border p-3",
                       result.status === "success"
                         ? "border-emerald-400/25 bg-emerald-400/10"
                         : "border-red-400/25 bg-red-400/10"
@@ -518,9 +514,9 @@ export function ConnectionModal({
                 </div>
               </div>
 
-              <div className="space-y-4 rounded-[1.25rem] border border-white/8 bg-white/4 p-5">
-                <div className="text-lg font-medium text-white">Como funciona</div>
-                <div className="space-y-4 text-sm leading-6 text-white/70">
+              <div className="space-y-3 rounded-[1.25rem] border border-white/8 bg-white/4 p-4">
+                <div className="text-base font-medium text-white">Como funciona</div>
+                <div className="space-y-3 text-sm leading-6 text-white/70">
                   <div className="flex gap-3">
                     <Shield className="mt-0.5 size-4 shrink-0 text-sky-400/90" />
                     As credenciais são testadas antes de salvar.
@@ -535,7 +531,7 @@ export function ConnectionModal({
                   </div>
                 </div>
                 <Separator className="bg-white/10" />
-                <div className="rounded-2xl border border-white/10 bg-black/10 p-4 text-sm leading-6 text-white/60">
+                <div className="rounded-2xl border border-white/10 bg-black/10 p-3 text-sm leading-6 text-white/60">
                   O modal mantém o mesmo fluxo de criação da antiga tela inicial, mas agora aparece
                   sob demanda dentro do dashboard.
                 </div>

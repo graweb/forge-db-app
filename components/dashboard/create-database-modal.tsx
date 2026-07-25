@@ -257,7 +257,7 @@ export function CreateDatabaseModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="overflow-hidden rounded-[2rem] border border-white/10 bg-[linear-gradient(180deg,rgba(14,19,35,0.98),rgba(9,14,27,0.98))] p-0 text-white shadow-[0_24px_90px_-35px_rgba(0,0,0,0.95)]">
-        <div className="max-h-[calc(100vh-2rem)] overflow-y-auto">
+        <div className="max-h-[calc(100dvh-1rem)] overflow-y-auto">
           <div className="border-b border-white/10 px-5 py-4 pr-16">
             <DialogHeader className="text-left">
               <DialogTitle>{title}</DialogTitle>
@@ -265,7 +265,7 @@ export function CreateDatabaseModal({
             </DialogHeader>
           </div>
 
-          <div className="space-y-5 p-5">
+          <div className="space-y-5 p-4 sm:p-5">
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2 md:col-span-2">
                 <Label htmlFor="databaseName">Nome do banco</Label>
@@ -322,8 +322,8 @@ export function CreateDatabaseModal({
               </div>
             ) : null}
 
-            <div className="flex items-center justify-between border-t border-white/8 pt-4">
-              <div className="flex items-center gap-2 text-xs text-white/45">
+            <div className="flex flex-col gap-3 border-t border-white/8 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-center gap-2 text-xs text-white/45">
                 {databaseType === "postgresql" ? (
                   <Globe2 className="size-3.5" />
                 ) : databaseType === "sqlserver" ? (
@@ -331,9 +331,9 @@ export function CreateDatabaseModal({
                 ) : (
                   <Database className="size-3.5" />
                 )}
-                {connection.connectionName}
+                <span className="truncate">{connection.connectionName}</span>
               </div>
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3 sm:justify-end">
                 <Button
                   type="button"
                   variant="outline"

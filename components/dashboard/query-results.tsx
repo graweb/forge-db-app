@@ -26,7 +26,12 @@ const HEADER_FONT = "500 14px Arial, Helvetica, sans-serif"
 
 let measurementCanvas: HTMLCanvasElement | null = null
 
-export function QueryResults({ result }: QueryResultsProps) {
+type ResultColumn = {
+  key: string
+  name: string
+}
+
+export function QueryResults({ result, showActions = true }: QueryResultsProps) {
   const [sort, setSort] = useState<SortState | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
@@ -45,6 +50,10 @@ export function QueryResults({ result }: QueryResultsProps) {
 
     return Object.keys(result.rows[0] ?? {})
   }, [result])
+  const resultColumns = useMemo<ResultColumn[]>(
+    () => columns.map((column, index) => ({ key: `${column}-${index}`, name: column })),
+    [columns]
+  )
 
   const sortedRows = useMemo(() => {
     if (!result?.rows.length) {
@@ -57,8 +66,13 @@ export function QueryResults({ result }: QueryResultsProps) {
       return rows
     }
 
-    return rows.sort((left, right) => compareValues(left[sort.column], right[sort.column], sort.direction))
-  }, [result, sort])
+    const sortColumn = resultColumns.find((column) => column.key === sort.column)
+    if (!sortColumn) {
+      return rows
+    }
+
+    return rows.sort((left, right) => compareValues(left[sortColumn.name], right[sortColumn.name], sort.direction))
+  }, [result, resultColumns, sort])
 
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize))
   const safePage = Math.min(page, totalPages)
@@ -71,16 +85,17 @@ export function QueryResults({ result }: QueryResultsProps) {
   const resolvedColumnWidths = useMemo(() => {
     const widths: Record<string, number> = {}
 
-    columns.forEach((column) => {
-      widths[column] = columnWidths[column] ?? getAutoFitWidth(column, sortedRows)
+    resultColumns.forEach((column) => {
+      widths[column.key] = columnWidths[column.key] ?? getAutoFitWidth(column.name, sortedRows)
     })
 
     return widths
-  }, [columnWidths, columns, sortedRows])
+  }, [columnWidths, resultColumns, sortedRows])
 
   const totalTableWidth = useMemo(() => {
-    return 72 + columns.reduce((total, column) => total + (resolvedColumnWidths[column] ?? MIN_COLUMN_WIDTH), 0)
-  }, [columns, resolvedColumnWidths])
+    return 72 + resultColumns.reduce((total, column) => total + (resolvedColumnWidths[column.key] ?? MIN_COLUMN_WIDTH), 0)
+  }, [resultColumns, resolvedColumnWidths])
+  const sortLabel = sort ? resultColumns.find((column) => column.key === sort.column)?.name ?? sort.column : null
 
   useEffect(() => {
     if (!isResizing) {
@@ -102,7 +117,7 @@ export function QueryResults({ result }: QueryResultsProps) {
     )
   }
 
-  if (!result.rows.length) {
+  if (!result.rows.length && !resultColumns.length) {
     return (
       <div className="space-y-3 rounded-2xl border border-white/10 bg-[#07111d] px-5 py-5">
         <div className="text-sm text-white/80">{result.message}</div>
@@ -111,9 +126,9 @@ export function QueryResults({ result }: QueryResultsProps) {
     )
   }
 
-  const startResize = (column: string, startX: number) => {
-    const startWidth = resolvedColumnWidths[column] ?? MIN_COLUMN_WIDTH
-    resizeRef.current = { column, startX, startWidth }
+  const startResize = (columnKey: string, startX: number) => {
+    const startWidth = resolvedColumnWidths[columnKey] ?? MIN_COLUMN_WIDTH
+    resizeRef.current = { column: columnKey, startX, startWidth }
     setIsResizing(true)
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -157,75 +172,76 @@ export function QueryResults({ result }: QueryResultsProps) {
     }))
   }
 
-  const autoFitColumn = (column: string) => {
-    const fitWidth = getAutoFitWidth(column, sortedRows)
+  const autoFitColumn = (column: ResultColumn) => {
+    const fitWidth = getAutoFitWidth(column.name, sortedRows)
 
     setColumnWidths((current) => {
-      const currentWidth = current[column] ?? resolvedColumnWidths[column] ?? MIN_COLUMN_WIDTH
+      const currentWidth = current[column.key] ?? resolvedColumnWidths[column.key] ?? MIN_COLUMN_WIDTH
 
       return {
         ...current,
-        [column]: Math.max(currentWidth, fitWidth),
+        [column.key]: Math.max(currentWidth, fitWidth),
       }
     })
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-white/10 bg-[#07111d]">
-      <div className="shrink-0 border-b border-white/10 px-4 py-3">
-        <div className="text-sm font-medium text-white">
-          <Button variant="ghost" size="sm">
-            <Plus />
-          </Button>
-          <Button variant="ghost" size="sm">
-            <Edit />
-          </Button>
-          <Button variant="ghost" size="sm">
-            <Trash />
-          </Button>          
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#07111d]">
+      {showActions ? (
+        <div className="shrink-0 border-b border-white/10 px-3 py-2 sm:px-4 sm:py-3">
+          <div className="flex items-center gap-1 text-sm font-medium text-white">
+            <Button variant="ghost" size="sm">
+              <Plus />
+            </Button>
+            <Button variant="ghost" size="sm">
+              <Edit />
+            </Button>
+            <Button variant="ghost" size="sm">
+              <Trash />
+            </Button>
+          </div>
         </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto">
+      ) : null}
+      <div className="min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
         <Table
           className="table-fixed"
-          wrapperClassName="overflow-visible"
-          style={{ width: totalTableWidth }}
+          wrapperClassName="h-full min-w-0 max-w-full overflow-auto"
+          style={{ width: "100%", minWidth: totalTableWidth }}
         >
           <colgroup>
             <col style={{ width: 72 }} />
-            {columns.map((column) => (
-              <col key={column} style={{ width: resolvedColumnWidths[column] ?? MIN_COLUMN_WIDTH }} />
+            {resultColumns.map((column) => (
+              <col key={column.key} style={{ width: resolvedColumnWidths[column.key] ?? MIN_COLUMN_WIDTH }} />
             ))}
           </colgroup>
 
           <TableHeader className="sticky top-0 z-20 bg-[#07111d]">
             <TableRow className="hover:bg-transparent">
               <TableHead className="w-18 bg-[#07111d]">#</TableHead>
-              {columns.map((column, index) => {
-                const active = sort?.column === column
-                const isLast = index === columns.length - 1
+              {resultColumns.map((column, index) => {
+                const active = sort?.column === column.key
+                const isLast = index === resultColumns.length - 1
 
                 return (
-                  <TableHead key={column} className="relative bg-[#07111d] p-0">
+                  <TableHead key={column.key} className="relative bg-[#07111d] p-0">
                     <div className="relative flex h-full items-stretch">
                       <button
                         type="button"
                         onClick={() => {
                           setSort((current) => {
-                            if (current?.column === column) {
+                            if (current?.column === column.key) {
                               return {
-                                column,
+                                column: column.key,
                                 direction: current.direction === "asc" ? "desc" : "asc",
                               }
                             }
 
-                            return { column, direction: "asc" }
+                            return { column: column.key, direction: "asc" }
                           })
                         }}
                         className="flex min-h-0 flex-1 items-center gap-2 overflow-hidden px-4 py-3 pr-7 text-left text-white/60 transition-colors hover:text-white"
                       >
-                        <span className="truncate">{column}</span>
+                        <span className="truncate">{column.name}</span>
                         {active ? (
                           sort.direction === "asc" ? (
                             <ArrowUp className="size-4 shrink-0 text-sky-300" />
@@ -240,11 +256,11 @@ export function QueryResults({ result }: QueryResultsProps) {
                       {!isLast ? (
                         <button
                           type="button"
-                          aria-label={`Redimensionar coluna ${column}`}
+                          aria-label={`Redimensionar coluna ${column.name}`}
                           onPointerDown={(event) => {
                             event.preventDefault()
                             event.stopPropagation()
-                            startResize(column, event.clientX)
+                            startResize(column.key, event.clientX)
                           }}
                           onDoubleClick={(event) => {
                             event.preventDefault()
@@ -264,20 +280,29 @@ export function QueryResults({ result }: QueryResultsProps) {
           </TableHeader>
 
           <TableBody>
-            {pagedRows.map((row, index) => {
+            {pagedRows.length ? pagedRows.map((row, index) => {
               const absoluteIndex = (safePage - 1) * pageSize + index + 1
 
               return (
                 <TableRow key={`${absoluteIndex}-${Object.values(row).join("-")}`}>
                   <TableCell className="text-white/45">{absoluteIndex}</TableCell>
-                  {columns.map((column) => (
-                    <TableCell key={column} className="overflow-hidden text-ellipsis">
-                      {formatCell(row[column])}
+                  {resultColumns.map((column) => (
+                    <TableCell key={column.key} className="overflow-hidden text-ellipsis">
+                      {formatCell(row[column.name])}
                     </TableCell>
                   ))}
                 </TableRow>
               )
-            })}
+            }) : (
+              <TableRow>
+                <TableCell
+                  colSpan={resultColumns.length + 1}
+                  className="h-28 text-center text-sm text-white/50"
+                >
+                  Não há registros nesta tabela.
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </div>
@@ -288,15 +313,12 @@ export function QueryResults({ result }: QueryResultsProps) {
         <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2 text-xs text-white/55">
             <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1">
-              {sortedRows.length.toLocaleString("pt-BR")} linha(s) exibida(s) de{" "}
-              {result.rowCount.toLocaleString("pt-BR")}
-            </span>
-            <span className="rounded-full border border-white/10 bg-white/4 px-3 py-1">
-              Ordenação: {sort ? `${sort.column} (${sort.direction})` : "padrão"}
+              Ordenação: {sort && sortLabel ? `${sortLabel} (${sort.direction})` : "padrão"}
             </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          {sortedRows.length ? (
+            <div className="flex flex-wrap items-center gap-2">
             <label className="flex items-center gap-2 text-xs text-white/55">
               <span>Linhas</span>
               <select
@@ -347,7 +369,8 @@ export function QueryResults({ result }: QueryResultsProps) {
               Próxima
               <ChevronRight className="size-4" />
             </Button>
-          </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
