@@ -24,6 +24,18 @@ export type DashboardSidebarProps = {
     database: DatabaseStructureDatabase,
     schemaName: string
   ) => void
+  onCreateRoutine: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    kind: "procedure" | "function"
+  ) => void
+  onRefreshRoutineGroup: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    groupLabel: "Procedures" | "Funções"
+  ) => void | Promise<void>
   onEditView: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
@@ -89,6 +101,18 @@ export type DashboardSidebarActions = {
     database: DatabaseStructureDatabase,
     schemaName: string
   ) => void
+  onCreateRoutine: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    kind: "procedure" | "function"
+  ) => void
+  onRefreshRoutineGroup: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    groupLabel: "Procedures" | "Funções"
+  ) => void | Promise<void>
   onEditView: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,

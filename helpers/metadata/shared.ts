@@ -30,7 +30,8 @@ export function createGroup(
   label: string,
   items: string[],
   columnsByItem?: Record<string, string[]>,
-  columnsDetailsByItem?: Record<string, ColumnDetails[]>
+  columnsDetailsByItem?: Record<string, ColumnDetails[]>,
+  sizesByItem?: Record<string, number>
 ): DatabaseStructureGroup {
   const group: DatabaseStructureGroup = { label, items }
 
@@ -40,6 +41,10 @@ export function createGroup(
 
   if (columnsDetailsByItem) {
     group.columnsDetailsByItem = columnsDetailsByItem
+  }
+
+  if (sizesByItem) {
+    group.sizesByItem = sizesByItem
   }
 
   return group

@@ -113,6 +113,19 @@ export type CreateViewModalProps = {
   onSaved: (details: { message: string; details: string; viewName: string }) => void | Promise<void>
 }
 
+export type RoutineKind = "procedure" | "function"
+
+export type CreateRoutineModalProps = {
+  open: boolean
+  connection: SavedConnection | null
+  database?: DatabaseStructureDatabase | null
+  databaseName?: string
+  schemaName?: string
+  initialKind: RoutineKind
+  onOpenChange: (open: boolean) => void
+  onSaved: (details: { message: string; details: string; routineName: string; kind: RoutineKind }) => void | Promise<void>
+}
+
 export type DeleteDatabaseModalProps = {
   open: boolean
   connection: SavedConnection | null

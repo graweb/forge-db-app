@@ -60,6 +60,8 @@ export function DashboardSidebar({
   onCreateDatabase,
   onCreateTable,
   onCreateView,
+  onCreateRoutine,
+  onRefreshRoutineGroup,
   onEditTable,
   onDeleteTable,
   onSelect100Rows,
@@ -85,6 +87,8 @@ export function DashboardSidebar({
     onCreateDatabase,
     onCreateTable,
     onCreateView,
+    onCreateRoutine,
+    onRefreshRoutineGroup,
     onEditTable,
     onDeleteTable,
     onSelect100Rows,
@@ -216,7 +220,7 @@ function buildTreeNodes(
       : [
             {
               id: `database-${connection.id}`,
-              label: getDatabaseNodeLabel(connection),
+              label: firstDatabase?.name ?? getDatabaseNodeLabel(connection),
               icon: FolderGit2,
               defaultExpanded: false,
               contextActions: isAvailable ? (
@@ -226,7 +230,9 @@ function buildTreeNodes(
                   onRefreshDatabaseStructure={actions.onRefreshDatabaseStructure}
                 />
               ) : null,
-              children: getSchemaNodes(connection, databaseStructure, actions),
+              children: firstDatabase
+                ? getSchemaNodesForDatabase(connection, firstDatabase, actions)
+                : getSchemaNodes(connection, databaseStructure, actions),
             },
             usersNode,
           ]
@@ -480,6 +486,8 @@ function buildGroupNode(
   const supportsQueryActions = group.label === "Tabelas" || group.label === "Views"
   const isTableGroup = group.label === "Tabelas"
   const isViewGroup = group.label === "Views"
+  const isProcedureGroup = group.label === "Procedures"
+  const isFunctionGroup = group.label === "Funções"
 
   return {
     id: `${connection.id}-${schemaName}-${group.label}`,
@@ -498,6 +506,18 @@ function buildGroupNode(
           onCreateView={() => actions.onCreateView(connection, database, schemaName)}
           onRefreshStructure={actions.onRefreshDatabaseStructure}
         />
+      ) : isAvailable && isProcedureGroup ? (
+        <RoutineGroupContextMenu
+          createLabel="Criar procedure"
+          onCreate={() => actions.onCreateRoutine(connection, database, schemaName, "procedure")}
+          onRefresh={() => void actions.onRefreshRoutineGroup(connection, database, schemaName, "Procedures")}
+        />
+      ) : isAvailable && isFunctionGroup ? (
+        <RoutineGroupContextMenu
+          createLabel="Criar função"
+          onCreate={() => actions.onCreateRoutine(connection, database, schemaName, "function")}
+          onRefresh={() => void actions.onRefreshRoutineGroup(connection, database, schemaName, "Funções")}
+        />
       ) : null,
     children: group.items.map((item) => {
       const tableReference = getTableReference(
@@ -510,6 +530,7 @@ function buildGroupNode(
       const tableSchemaName = connection.databaseType === "sqlite" ? "main" : schemaName
       const tableName = item
       const columnDetails = group.columnsDetailsByItem?.[item] ?? []
+      const tableSize = isTableGroup ? group.sizesByItem?.[item] : undefined
       const renderTableItemContextMenu = () => (
         <TableItemContextMenu
           onCreateTable={() => actions.onCreateTable(connection, database, schemaName)}
@@ -570,6 +591,12 @@ function buildGroupNode(
         id: `${connection.id}-${schemaName}-${group.label}-${item}`,
         label: item,
         icon: Table2,
+        badge:
+          typeof tableSize === "number" ? (
+            <span className="rounded-full border border-white/10 bg-white/4 px-2 py-0.5 text-[10px] font-medium text-white/45">
+              {formatTableSize(tableSize)}
+            </span>
+          ) : undefined,
         children: columnChildren,
         isLeaf: isLeafItem,
         onDoubleClick: supportsQueryActions
@@ -589,6 +616,23 @@ function buildGroupNode(
       }
     }),
   }
+}
+
+function RoutineGroupContextMenu({
+  createLabel,
+  onCreate,
+  onRefresh,
+}: {
+  createLabel: string
+  onCreate: () => void
+  onRefresh: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem onSelect={onCreate}>{createLabel}</ContextMenuItem>
+      <ContextMenuItem onSelect={onRefresh}>Atualizar</ContextMenuItem>
+    </div>
+  )
 }
 
 function ViewGroupContextMenu({
@@ -729,6 +773,7 @@ function getEffectiveDatabaseName(
   if (
     connection.databaseType === "mysql" ||
     connection.databaseType === "mariadb" ||
+    connection.databaseType === "postgresql" ||
     connection.databaseType === "sqlserver"
   ) {
     return database.name
@@ -753,6 +798,27 @@ function sortDatabaseGroups(groups: DatabaseStructureGroup[]) {
 
     return left.label.localeCompare(right.label, "pt-BR")
   })
+}
+
+function formatTableSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 MB"
+  }
+
+  const units = ["MB", "GB", "TB"] as const
+  let value = bytes / 1024 / 1024
+  let unitIndex = 0
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+
+  const fractionDigits = value < 1 ? 2 : value >= 10 || unitIndex === 0 ? 1 : 2
+  return `${value.toLocaleString("pt-BR", {
+    minimumFractionDigits: value < 1 ? 2 : 0,
+    maximumFractionDigits: fractionDigits,
+  })} ${units[unitIndex]}`
 }
 
 function getTableReference(

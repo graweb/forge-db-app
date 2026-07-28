@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { AlertTriangle } from "lucide-react"
+import type { CSSProperties } from "react"
+import { AlertTriangle, GripVertical } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 
 import type { DatabaseStructure, DatabaseStructureDatabase, SavedConnection } from "@/types/connections"
@@ -9,10 +10,12 @@ import type { ViewDetails } from "@/types/connections"
 import type {
   DashboardEditorWorkspaceHandle,
 } from "@/types/dashboard-editor"
+import type { RoutineKind } from "@/types/dashboard-modals"
 import type { DashboardShellProps, ShellNotice, TableTarget } from "@/types/dashboard-shell"
 
 import { ConnectionModal } from "@/components/connections/connection-modal"
 import { CreateDatabaseModal } from "./create-database-modal"
+import { CreateRoutineModal } from "./create-routine-modal"
 import { CreateViewModal } from "./create-view-modal"
 import { CreateUserModal } from "./create-user-modal"
 import { CreateTableModal } from "./create-table-modal"
@@ -36,7 +39,29 @@ function getEffectiveTableDatabaseName(
     return database.name
   }
 
+  if (connection.databaseType === "postgresql") {
+    return database.name
+  }
+
   return connection.databaseName || database.name
+}
+
+const SIDEBAR_WIDTH_STORAGE_KEY = "forge-db:dashboard-sidebar-width"
+const DEFAULT_SIDEBAR_WIDTH = 320
+const MIN_SIDEBAR_WIDTH = 272
+const MAX_SIDEBAR_WIDTH = 520
+
+function clampSidebarWidth(width: number) {
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)))
+}
+
+function getStoredSidebarWidth() {
+  const storedWidth = Number(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+  return Number.isFinite(storedWidth) ? clampSidebarWidth(storedWidth) : DEFAULT_SIDEBAR_WIDTH
+}
+
+function storeSidebarWidth(width: number) {
+  window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(width)))
 }
 
 export function DashboardShell({
@@ -60,6 +85,9 @@ export function DashboardShell({
   const [isViewModalOpen, setIsViewModalOpen] = useState(false)
   const [viewModalMode, setViewModalMode] = useState<"create" | "edit">("create")
   const [viewModalKey, setViewModalKey] = useState(0)
+  const [isRoutineModalOpen, setIsRoutineModalOpen] = useState(false)
+  const [routineModalKey, setRoutineModalKey] = useState(0)
+  const [routineInitialKind, setRoutineInitialKind] = useState<RoutineKind>("procedure")
   const [isUserModalOpen, setIsUserModalOpen] = useState(false)
   const [userModalKey, setUserModalKey] = useState(0)
   const [tableTargetConnection, setTableTargetConnection] = useState<SavedConnection | null>(null)
@@ -75,6 +103,9 @@ export function DashboardShell({
   )
   const [viewTargetSchema, setViewTargetSchema] = useState<string>("")
   const [viewTarget, setViewTarget] = useState<ViewDetails | null>(null)
+  const [routineTargetConnection, setRoutineTargetConnection] = useState<SavedConnection | null>(null)
+  const [routineTargetDatabase, setRoutineTargetDatabase] = useState<DatabaseStructureDatabase | null>(null)
+  const [routineTargetSchema, setRoutineTargetSchema] = useState<string>("")
   const [deleteViewTarget, setDeleteViewTarget] = useState<{
     connection: SavedConnection
     database: DatabaseStructureDatabase
@@ -105,9 +136,23 @@ export function DashboardShell({
   const [localObjectRemovals, setLocalObjectRemovals] = useState<
     Record<string, Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views"; objectName: string }>>
   >({})
+  const [localGroupReplacements, setLocalGroupReplacements] = useState<
+    Record<
+      string,
+      Array<{
+        databaseName: string
+        schemaName: string
+        groupLabel: "Procedures" | "Funções"
+        group: DatabaseStructure["groups"][number]
+      }>
+    >
+  >({})
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [notice, setNotice] = useState<ShellNotice | null>(null)
   const editorWorkspaceRef = useRef<DashboardEditorWorkspaceHandle | null>(null)
   const noticeTimerRef = useRef<number | null>(null)
+  const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const router = useRouter()
   const pathname = usePathname()
   const localDatabaseStructuresById = useMemo(
@@ -132,8 +177,8 @@ export function DashboardShell({
             structure
           ),
         }
-      }, applyLocalObjectRemovals(databaseStructuresById, localObjectRemovals)),
-    [databaseStructuresById, localViewAdditions, localObjectRemovals]
+      }, applyLocalGroupReplacements(applyLocalObjectRemovals(databaseStructuresById, localObjectRemovals), localGroupReplacements)),
+    [databaseStructuresById, localViewAdditions, localObjectRemovals, localGroupReplacements]
   )
   const activeDatabaseStructure = connection
     ? localDatabaseStructuresById[connection.id] ?? databaseStructure
@@ -146,6 +191,61 @@ export function DashboardShell({
       }
     }
   }, [])
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => {
+      setSidebarWidth(getStoredSidebarWidth())
+    })
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isResizingSidebar) {
+      return
+    }
+
+    document.body.classList.add("cursor-col-resize", "select-none")
+
+    return () => {
+      document.body.classList.remove("cursor-col-resize", "select-none")
+    }
+  }, [isResizingSidebar])
+
+  function startSidebarResize(clientX: number) {
+    sidebarResizeRef.current = {
+      startX: clientX,
+      startWidth: sidebarWidth,
+    }
+    setIsResizingSidebar(true)
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const activeResize = sidebarResizeRef.current
+
+      if (!activeResize) {
+        return
+      }
+
+      event.preventDefault()
+      const nextWidth = clampSidebarWidth(activeResize.startWidth + event.clientX - activeResize.startX)
+      setSidebarWidth(nextWidth)
+      storeSidebarWidth(nextWidth)
+    }
+
+    const handlePointerUp = () => {
+      sidebarResizeRef.current = null
+      setIsResizingSidebar(false)
+      window.removeEventListener("pointermove", handlePointerMove)
+      window.removeEventListener("pointerup", handlePointerUp)
+      window.removeEventListener("pointercancel", handlePointerUp)
+    }
+
+    window.addEventListener("pointermove", handlePointerMove)
+    window.addEventListener("pointerup", handlePointerUp)
+    window.addEventListener("pointercancel", handlePointerUp)
+  }
 
   function showNotice(nextNotice: ShellNotice) {
     setNotice(nextNotice)
@@ -261,6 +361,84 @@ export function DashboardShell({
     })
   }
 
+  async function refreshRoutineGroup({
+    connectionToUse,
+    databaseToUse,
+    schemaName,
+    groupLabel,
+  }: {
+    connectionToUse: SavedConnection
+    databaseToUse: DatabaseStructureDatabase
+    schemaName: string
+    groupLabel: "Procedures" | "Funções"
+  }) {
+    try {
+      const response = await fetch(`/api/connections/${connectionToUse.id}/databases`)
+      const payload: {
+        success: boolean
+        message?: string
+        details?: string
+        databaseStructure?: DatabaseStructure
+      } = await response.json()
+
+      if (!response.ok || !payload.success || !payload.databaseStructure) {
+        showNotice({
+          title: "Não foi possível atualizar",
+          message: payload.details || payload.message || "Tente novamente em instantes.",
+        })
+        return
+      }
+
+      const updatedGroup = findGroupInStructure(
+        payload.databaseStructure,
+        databaseToUse.name,
+        schemaName,
+        groupLabel
+      )
+
+      if (!updatedGroup) {
+        showNotice({
+          title: "Grupo não encontrado",
+          message: `Não foi possível encontrar ${groupLabel.toLowerCase()} neste schema.`,
+        })
+        return
+      }
+
+      setLocalGroupReplacements((current) => {
+        const replacements = current[connectionToUse.id] ?? []
+        const nextReplacement = {
+          databaseName: databaseToUse.name,
+          schemaName,
+          groupLabel,
+          group: updatedGroup,
+        }
+
+        return {
+          ...current,
+          [connectionToUse.id]: [
+            ...replacements.filter(
+              (item) =>
+                item.databaseName !== nextReplacement.databaseName ||
+                item.schemaName !== nextReplacement.schemaName ||
+                item.groupLabel !== nextReplacement.groupLabel
+            ),
+            nextReplacement,
+          ],
+        }
+      })
+
+      showNotice({
+        title: `${groupLabel} atualizadas`,
+        message: `A lista de ${groupLabel.toLowerCase()} foi recarregada sem fechar o treeview.`,
+      })
+    } catch {
+      showNotice({
+        title: "Erro ao atualizar",
+        message: `Não foi possível atualizar ${groupLabel.toLowerCase()}.`,
+      })
+    }
+  }
+
   return (
     <main className="relative h-dvh min-w-0 overflow-hidden bg-[linear-gradient(180deg,#060a11_0%,#080e17_100%)] text-white">
       {notice ? (
@@ -309,9 +487,14 @@ export function DashboardShell({
 
         <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
           <div
-            className={`min-h-0 overflow-hidden lg:h-full lg:w-[clamp(17rem,22vw,20rem)] lg:flex-none ${
+            className={`min-h-0 w-full overflow-hidden lg:h-full lg:w-[var(--dashboard-sidebar-width)] lg:flex-none ${
               activePane === "connections" ? "flex-1" : "hidden lg:block"
             }`}
+            style={
+              {
+                "--dashboard-sidebar-width": `${sidebarWidth}px`,
+              } as CSSProperties
+            }
           >
             <DashboardSidebar
               activeConnectionId={hasActiveConnection ? connection?.id ?? null : null}
@@ -346,6 +529,22 @@ export function DashboardShell({
                 setViewModalKey((current) => current + 1)
                 setIsViewModalOpen(true)
               }}
+              onCreateRoutine={(connectionToUse, databaseToUse, schemaName, kind) => {
+                setRoutineTargetConnection(connectionToUse)
+                setRoutineTargetDatabase(databaseToUse)
+                setRoutineTargetSchema(schemaName)
+                setRoutineInitialKind(kind)
+                setRoutineModalKey((current) => current + 1)
+                setIsRoutineModalOpen(true)
+              }}
+              onRefreshRoutineGroup={(connectionToUse, databaseToUse, schemaName, groupLabel) =>
+                refreshRoutineGroup({
+                  connectionToUse,
+                  databaseToUse,
+                  schemaName,
+                  groupLabel,
+                })
+              }
               onEditView={async (connectionToUse, databaseToUse, schemaName, _viewPath, viewName) => {
                 const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
 
@@ -621,6 +820,29 @@ export function DashboardShell({
               }}
             />
           </div>
+          <button
+            type="button"
+            className={`group relative hidden h-full w-3 shrink-0 cursor-col-resize items-center justify-center border-r border-white/10 bg-[#07111d] text-white/25 transition-colors hover:bg-sky-400/10 hover:text-sky-300 lg:flex ${
+              isResizingSidebar ? "bg-sky-400/15 text-sky-200" : ""
+            }`}
+            aria-label="Redimensionar menu lateral"
+            role="separator"
+            aria-orientation="vertical"
+            aria-valuemin={MIN_SIDEBAR_WIDTH}
+            aria-valuemax={MAX_SIDEBAR_WIDTH}
+            aria-valuenow={sidebarWidth}
+            onPointerDown={(event) => {
+              event.preventDefault()
+              startSidebarResize(event.clientX)
+            }}
+            onDoubleClick={() => {
+              setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)
+              storeSidebarWidth(DEFAULT_SIDEBAR_WIDTH)
+            }}
+          >
+            <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/10 transition-colors group-hover:bg-sky-300/40" />
+            <GripVertical className="relative z-10 size-3.5" />
+          </button>
           <div
             className={`min-h-0 flex-1 overflow-hidden ${
               activePane === "editor" ? "flex" : "hidden lg:flex"
@@ -843,6 +1065,39 @@ export function DashboardShell({
         }}
       />
 
+      <CreateRoutineModal
+        key={`${routineTargetConnection?.id ?? "none"}-${routineTargetDatabase?.name ?? "none"}-${routineTargetSchema}-${routineInitialKind}-${routineModalKey}`}
+        open={isRoutineModalOpen}
+        connection={routineTargetConnection}
+        database={routineTargetDatabase}
+        databaseName={routineTargetDatabase?.name}
+        schemaName={routineTargetSchema}
+        initialKind={routineInitialKind}
+        onOpenChange={(open) => {
+          setIsRoutineModalOpen(open)
+          if (!open) {
+            setRoutineTargetConnection(null)
+            setRoutineTargetDatabase(null)
+            setRoutineTargetSchema("")
+          }
+        }}
+        onSaved={async ({ message, details, kind }) => {
+          if (routineTargetConnection && routineTargetDatabase) {
+            await refreshRoutineGroup({
+              connectionToUse: routineTargetConnection,
+              databaseToUse: routineTargetDatabase,
+              schemaName: routineTargetSchema,
+              groupLabel: kind === "procedure" ? "Procedures" : "Funções",
+            })
+          }
+
+          showNotice({
+            title: message,
+            message: details,
+          })
+        }}
+      />
+
       <CreateUserModal
         key={`${userTargetConnection?.id ?? "none"}-${userTargetDatabaseName}-${userTargetSchemaName}-${userModalKey}`}
         open={isUserModalOpen}
@@ -1045,6 +1300,42 @@ function applyLocalObjectRemovals(
   }, structuresById)
 }
 
+function applyLocalGroupReplacements(
+  structuresById: Record<string, DatabaseStructure>,
+  replacementsByConnectionId: Record<
+    string,
+    Array<{
+      databaseName: string
+      schemaName: string
+      groupLabel: "Procedures" | "Funções"
+      group: DatabaseStructure["groups"][number]
+    }>
+  >
+) {
+  return Object.entries(replacementsByConnectionId).reduce((structures, [connectionId, replacements]) => {
+    const structure = structures[connectionId]
+
+    if (!structure || !replacements.length) {
+      return structures
+    }
+
+    return {
+      ...structures,
+      [connectionId]: replacements.reduce(
+        (nextStructure, replacement) =>
+          replaceGroupInDatabaseStructure(
+            nextStructure,
+            replacement.databaseName,
+            replacement.schemaName,
+            replacement.groupLabel,
+            replacement.group
+          ),
+        structure
+      ),
+    }
+  }, structuresById)
+}
+
 function removeObjectFromDatabaseStructure(
   structure: DatabaseStructure,
   databaseName: string,
@@ -1086,6 +1377,77 @@ function removeObjectFromDatabaseStructure(
       }
     }),
   }
+}
+
+function replaceGroupInDatabaseStructure(
+  structure: DatabaseStructure,
+  databaseName: string,
+  schemaName: string,
+  groupLabel: "Procedures" | "Funções",
+  group: DatabaseStructure["groups"][number]
+): DatabaseStructure {
+  return {
+    ...structure,
+    databases: structure.databases.map((database) => {
+      if (database.name !== databaseName) {
+        return database
+      }
+
+      return {
+        ...database,
+        groups: replaceGroup(database.groups, groupLabel, group),
+        schemas: database.schemas.map((schema) => {
+          if (schemaName && schema.name !== schemaName) {
+            return schema
+          }
+
+          return {
+            ...schema,
+            groups: replaceGroup(schema.groups, groupLabel, group),
+          }
+        }),
+      }
+    }),
+    groups: replaceGroup(structure.groups, groupLabel, group),
+    schemas: structure.schemas.map((schema) => {
+      if (schemaName && schema.name !== schemaName) {
+        return schema
+      }
+
+      return {
+        ...schema,
+        groups: replaceGroup(schema.groups, groupLabel, group),
+      }
+    }),
+  }
+}
+
+function replaceGroup(
+  groups: DatabaseStructure["groups"],
+  groupLabel: "Procedures" | "Funções",
+  group: DatabaseStructure["groups"][number]
+) {
+  const nextGroup = { ...group, label: groupLabel }
+  const found = groups.some((item) => item.label === groupLabel)
+
+  if (!found) {
+    return [...groups, nextGroup]
+  }
+
+  return groups.map((item) => (item.label === groupLabel ? nextGroup : item))
+}
+
+function findGroupInStructure(
+  structure: DatabaseStructure,
+  databaseName: string,
+  schemaName: string,
+  groupLabel: "Procedures" | "Funções"
+) {
+  const database = structure.databases.find((item) => item.name === databaseName) ?? structure.databases[0]
+  const schema = database?.schemas.find((item) => item.name === schemaName) ?? structure.schemas.find((item) => item.name === schemaName)
+  const groups = schema?.groups ?? database?.groups ?? structure.groups
+
+  return groups.find((group) => group.label === groupLabel)
 }
 
 function removeObjectFromGroups(

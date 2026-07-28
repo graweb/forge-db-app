@@ -39,6 +39,7 @@ import type {
   DatabaseType,
   DeleteDatabaseResult,
   DeleteTableResult,
+  DeleteViewResult,
   QueryExecutionResult,
   SavedConnection,
   TableDetails,
@@ -809,6 +810,133 @@ export async function getViewDetails(
       return getSqlServerViewDetails(connection, normalizedDatabase, normalizedSchema, normalizedView)
     case "sqlite":
       return getSqliteViewDetails(connection, normalizedView)
+    default:
+      throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function deleteView(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  viewName: string
+): Promise<DeleteViewResult> {
+  const normalizedDatabase = sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim()
+  const normalizedSchema = sanitizeDatabaseIdentifier(schemaName) || getFallbackSchemaName(connection)
+  const normalizedView = sanitizeDatabaseIdentifier(viewName)
+
+  if (!normalizedView) {
+    throw new Error("Informe uma view válida para excluir.")
+  }
+
+  switch (connection.databaseType) {
+    case "mysql":
+    case "mariadb": {
+      return withMySqlLikeClient(connection, normalizedDatabase, async (client) => {
+        await client.query(
+          `DROP VIEW IF EXISTS ${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+            connection.databaseType,
+            normalizedView
+          )}`
+        )
+
+        return {
+          message: "View excluída com sucesso.",
+          details: `A view ${normalizedView} foi removida.`,
+          viewName: normalizedView,
+          schemaName: normalizedSchema,
+        }
+      })
+    }
+
+    case "postgresql": {
+      const client = new PostgresClient({
+        host: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 5432,
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        database: normalizedDatabase || "postgres",
+        connectionTimeoutMillis: 5000,
+        ssl: Boolean(connection.useSsl) ? { rejectUnauthorized: false } : undefined,
+      })
+
+      await client.connect()
+
+      try {
+        await client.query(
+          `DROP VIEW IF EXISTS ${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
+            "postgresql",
+            normalizedView
+          )} CASCADE`
+        )
+
+        return {
+          message: "View excluída com sucesso.",
+          details: `A view ${normalizedView} foi removida.`,
+          viewName: normalizedView,
+          schemaName: normalizedSchema,
+        }
+      } finally {
+        await client.end()
+      }
+    }
+
+    case "sqlserver": {
+      const pool = await sql.connect({
+        user: sanitizeText(connection.user),
+        password: connection.password ?? "",
+        server: sanitizeText(connection.host) || "localhost",
+        port: parsePort(connection.port) ?? 1433,
+        database: normalizedDatabase || "master",
+        options: {
+          encrypt: Boolean(connection.useSsl),
+          trustServerCertificate: true,
+        },
+        connectionTimeout: 5000,
+        requestTimeout: 5000,
+      })
+
+      try {
+        await pool.request().query(
+          `DROP VIEW IF EXISTS ${quoteSqlServerIdentifier(normalizedSchema)}.${quoteSqlServerIdentifier(
+            normalizedView
+          )}`
+        )
+
+        return {
+          message: "View excluída com sucesso.",
+          details: `A view ${normalizedView} foi removida.`,
+          viewName: normalizedView,
+          schemaName: normalizedSchema,
+        }
+      } finally {
+        await pool.close()
+      }
+    }
+
+    case "sqlite": {
+      const filePath = sanitizeText(connection.databaseFile)
+      if (!filePath) {
+        throw new Error("Informe o arquivo SQLite da conexão.")
+      }
+
+      const resolvedPath = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath)
+      const db = new Database(resolvedPath)
+
+      try {
+        db.exec(`DROP VIEW IF EXISTS ${quoteIdentifier("sqlite", normalizedView)}`)
+
+        return {
+          message: "View excluída com sucesso.",
+          details: `A view ${normalizedView} foi removida.`,
+          viewName: normalizedView,
+          schemaName: "main",
+        }
+      } finally {
+        db.close()
+      }
+    }
+
     default:
       throw new Error("Tipo de banco não suportado.")
   }
@@ -2973,13 +3101,33 @@ async function buildMySqlLikeDatabaseStructure(
     `,
     [databaseName]
   )
+  const tableSizes = await runMySqlLikeMetadataQuery(
+    client,
+    databaseType,
+    `
+      SELECT
+        TABLE_NAME AS name,
+        COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0) AS size_bytes
+      FROM INFORMATION_SCHEMA.TABLES
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_TYPE = 'BASE TABLE'
+      ORDER BY TABLE_NAME
+    `,
+    [databaseName]
+  )
 
   const tableNames = extractNames(tables)
   const viewNames = extractNames(views)
   const tableColumnsByItem = await getMySqlLikeColumnsByItem(client, databaseType, databaseName, tableNames)
   const viewColumnsByItem = await getMySqlLikeColumnsByItem(client, databaseType, databaseName, viewNames)
   const groups = [
-    createGroup("Tabelas", tableNames, tableColumnsByItem.columnsByItem, tableColumnsByItem.columnsDetailsByItem),
+    createGroup(
+      "Tabelas",
+      tableNames,
+      tableColumnsByItem.columnsByItem,
+      tableColumnsByItem.columnsDetailsByItem,
+      extractSizesByItem(tableSizes)
+    ),
     createGroup("Views", viewNames, viewColumnsByItem.columnsByItem, viewColumnsByItem.columnsDetailsByItem),
     createGroup("Índices", extractNames(indexes)),
     createGroup("Funções", extractNames(functions)),
@@ -3016,9 +3164,25 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
   await client.connect()
 
   try {
-    const schemaQuery = "SELECT current_schema() AS name"
-    const schemaResult = await client.query(schemaQuery)
-    const schemaName = String(schemaResult.rows[0]?.name ?? "public")
+    const schemaResult = await client.query("SELECT current_schema() AS name")
+    const currentSchemaName = String(schemaResult.rows[0]?.name ?? "public")
+    const databaseResult = await client.query("SELECT current_database() AS name")
+    const databaseName =
+      String(databaseResult.rows[0]?.name ?? databaseResult.rows[0]?.NAME ?? "").trim() ||
+      database ||
+      "postgres"
+    const schemasResult = await client.query(`
+      SELECT schema_name AS name
+      FROM information_schema.schemata
+      WHERE schema_name NOT IN ('information_schema', 'pg_catalog')
+        AND schema_name NOT LIKE 'pg_toast%'
+        AND schema_name NOT LIKE 'pg_temp_%'
+      ORDER BY
+        CASE WHEN schema_name = current_schema() THEN 0 ELSE 1 END,
+        schema_name
+    `)
+    const schemaNames = extractNames(schemasResult.rows)
+    const normalizedSchemaNames = schemaNames.length ? schemaNames : [currentSchemaName]
     const encodingResult = await client.query(`
       SELECT pg_encoding_to_char(encoding) AS encoding
       FROM pg_database
@@ -3029,79 +3193,106 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
       String(encodingResult.rows[0]?.encoding ?? encodingResult.rows[0]?.ENCODING ?? "").trim() ||
       undefined
 
-    const tables = await client.query(
-      `
-        SELECT table_name AS name
-        FROM information_schema.tables
-        WHERE table_schema = $1
-          AND table_type = 'BASE TABLE'
-        ORDER BY table_name
-      `,
-      [schemaName]
-    )
-    const views = await client.query(
-      `
-        SELECT table_name AS name
-        FROM information_schema.tables
-        WHERE table_schema = $1
-          AND table_type = 'VIEW'
-        ORDER BY table_name
-      `,
-      [schemaName]
-    )
-    const indexes = await client.query(
-      `
-        SELECT indexname AS name
-        FROM pg_indexes
-        WHERE schemaname = $1
-        ORDER BY indexname
-      `,
-      [schemaName]
-    )
-    const procedures = await client.query(
-      `
-        SELECT routine_name AS name
-        FROM information_schema.routines
-        WHERE routine_schema = $1
-          AND routine_type = 'PROCEDURE'
-        ORDER BY routine_name
-      `,
-      [schemaName]
-    )
-    const functions = await client.query(
-      `
-        SELECT routine_name AS name
-        FROM information_schema.routines
-        WHERE routine_schema = $1
-          AND routine_type = 'FUNCTION'
-        ORDER BY routine_name
-      `,
-      [schemaName]
-    )
+    const schemas: DatabaseStructure["schemas"] = []
 
-    const tableNames = extractNames(tables.rows)
-    const viewNames = extractNames(views.rows)
-    const tableColumnsByItem = await getPostgreSqlColumnsByItem(client, schemaName, tableNames)
-    const viewColumnsByItem = await getPostgreSqlColumnsByItem(client, schemaName, viewNames)
-    const groups = [
-      createGroup("Tabelas", tableNames, tableColumnsByItem.columnsByItem, tableColumnsByItem.columnsDetailsByItem),
-      createGroup("Views", viewNames, viewColumnsByItem.columnsByItem, viewColumnsByItem.columnsDetailsByItem),
-      createGroup("Índices", extractNames(indexes.rows)),
-      createGroup("Funções", extractNames(functions.rows)),
-      createGroup("Procedures", extractNames(procedures.rows)),
-    ]
+    for (const schemaName of normalizedSchemaNames) {
+      const tables = await client.query(
+        `
+          SELECT table_name AS name
+          FROM information_schema.tables
+          WHERE table_schema = $1
+            AND table_type = 'BASE TABLE'
+          ORDER BY table_name
+        `,
+        [schemaName]
+      )
+      const views = await client.query(
+        `
+          SELECT table_name AS name
+          FROM information_schema.tables
+          WHERE table_schema = $1
+            AND table_type = 'VIEW'
+          ORDER BY table_name
+        `,
+        [schemaName]
+      )
+      const indexes = await client.query(
+        `
+          SELECT indexname AS name
+          FROM pg_indexes
+          WHERE schemaname = $1
+          ORDER BY indexname
+        `,
+        [schemaName]
+      )
+      const procedures = await client.query(
+        `
+          SELECT routine_name AS name
+          FROM information_schema.routines
+          WHERE routine_schema = $1
+            AND routine_type = 'PROCEDURE'
+          ORDER BY routine_name
+        `,
+        [schemaName]
+      )
+      const functions = await client.query(
+        `
+          SELECT routine_name AS name
+          FROM information_schema.routines
+          WHERE routine_schema = $1
+            AND routine_type = 'FUNCTION'
+          ORDER BY routine_name
+        `,
+        [schemaName]
+      )
+      const tableSizes = await client.query(
+        `
+          SELECT
+            c.relname AS name,
+            pg_total_relation_size(c.oid) AS size_bytes
+          FROM pg_class c
+          INNER JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = $1
+            AND c.relkind IN ('r', 'p')
+          ORDER BY c.relname
+        `,
+        [schemaName]
+      )
+
+      const tableNames = extractNames(tables.rows)
+      const viewNames = extractNames(views.rows)
+      const tableColumnsByItem = await getPostgreSqlColumnsByItem(client, schemaName, tableNames)
+      const viewColumnsByItem = await getPostgreSqlColumnsByItem(client, schemaName, viewNames)
+
+      schemas.push({
+        name: schemaName,
+        groups: [
+          createGroup(
+            "Tabelas",
+            tableNames,
+            tableColumnsByItem.columnsByItem,
+            tableColumnsByItem.columnsDetailsByItem,
+            extractSizesByItem(tableSizes.rows)
+          ),
+          createGroup("Views", viewNames, viewColumnsByItem.columnsByItem, viewColumnsByItem.columnsDetailsByItem),
+          createGroup("Índices", extractNames(indexes.rows)),
+          createGroup("Funções", extractNames(functions.rows)),
+          createGroup("Procedures", extractNames(procedures.rows)),
+        ],
+      })
+    }
 
     return {
       databases: [
         {
-          name: connection.databaseName.trim() || "schema",
-          schemas: [{ name: schemaName, groups }],
-          groups,
+          name: databaseName,
+          schemas,
+          groups: schemas[0]?.groups ?? [],
           encoding,
         },
       ],
-      schemas: [{ name: schemaName, groups }],
-      groups,
+      schemas,
+      groups: schemas[0]?.groups ?? [],
       users: await getPostgreSqlUsers(client),
     }
   } finally {
@@ -3307,6 +3498,19 @@ async function getSqlServerDatabaseStructure(
       WHERE o.type IN ('U', 'V')
       ORDER BY s.name, o.name, c.column_id
     `)
+  const tableSizes = await pool.request().query(`
+    SELECT
+      s.name AS schema_name,
+      t.name AS name,
+      SUM(a.total_pages) * 8 * 1024 AS size_bytes
+    FROM ${quotedDatabase}.sys.tables t
+    INNER JOIN ${quotedDatabase}.sys.schemas s ON t.schema_id = s.schema_id
+    INNER JOIN ${quotedDatabase}.sys.indexes i ON t.object_id = i.object_id
+    INNER JOIN ${quotedDatabase}.sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
+    INNER JOIN ${quotedDatabase}.sys.allocation_units a ON p.partition_id = a.container_id
+    GROUP BY s.name, t.name
+    ORDER BY s.name, t.name
+  `)
 
     const schemaNames = uniqueStrings([
       ...extractNames(schemasResult.recordset),
@@ -3325,6 +3529,7 @@ async function getSqlServerDatabaseStructure(
           items: extractNamesForSchema(tables.recordset, schemaName),
           columnsByItem: extractColumnsByObjectForSchema(columns.recordset, schemaName),
           columnsDetailsByItem: extractColumnsDetailsByObjectForSchema(columns.recordset, schemaName),
+          sizesByItem: extractSizesByItemForSchema(tableSizes.recordset, schemaName),
         },
         {
           label: "Views",
@@ -3344,6 +3549,31 @@ async function getSqlServerDatabaseStructure(
     groups: schemas[0]?.groups ?? [],
     collation,
   }
+}
+
+function extractSizesByItem(rows: Array<Record<string, unknown>>) {
+  const sizesByItem: Record<string, number> = {}
+
+  for (const row of rows) {
+    const name = String(row.name ?? row.NAME ?? row.table_name ?? row.TABLE_NAME ?? "").trim()
+    const size = Number(row.size_bytes ?? row.SIZE_BYTES ?? row.size ?? row.SIZE ?? 0)
+
+    if (!name || !Number.isFinite(size)) {
+      continue
+    }
+
+    sizesByItem[name] = Math.max(0, size)
+  }
+
+  return sizesByItem
+}
+
+function extractSizesByItemForSchema(rows: Array<Record<string, unknown>>, schemaName: string) {
+  const normalizedSchemaName = schemaName.trim()
+
+  return extractSizesByItem(
+    rows.filter((row) => String(row.schema_name ?? row.SCHEMA_NAME ?? "").trim() === normalizedSchemaName)
+  )
 }
 
 async function getMySqlLikeTableDetails(

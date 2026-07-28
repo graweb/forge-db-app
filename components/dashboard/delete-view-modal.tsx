@@ -34,14 +34,43 @@ export function DeleteViewModal({
   const activeDatabase = database
   const activeViewName = viewName
   const resolvedSchemaName = schemaName || "public"
+  const resolvedDatabaseName =
+    activeConnection.databaseType === "mysql" || activeConnection.databaseType === "mariadb"
+      ? activeDatabase.name
+      : activeConnection.databaseType === "sqlserver"
+        ? activeDatabase.name
+        : activeConnection.databaseName
 
   async function handleDelete() {
     setSaving(true)
     setErrorMessage(null)
 
     try {
-      await onDeleted()
+      const response = await fetch(
+        `/api/connections/${activeConnection.id}/views/${encodeURIComponent(activeViewName)}?databaseName=${encodeURIComponent(
+          resolvedDatabaseName
+        )}&schemaName=${encodeURIComponent(resolvedSchemaName)}`,
+        {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      )
+
+      const payload: {
+        success: boolean
+        message: string
+        details: string
+      } = await response.json()
+
+      if (!response.ok || !payload.success) {
+        setErrorMessage(payload.details || payload.message || "Não foi possível excluir a view.")
+        return
+      }
+
       onOpenChange(false)
+      await onDeleted()
     } catch {
       setErrorMessage("Falha inesperada ao excluir a view.")
     } finally {

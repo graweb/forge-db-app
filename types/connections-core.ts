@@ -64,6 +64,7 @@ export type DatabaseStructureGroup = {
       primaryKey?: boolean
     }>
   >
+  sizesByItem?: Record<string, number>
 }
 
 export type DatabaseStructureSchema = {

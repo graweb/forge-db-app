@@ -142,3 +142,10 @@ export type DeleteTableResult = {
   tableName: string
   schemaName: string
 }
+
+export type DeleteViewResult = {
+  message: string
+  details: string
+  viewName: string
+  schemaName: string
+}

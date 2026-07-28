@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server"
 
-import { getConnectionById, getViewDetails } from "@/lib/connections"
+import { deleteView, getConnectionById, getViewDetails } from "@/lib/connections"
 
 export const runtime = "nodejs"
 
@@ -50,6 +50,54 @@ export async function GET(
       {
         success: false,
         message: "Não foi possível carregar a view.",
+        details: message,
+      },
+      { status: 400 }
+    )
+  }
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ connectionId: string; viewName: string }> }
+) {
+  try {
+    const { connectionId, viewName } = await params
+    const connection = getConnectionById(connectionId)
+
+    if (!connection) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Conexão não encontrada.",
+          details: "A conexão informada não existe.",
+        },
+        { status: 404 }
+      )
+    }
+
+    const { databaseName, schemaName } = getQueryParams(request)
+    const result = await deleteView(
+      connection,
+      databaseName,
+      schemaName,
+      decodeURIComponent(viewName)
+    )
+
+    return NextResponse.json({
+      success: true,
+      message: result.message,
+      details: result.details,
+      viewName: result.viewName,
+      schemaName: result.schemaName,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Erro desconhecido ao excluir view."
+
+    return NextResponse.json(
+      {
+        success: false,
+        message: "Não foi possível excluir a view.",
         details: message,
       },
       { status: 400 }
