@@ -36,6 +36,27 @@ export type DashboardSidebarProps = {
     schemaName: string,
     groupLabel: "Procedures" | "Funções"
   ) => void | Promise<void>
+  onExecuteRoutine: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    routineName: string,
+    kind: "procedure" | "function"
+  ) => void | Promise<void>
+  onEditRoutine: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    routineName: string,
+    kind: "procedure" | "function"
+  ) => void | Promise<void>
+  onDeleteRoutine: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    routineName: string,
+    kind: "procedure" | "function"
+  ) => void
   onEditView: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
@@ -113,6 +134,27 @@ export type DashboardSidebarActions = {
     schemaName: string,
     groupLabel: "Procedures" | "Funções"
   ) => void | Promise<void>
+  onExecuteRoutine: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    routineName: string,
+    kind: "procedure" | "function"
+  ) => void | Promise<void>
+  onEditRoutine: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    routineName: string,
+    kind: "procedure" | "function"
+  ) => void | Promise<void>
+  onDeleteRoutine: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string,
+    routineName: string,
+    kind: "procedure" | "function"
+  ) => void
   onEditView: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,

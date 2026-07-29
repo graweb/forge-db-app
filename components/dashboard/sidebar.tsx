@@ -62,6 +62,9 @@ export function DashboardSidebar({
   onCreateView,
   onCreateRoutine,
   onRefreshRoutineGroup,
+  onExecuteRoutine,
+  onEditRoutine,
+  onDeleteRoutine,
   onEditTable,
   onDeleteTable,
   onSelect100Rows,
@@ -89,6 +92,9 @@ export function DashboardSidebar({
     onCreateView,
     onCreateRoutine,
     onRefreshRoutineGroup,
+    onExecuteRoutine,
+    onEditRoutine,
+    onDeleteRoutine,
     onEditTable,
     onDeleteTable,
     onSelect100Rows,
@@ -118,12 +124,12 @@ export function DashboardSidebar({
 
           <div className="flex items-center justify-center py-1">
             <Image
-              src="/logo.png"
+              src="/logo_branco.png"
               alt="Forge DB"
               width={160}
               height={48}
               priority
-              className="h-20 w-auto object-contain"
+              className="h-32 w-auto object-contain"
             />
           </div>
 
@@ -508,13 +514,15 @@ function buildGroupNode(
         />
       ) : isAvailable && isProcedureGroup ? (
         <RoutineGroupContextMenu
-          createLabel="Criar procedure"
+          createLabel={connection.databaseType === "sqlite" ? "Procedures não suportadas" : "Criar procedure"}
+          supported={connection.databaseType !== "sqlite"}
           onCreate={() => actions.onCreateRoutine(connection, database, schemaName, "procedure")}
           onRefresh={() => void actions.onRefreshRoutineGroup(connection, database, schemaName, "Procedures")}
         />
       ) : isAvailable && isFunctionGroup ? (
         <RoutineGroupContextMenu
-          createLabel="Criar função"
+          createLabel={connection.databaseType === "sqlite" ? "Funções da aplicação" : "Criar função"}
+          supported={connection.databaseType !== "sqlite"}
           onCreate={() => actions.onCreateRoutine(connection, database, schemaName, "function")}
           onRefresh={() => void actions.onRefreshRoutineGroup(connection, database, schemaName, "Funções")}
         />
@@ -531,6 +539,7 @@ function buildGroupNode(
       const tableName = item
       const columnDetails = group.columnsDetailsByItem?.[item] ?? []
       const tableSize = isTableGroup ? group.sizesByItem?.[item] : undefined
+      const routineKind = isProcedureGroup ? "procedure" : isFunctionGroup ? "function" : null
       const renderTableItemContextMenu = () => (
         <TableItemContextMenu
           onCreateTable={() => actions.onCreateTable(connection, database, schemaName)}
@@ -574,6 +583,14 @@ function buildGroupNode(
           onDeleteView={() => actions.onDeleteView(connection, database, schemaName, tableReference, item)}
         />
       )
+      const renderRoutineItemContextMenu = () =>
+        routineKind ? (
+          <RoutineItemContextMenu
+            onExecute={() => actions.onExecuteRoutine(connection, database, schemaName, item, routineKind)}
+            onEdit={() => actions.onEditRoutine(connection, database, schemaName, item, routineKind)}
+            onDelete={() => actions.onDeleteRoutine(connection, database, schemaName, item, routineKind)}
+          />
+        ) : null
       const columnChildren =
         isTableGroup && columnDetails.length
           ? columnDetails.map((column) => ({
@@ -602,17 +619,21 @@ function buildGroupNode(
         onDoubleClick: supportsQueryActions
           ? () => void actions.onRunTableQuery(tableReference, queryDatabaseName, isViewGroup ? "view" : "table")
           : undefined,
-        contextActions: isTableGroup ? renderTableItemContextMenu() : isViewGroup ? (
-          renderViewItemContextMenu()
-        ) : (
-          <TreeContextMenu
-            objectPath={tableReference}
-            onInsertText={() => actions.onInsertText(`SELECT *\nFROM ${tableReference};`)}
-            onPreviewTable={() => void actions.onPreviewTable(tableReference)}
-            onExecuteTable={() => void actions.onExecuteTable(tableReference)}
-            supportsQueryActions={supportsQueryActions}
-          />
-        ),
+        contextActions: isTableGroup
+          ? renderTableItemContextMenu()
+          : isViewGroup
+            ? renderViewItemContextMenu()
+            : routineKind
+              ? renderRoutineItemContextMenu()
+              : (
+                <TreeContextMenu
+                  objectPath={tableReference}
+                  onInsertText={() => actions.onInsertText(`SELECT *\nFROM ${tableReference};`)}
+                  onPreviewTable={() => void actions.onPreviewTable(tableReference)}
+                  onExecuteTable={() => void actions.onExecuteTable(tableReference)}
+                  supportsQueryActions={supportsQueryActions}
+                />
+              ),
       }
     }),
   }
@@ -620,17 +641,37 @@ function buildGroupNode(
 
 function RoutineGroupContextMenu({
   createLabel,
+  supported = true,
   onCreate,
   onRefresh,
 }: {
   createLabel: string
+  supported?: boolean
   onCreate: () => void
   onRefresh: () => void
 }) {
   return (
     <div className="min-w-52 p-1">
-      <ContextMenuItem onSelect={onCreate}>{createLabel}</ContextMenuItem>
+      <ContextMenuItem disabled={!supported} onSelect={onCreate}>{createLabel}</ContextMenuItem>
       <ContextMenuItem onSelect={onRefresh}>Atualizar</ContextMenuItem>
+    </div>
+  )
+}
+
+function RoutineItemContextMenu({
+  onExecute,
+  onEdit,
+  onDelete,
+}: {
+  onExecute: () => void
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  return (
+    <div className="min-w-52 p-1">
+      <ContextMenuItem onSelect={onExecute}>Executar</ContextMenuItem>
+      <ContextMenuItem onSelect={onEdit}>Editar</ContextMenuItem>
+      <ContextMenuItem onSelect={onDelete}>Excluir</ContextMenuItem>
     </div>
   )
 }

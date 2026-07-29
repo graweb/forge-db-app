@@ -1,5 +1,6 @@
 import type {
   DatabaseStructureDatabase,
+  RoutineDetails,
   SavedConnection,
   TableDetails,
   ViewDetails,
@@ -118,12 +119,20 @@ export type RoutineKind = "procedure" | "function"
 export type CreateRoutineModalProps = {
   open: boolean
   connection: SavedConnection | null
+  mode?: "create" | "edit"
   database?: DatabaseStructureDatabase | null
   databaseName?: string
   schemaName?: string
+  initialRoutine?: RoutineDetails | null
   initialKind: RoutineKind
   onOpenChange: (open: boolean) => void
-  onSaved: (details: { message: string; details: string; routineName: string; kind: RoutineKind }) => void | Promise<void>
+  onSaved: (details: {
+    message: string
+    details: string
+    routineName: string
+    schemaName: string
+    kind: RoutineKind
+  }) => void | Promise<void>
 }
 
 export type DeleteDatabaseModalProps = {
@@ -151,6 +160,17 @@ export type DeleteViewModalProps = {
   schemaName?: string
   viewName?: string
   viewPath?: string
+  onOpenChange: (open: boolean) => void
+  onDeleted: () => void | Promise<void>
+}
+
+export type DeleteRoutineModalProps = {
+  open: boolean
+  connection: SavedConnection | null
+  database: DatabaseStructureDatabase | null
+  schemaName?: string
+  routineName?: string
+  kind: RoutineKind
   onOpenChange: (open: boolean) => void
   onDeleted: () => void | Promise<void>
 }

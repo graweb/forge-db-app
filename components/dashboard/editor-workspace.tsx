@@ -207,9 +207,18 @@ function getAutocompleteSuggestions(
 
   const context = getAutocompleteContext(model, position)
   const objects = getAutocompleteObjects(connection, database)
+  const routineContext = getRoutineAutocompleteContext(model, position)
   const currentStatement = getCurrentSqlStatementAtCursor(model, position)
   const statementText = currentStatement?.text ?? model.getValue()
   const sources = getAutocompleteSources(statementText, objects)
+
+  if (routineContext === "procedure") {
+    return buildObjectSuggestions(objects.filter((object) => object.detail === "Procedure"))
+  }
+
+  if (routineContext === "function") {
+    return buildObjectSuggestions(objects.filter((object) => object.detail === "Função"))
+  }
 
   if (context.mode === "columns") {
     const targetSources = context.sourceReference
@@ -225,8 +234,11 @@ function getAutocompleteSuggestions(
     return buildColumnSuggestions(targetSources)
   }
 
-  const suggestions: SqlAutocompleteSuggestion[] = []
+  return buildObjectSuggestions(objects)
+}
 
+function buildObjectSuggestions(objects: AutocompleteObject[]) {
+  const suggestions: SqlAutocompleteSuggestion[] = []
   for (const object of objects) {
     suggestions.push({
       label: object.reference,
@@ -237,6 +249,30 @@ function getAutocompleteSuggestions(
   }
 
   return dedupeAutocompleteSuggestions(suggestions)
+}
+
+function getRoutineAutocompleteContext(
+  model: Monaco.editor.ITextModel,
+  position: Monaco.Position
+) {
+  const statement = getCurrentSqlStatementAtCursor(model, position)
+  const textUntilCursor = model.getValueInRange({
+    startLineNumber: statement?.startLine ?? 1,
+    startColumn: 1,
+    endLineNumber: position.lineNumber,
+    endColumn: position.column,
+  })
+  const compactText = textUntilCursor.replace(/\s+/g, " ").trimStart()
+
+  if (/\b(?:call|exec|execute)\s+[`"\[\]\w.]*$/i.test(compactText)) {
+    return "procedure"
+  }
+
+  if (/\bselect\s+[`"\[\]\w.]*$/i.test(compactText)) {
+    return "function"
+  }
+
+  return null
 }
 
 function getAutocompleteContext(

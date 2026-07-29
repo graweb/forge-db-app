@@ -5,7 +5,7 @@ import type { CSSProperties } from "react"
 import { AlertTriangle, GripVertical } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 
-import type { DatabaseStructure, DatabaseStructureDatabase, SavedConnection } from "@/types/connections"
+import type { DatabaseStructure, DatabaseStructureDatabase, RoutineDetails, SavedConnection } from "@/types/connections"
 import type { ViewDetails } from "@/types/connections"
 import type {
   DashboardEditorWorkspaceHandle,
@@ -21,6 +21,7 @@ import { CreateUserModal } from "./create-user-modal"
 import { CreateTableModal } from "./create-table-modal"
 import { DeleteTableModal } from "./delete-table-modal"
 import { DeleteViewModal } from "./delete-view-modal"
+import { DeleteRoutineModal } from "./delete-routine-modal"
 import { DeleteDatabaseModal } from "./delete-database-modal"
 import { DeleteConnectionModal } from "./delete-connection-modal"
 import { DashboardEditorWorkspace } from "./editor-workspace"
@@ -44,6 +45,47 @@ function getEffectiveTableDatabaseName(
   }
 
   return connection.databaseName || database.name
+}
+
+function getRoutineReference(
+  connection: SavedConnection,
+  database: DatabaseStructureDatabase,
+  schemaName: string,
+  routineName: string
+) {
+  if (connection.databaseType === "sqlserver") {
+    return `[${database.name}].[${schemaName}].[${routineName}]`
+  }
+
+  if (connection.databaseType === "postgresql") {
+    return schemaName === "public" ? `"${routineName}"` : `"${schemaName}"."${routineName}"`
+  }
+
+  if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
+    return `\`${database.name}\`.\`${routineName}\``
+  }
+
+  return routineName
+}
+
+function getExecuteProcedureSql(connection: SavedConnection, routineReference: string) {
+  if (connection.databaseType === "postgresql") {
+    return `CALL ${routineReference}();`
+  }
+
+  if (connection.databaseType === "sqlserver") {
+    return `EXEC ${routineReference};`
+  }
+
+  return `CALL ${routineReference}();`
+}
+
+function getExecuteFunctionSql(connection: SavedConnection, routineReference: string) {
+  if (connection.databaseType === "sqlserver") {
+    return `SELECT ${routineReference}();`
+  }
+
+  return `SELECT ${routineReference}();`
 }
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "forge-db:dashboard-sidebar-width"
@@ -86,8 +128,10 @@ export function DashboardShell({
   const [viewModalMode, setViewModalMode] = useState<"create" | "edit">("create")
   const [viewModalKey, setViewModalKey] = useState(0)
   const [isRoutineModalOpen, setIsRoutineModalOpen] = useState(false)
+  const [routineModalMode, setRoutineModalMode] = useState<"create" | "edit">("create")
   const [routineModalKey, setRoutineModalKey] = useState(0)
   const [routineInitialKind, setRoutineInitialKind] = useState<RoutineKind>("procedure")
+  const [routineTarget, setRoutineTarget] = useState<RoutineDetails | null>(null)
   const [isUserModalOpen, setIsUserModalOpen] = useState(false)
   const [userModalKey, setUserModalKey] = useState(0)
   const [tableTargetConnection, setTableTargetConnection] = useState<SavedConnection | null>(null)
@@ -114,6 +158,14 @@ export function DashboardShell({
     viewName: string
   } | null>(null)
   const [isDeleteViewModalOpen, setIsDeleteViewModalOpen] = useState(false)
+  const [deleteRoutineTarget, setDeleteRoutineTarget] = useState<{
+    connection: SavedConnection
+    database: DatabaseStructureDatabase
+    schemaName: string
+    routineName: string
+    kind: RoutineKind
+  } | null>(null)
+  const [isDeleteRoutineModalOpen, setIsDeleteRoutineModalOpen] = useState(false)
   const [userTargetConnection, setUserTargetConnection] = useState<SavedConnection | null>(null)
   const [userTargetDatabaseName, setUserTargetDatabaseName] = useState<string>("")
   const [userTargetSchemaName, setUserTargetSchemaName] = useState<string>("")
@@ -133,8 +185,19 @@ export function DashboardShell({
   const [localViewAdditions, setLocalViewAdditions] = useState<
     Record<string, Array<{ databaseName: string; schemaName: string; viewName: string }>>
   >({})
+  const [localRoutineAdditions, setLocalRoutineAdditions] = useState<
+    Record<
+      string,
+      Array<{
+        databaseName: string
+        schemaName: string
+        groupLabel: "Procedures" | "Funções"
+        routineName: string
+      }>
+    >
+  >({})
   const [localObjectRemovals, setLocalObjectRemovals] = useState<
-    Record<string, Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views"; objectName: string }>>
+    Record<string, Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções"; objectName: string }>>
   >({})
   const [localGroupReplacements, setLocalGroupReplacements] = useState<
     Record<
@@ -177,8 +240,14 @@ export function DashboardShell({
             structure
           ),
         }
-      }, applyLocalGroupReplacements(applyLocalObjectRemovals(databaseStructuresById, localObjectRemovals), localGroupReplacements)),
-    [databaseStructuresById, localViewAdditions, localObjectRemovals, localGroupReplacements]
+      }, applyLocalRoutineAdditions(
+        applyLocalGroupReplacements(
+          applyLocalObjectRemovals(databaseStructuresById, localObjectRemovals),
+          localGroupReplacements
+        ),
+        localRoutineAdditions
+      )),
+    [databaseStructuresById, localViewAdditions, localObjectRemovals, localGroupReplacements, localRoutineAdditions]
   )
   const activeDatabaseStructure = connection
     ? localDatabaseStructuresById[connection.id] ?? databaseStructure
@@ -297,6 +366,49 @@ export function DashboardShell({
     })
   }
 
+  function addRoutineToLocalStructure({
+    connectionId,
+    databaseName,
+    schemaName,
+    groupLabel,
+    routineName,
+  }: {
+    connectionId: string
+    databaseName: string
+    schemaName: string
+    groupLabel: "Procedures" | "Funções"
+    routineName: string
+  }) {
+    const normalizedRoutineName = routineName.trim()
+
+    if (!normalizedRoutineName) {
+      return
+    }
+
+    setLocalRoutineAdditions((current) => {
+      const additions = current[connectionId] ?? []
+      const alreadyAdded = additions.some(
+        (addition) =>
+          addition.databaseName === databaseName &&
+          addition.schemaName === schemaName &&
+          addition.groupLabel === groupLabel &&
+          addition.routineName === normalizedRoutineName
+      )
+
+      if (alreadyAdded) {
+        return current
+      }
+
+      return {
+        ...current,
+        [connectionId]: [
+          ...additions,
+          { databaseName, schemaName, groupLabel, routineName: normalizedRoutineName },
+        ],
+      }
+    })
+  }
+
   function removeObjectFromLocalStructure({
     connectionId,
     databaseName,
@@ -307,7 +419,7 @@ export function DashboardShell({
     connectionId: string
     databaseName: string
     schemaName: string
-    groupLabel: "Tabelas" | "Views"
+    groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções"
     objectName: string
   }) {
     const normalizedObjectName = objectName.trim()
@@ -324,6 +436,28 @@ export function DashboardShell({
             addition.databaseName !== databaseName ||
             addition.schemaName !== schemaName ||
             addition.viewName !== normalizedObjectName
+        )
+
+        if (nextAdditions.length === additions.length) {
+          return current
+        }
+
+        return {
+          ...current,
+          [connectionId]: nextAdditions,
+        }
+      })
+    }
+
+    if (groupLabel === "Procedures" || groupLabel === "Funções") {
+      setLocalRoutineAdditions((current) => {
+        const additions = current[connectionId] ?? []
+        const nextAdditions = additions.filter(
+          (addition) =>
+            addition.databaseName !== databaseName ||
+            addition.schemaName !== schemaName ||
+            addition.groupLabel !== groupLabel ||
+            addition.routineName !== normalizedObjectName
         )
 
         if (nextAdditions.length === additions.length) {
@@ -533,6 +667,8 @@ export function DashboardShell({
                 setRoutineTargetConnection(connectionToUse)
                 setRoutineTargetDatabase(databaseToUse)
                 setRoutineTargetSchema(schemaName)
+                setRoutineTarget(null)
+                setRoutineModalMode("create")
                 setRoutineInitialKind(kind)
                 setRoutineModalKey((current) => current + 1)
                 setIsRoutineModalOpen(true)
@@ -545,6 +681,80 @@ export function DashboardShell({
                   groupLabel,
                 })
               }
+              onExecuteRoutine={(connectionToUse, databaseToUse, schemaName, routineName, kind) => {
+                const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
+                const routineReference = getRoutineReference(connectionToUse, databaseToUse, schemaName, routineName)
+                const sqlText = kind === "procedure"
+                  ? getExecuteProcedureSql(connectionToUse, routineReference)
+                  : getExecuteFunctionSql(connectionToUse, routineReference)
+
+                setActivePane("editor")
+                editorWorkspaceRef.current?.executeSqlText(sqlText, {
+                  title: `Executar ${kind === "procedure" ? "procedure" : "função"}: ${routineName}`,
+                  databaseName,
+                  insertIntoEditor: true,
+                  sourceKind: "query",
+                })
+              }}
+              onEditRoutine={async (connectionToUse, databaseToUse, schemaName, routineName, kind) => {
+                const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
+
+                try {
+                  const response = await fetch(
+                    `/api/connections/${connectionToUse.id}/routines/${encodeURIComponent(routineName)}?databaseName=${encodeURIComponent(
+                      databaseName
+                    )}&schemaName=${encodeURIComponent(schemaName)}&kind=${kind}`
+                  )
+                  const payload: {
+                    success: boolean
+                    message?: string
+                    details?: string
+                    databaseName?: string
+                    schemaName?: string
+                    routineName?: string
+                    kind?: RoutineKind
+                    sqlText?: string
+                  } = await response.json()
+
+                  if (!response.ok || !payload.success || !payload.sqlText) {
+                    showNotice({
+                      title: "Não foi possível carregar a rotina",
+                      message: payload.details || payload.message || "Tente novamente em instantes.",
+                    })
+                    return
+                  }
+
+                  setRoutineTargetConnection(connectionToUse)
+                  setRoutineTargetDatabase(databaseToUse)
+                  setRoutineTargetSchema(payload.schemaName || schemaName)
+                  setRoutineInitialKind(kind)
+                  setRoutineModalMode("edit")
+                  setRoutineTarget({
+                    databaseName: payload.databaseName || databaseName,
+                    schemaName: payload.schemaName || schemaName,
+                    routineName: payload.routineName || routineName,
+                    kind,
+                    sqlText: payload.sqlText,
+                  })
+                  setRoutineModalKey((current) => current + 1)
+                  setIsRoutineModalOpen(true)
+                } catch {
+                  showNotice({
+                    title: "Erro ao carregar rotina",
+                    message: "Não foi possível abrir a rotina para edição.",
+                  })
+                }
+              }}
+              onDeleteRoutine={(connectionToUse, databaseToUse, schemaName, routineName, kind) => {
+                setDeleteRoutineTarget({
+                  connection: connectionToUse,
+                  database: databaseToUse,
+                  schemaName,
+                  routineName,
+                  kind,
+                })
+                setIsDeleteRoutineModalOpen(true)
+              }}
               onEditView={async (connectionToUse, databaseToUse, schemaName, _viewPath, viewName) => {
                 const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
 
@@ -1069,9 +1279,11 @@ export function DashboardShell({
         key={`${routineTargetConnection?.id ?? "none"}-${routineTargetDatabase?.name ?? "none"}-${routineTargetSchema}-${routineInitialKind}-${routineModalKey}`}
         open={isRoutineModalOpen}
         connection={routineTargetConnection}
+        mode={routineModalMode}
         database={routineTargetDatabase}
         databaseName={routineTargetDatabase?.name}
         schemaName={routineTargetSchema}
+        initialRoutine={routineTarget}
         initialKind={routineInitialKind}
         onOpenChange={(open) => {
           setIsRoutineModalOpen(open)
@@ -1079,17 +1291,36 @@ export function DashboardShell({
             setRoutineTargetConnection(null)
             setRoutineTargetDatabase(null)
             setRoutineTargetSchema("")
+            setRoutineTarget(null)
+            setRoutineModalMode("create")
           }
         }}
-        onSaved={async ({ message, details, kind }) => {
+        onSaved={async ({ message, details, routineName, schemaName, kind }) => {
           if (routineTargetConnection && routineTargetDatabase) {
+            const groupLabel = kind === "procedure" ? "Procedures" : "Funções"
+
+            addRoutineToLocalStructure({
+              connectionId: routineTargetConnection.id,
+              databaseName: routineTargetDatabase.name,
+              schemaName,
+              groupLabel,
+              routineName,
+            })
+
             await refreshRoutineGroup({
               connectionToUse: routineTargetConnection,
               databaseToUse: routineTargetDatabase,
-              schemaName: routineTargetSchema,
-              groupLabel: kind === "procedure" ? "Procedures" : "Funções",
+              schemaName,
+              groupLabel,
             })
           }
+
+          setIsRoutineModalOpen(false)
+          setRoutineTargetConnection(null)
+          setRoutineTargetDatabase(null)
+          setRoutineTargetSchema("")
+          setRoutineTarget(null)
+          setRoutineModalMode("create")
 
           showNotice({
             title: message,
@@ -1223,6 +1454,48 @@ export function DashboardShell({
           })
         }}
       />
+
+      <DeleteRoutineModal
+        open={isDeleteRoutineModalOpen}
+        connection={deleteRoutineTarget?.connection ?? null}
+        database={deleteRoutineTarget?.database ?? null}
+        schemaName={deleteRoutineTarget?.schemaName}
+        routineName={deleteRoutineTarget?.routineName}
+        kind={deleteRoutineTarget?.kind ?? "procedure"}
+        onOpenChange={(open) => {
+          setIsDeleteRoutineModalOpen(open)
+          if (!open) {
+            setDeleteRoutineTarget(null)
+          }
+        }}
+        onDeleted={async () => {
+          if (!deleteRoutineTarget) {
+            return
+          }
+
+          const groupLabel = deleteRoutineTarget.kind === "procedure" ? "Procedures" : "Funções"
+
+          removeObjectFromLocalStructure({
+            connectionId: deleteRoutineTarget.connection.id,
+            databaseName: deleteRoutineTarget.database.name,
+            schemaName: deleteRoutineTarget.schemaName,
+            groupLabel,
+            objectName: deleteRoutineTarget.routineName,
+          })
+          await refreshRoutineGroup({
+            connectionToUse: deleteRoutineTarget.connection,
+            databaseToUse: deleteRoutineTarget.database,
+            schemaName: deleteRoutineTarget.schemaName,
+            groupLabel,
+          })
+          setIsDeleteRoutineModalOpen(false)
+          setDeleteRoutineTarget(null)
+          showNotice({
+            title: "Rotina excluída",
+            message: "A rotina foi removida do banco e do tree view.",
+          })
+        }}
+      />
     </main>
   )
 }
@@ -1273,7 +1546,7 @@ function applyLocalObjectRemovals(
   structuresById: Record<string, DatabaseStructure>,
   removalsByConnectionId: Record<
     string,
-    Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views"; objectName: string }>
+    Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções"; objectName: string }>
   >
 ) {
   return Object.entries(removalsByConnectionId).reduce((structures, [connectionId, removals]) => {
@@ -1293,6 +1566,42 @@ function applyLocalObjectRemovals(
             removal.schemaName,
             removal.groupLabel,
             removal.objectName
+          ),
+        structure
+      ),
+    }
+  }, structuresById)
+}
+
+function applyLocalRoutineAdditions(
+  structuresById: Record<string, DatabaseStructure>,
+  additionsByConnectionId: Record<
+    string,
+    Array<{
+      databaseName: string
+      schemaName: string
+      groupLabel: "Procedures" | "Funções"
+      routineName: string
+    }>
+  >
+) {
+  return Object.entries(additionsByConnectionId).reduce((structures, [connectionId, additions]) => {
+    const structure = structures[connectionId]
+
+    if (!structure || !additions.length) {
+      return structures
+    }
+
+    return {
+      ...structures,
+      [connectionId]: additions.reduce(
+        (nextStructure, addition) =>
+          addRoutineToDatabaseStructure(
+            nextStructure,
+            addition.databaseName,
+            addition.schemaName,
+            addition.groupLabel,
+            addition.routineName
           ),
         structure
       ),
@@ -1340,7 +1649,7 @@ function removeObjectFromDatabaseStructure(
   structure: DatabaseStructure,
   databaseName: string,
   schemaName: string,
-  groupLabel: "Tabelas" | "Views",
+  groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções",
   objectName: string
 ): DatabaseStructure {
   return {
@@ -1374,6 +1683,49 @@ function removeObjectFromDatabaseStructure(
       return {
         ...schema,
         groups: removeObjectFromGroups(schema.groups, groupLabel, objectName),
+      }
+    }),
+  }
+}
+
+function addRoutineToDatabaseStructure(
+  structure: DatabaseStructure,
+  databaseName: string,
+  schemaName: string,
+  groupLabel: "Procedures" | "Funções",
+  routineName: string
+): DatabaseStructure {
+  return {
+    ...structure,
+    databases: structure.databases.map((database) => {
+      if (database.name !== databaseName) {
+        return database
+      }
+
+      return {
+        ...database,
+        groups: addRoutineToGroups(database.groups, groupLabel, routineName),
+        schemas: database.schemas.map((schema) => {
+          if (schemaName && schema.name !== schemaName) {
+            return schema
+          }
+
+          return {
+            ...schema,
+            groups: addRoutineToGroups(schema.groups, groupLabel, routineName),
+          }
+        }),
+      }
+    }),
+    groups: addRoutineToGroups(structure.groups, groupLabel, routineName),
+    schemas: structure.schemas.map((schema) => {
+      if (schemaName && schema.name !== schemaName) {
+        return schema
+      }
+
+      return {
+        ...schema,
+        groups: addRoutineToGroups(schema.groups, groupLabel, routineName),
       }
     }),
   }
@@ -1452,7 +1804,7 @@ function findGroupInStructure(
 
 function removeObjectFromGroups(
   groups: DatabaseStructure["groups"],
-  groupLabel: "Tabelas" | "Views",
+  groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções",
   objectName: string
 ): DatabaseStructure["groups"] {
   return groups.map((group) => {
@@ -1477,6 +1829,50 @@ function removeRecordKey<T>(record: Record<string, T> | undefined, key: string) 
   const next = { ...record }
   delete next[key]
   return next
+}
+
+function addRoutineToGroups(
+  groups: DatabaseStructure["groups"],
+  groupLabel: "Procedures" | "Funções",
+  routineName: string
+): DatabaseStructure["groups"] {
+  const normalizedRoutineName = routineName.trim()
+
+  if (!normalizedRoutineName) {
+    return groups
+  }
+
+  let foundRoutineGroup = false
+  const nextGroups = groups.map((group) => {
+    if (group.label !== groupLabel) {
+      return group
+    }
+
+    foundRoutineGroup = true
+
+    if (group.items.includes(normalizedRoutineName)) {
+      return group
+    }
+
+    return {
+      ...group,
+      items: [...group.items, normalizedRoutineName].sort((left, right) =>
+        left.localeCompare(right, "pt-BR")
+      ),
+    }
+  })
+
+  if (foundRoutineGroup) {
+    return nextGroups
+  }
+
+  return [
+    ...groups,
+    {
+      label: groupLabel,
+      items: [normalizedRoutineName],
+    },
+  ]
 }
 
 function addViewToGroups(

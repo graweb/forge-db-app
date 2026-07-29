@@ -116,6 +116,16 @@ export type ViewDetails = {
   sqlText: string
 }
 
+export type RoutineKind = "procedure" | "function"
+
+export type RoutineDetails = {
+  databaseName: string
+  schemaName: string
+  routineName: string
+  kind: RoutineKind
+  sqlText: string
+}
+
 export type UpdateTableInput = {
   databaseName: string
   schemaName: string
@@ -148,4 +158,12 @@ export type DeleteViewResult = {
   details: string
   viewName: string
   schemaName: string
+}
+
+export type DeleteRoutineResult = {
+  message: string
+  details: string
+  routineName: string
+  schemaName: string
+  kind: RoutineKind
 }

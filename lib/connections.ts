@@ -38,9 +38,12 @@ import type {
   DatabaseStructureLoadResult,
   DatabaseType,
   DeleteDatabaseResult,
+  DeleteRoutineResult,
   DeleteTableResult,
   DeleteViewResult,
   QueryExecutionResult,
+  RoutineDetails,
+  RoutineKind,
   SavedConnection,
   TableDetails,
   TableIndexDefinition,
@@ -939,6 +942,209 @@ export async function deleteView(
 
     default:
       throw new Error("Tipo de banco não suportado.")
+  }
+}
+
+export async function getRoutineDetails(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  routineName: string,
+  kind: RoutineKind
+): Promise<RoutineDetails> {
+  const normalizedDatabase = sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim()
+  const normalizedSchema = sanitizeDatabaseIdentifier(schemaName) || getFallbackSchemaName(connection)
+  const normalizedRoutine = sanitizeDatabaseIdentifier(routineName)
+
+  if (!normalizedRoutine) {
+    throw new Error("Informe uma rotina válida.")
+  }
+
+  if (connection.databaseType === "sqlite") {
+    throw new Error("SQLite não oferece procedures ou funções armazenadas.")
+  }
+
+  if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
+    return withMySqlLikeClient(connection, normalizedDatabase, async (client) => {
+      const routineType = kind === "procedure" ? "PROCEDURE" : "FUNCTION"
+      const rows = await runMySqlLikeMetadataQuery(
+        client,
+        connection.databaseType,
+        `SHOW CREATE ${routineType} ${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+          connection.databaseType,
+          normalizedRoutine
+        )}`,
+        []
+      )
+      const row = rows[0] ?? {}
+      const sqlText = String(
+        row[`Create ${kind === "procedure" ? "Procedure" : "Function"}`] ??
+          row[`Create ${routineType}`] ??
+          row["Create Procedure"] ??
+          row["Create Function"] ??
+          ""
+      ).trim()
+
+      if (!sqlText) {
+        throw new Error("Não foi possível carregar a definição da rotina.")
+      }
+
+      return {
+        databaseName: normalizedDatabase,
+        schemaName: normalizedSchema,
+        routineName: normalizedRoutine,
+        kind,
+        sqlText,
+      }
+    })
+  }
+
+  if (connection.databaseType === "postgresql") {
+    return withPostgresClient(connection, normalizedDatabase || "postgres", async (client) => {
+      const result = await client.query(
+        `
+          SELECT pg_get_functiondef(p.oid) AS definition
+          FROM pg_proc p
+          INNER JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = $1
+            AND p.proname = $2
+            AND p.prokind = $3
+          ORDER BY p.oid
+          LIMIT 1
+        `,
+        [normalizedSchema, normalizedRoutine, kind === "procedure" ? "p" : "f"]
+      )
+      const sqlText = String(result.rows[0]?.definition ?? "").trim()
+
+      if (!sqlText) {
+        throw new Error("Não foi possível carregar a definição da rotina.")
+      }
+
+      return {
+        databaseName: normalizedDatabase,
+        schemaName: normalizedSchema,
+        routineName: normalizedRoutine,
+        kind,
+        sqlText,
+      }
+    })
+  }
+
+  if (connection.databaseType === "sqlserver") {
+    const pool = await sql.connect({
+      user: sanitizeText(connection.user),
+      password: connection.password ?? "",
+      server: sanitizeText(connection.host) || "localhost",
+      port: parsePort(connection.port) ?? 1433,
+      database: normalizedDatabase || "master",
+      options: {
+        encrypt: Boolean(connection.useSsl),
+        trustServerCertificate: true,
+      },
+      connectionTimeout: 5000,
+      requestTimeout: 5000,
+    })
+
+    try {
+      const result = await pool.request().query(`
+        SELECT OBJECT_DEFINITION(OBJECT_ID(${quoteSqlLiteral(
+          `${normalizedSchema}.${normalizedRoutine}`
+        )})) AS definition
+      `)
+      const sqlText = String(result.recordset?.[0]?.definition ?? "").trim()
+
+      if (!sqlText) {
+        throw new Error("Não foi possível carregar a definição da rotina.")
+      }
+
+      return {
+        databaseName: normalizedDatabase,
+        schemaName: normalizedSchema,
+        routineName: normalizedRoutine,
+        kind,
+        sqlText,
+      }
+    } finally {
+      await pool.close()
+    }
+  }
+
+  throw new Error("Tipo de banco não suportado.")
+}
+
+export async function updateRoutine(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  routineName: string,
+  kind: RoutineKind,
+  sqlText: string
+): Promise<RoutineDetails> {
+  const normalizedDatabase = sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim()
+  const normalizedSchema = sanitizeDatabaseIdentifier(schemaName) || getFallbackSchemaName(connection)
+  const normalizedRoutine = sanitizeDatabaseIdentifier(routineName)
+  const normalizedSql = sanitizeText(sqlText)
+
+  if (!normalizedRoutine || !normalizedSql) {
+    throw new Error("Informe a rotina e o SQL para salvar.")
+  }
+
+  if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
+    return withMySqlLikeClient(connection, normalizedDatabase, async (client) => {
+      await client.query(buildDropRoutineSql(connection.databaseType, normalizedSchema, normalizedRoutine, kind))
+      await client.query(normalizedSql)
+      return {
+        databaseName: normalizedDatabase,
+        schemaName: normalizedSchema,
+        routineName: normalizedRoutine,
+        kind,
+        sqlText: normalizedSql,
+      }
+    })
+  }
+
+  await executeQuery(connection, normalizedSql, normalizedDatabase)
+
+  return {
+    databaseName: normalizedDatabase,
+    schemaName: normalizedSchema,
+    routineName: normalizedRoutine,
+    kind,
+    sqlText: normalizedSql,
+  }
+}
+
+export async function deleteRoutine(
+  connection: SavedConnection,
+  databaseName: string,
+  schemaName: string,
+  routineName: string,
+  kind: RoutineKind
+): Promise<DeleteRoutineResult> {
+  const normalizedDatabase = sanitizeDatabaseIdentifier(databaseName) || connection.databaseName.trim()
+  const normalizedSchema = sanitizeDatabaseIdentifier(schemaName) || getFallbackSchemaName(connection)
+  const normalizedRoutine = sanitizeDatabaseIdentifier(routineName)
+
+  if (!normalizedRoutine) {
+    throw new Error("Informe uma rotina válida para excluir.")
+  }
+
+  if (connection.databaseType === "sqlite") {
+    throw new Error("SQLite não oferece procedures ou funções armazenadas.")
+  }
+
+  await executeQuery(
+    connection,
+    buildDropRoutineSql(connection.databaseType, normalizedSchema, normalizedRoutine, kind),
+    normalizedDatabase
+  )
+
+  return {
+    message: `${kind === "procedure" ? "Procedure" : "Função"} excluída com sucesso.`,
+    details: `A rotina ${normalizedRoutine} foi removida.`,
+    routineName: normalizedRoutine,
+    schemaName: normalizedSchema,
+    kind,
   }
 }
 
@@ -2627,10 +2833,18 @@ export async function executeQuery(
         const [rows, fields] = await client.query(sqlStatement)
 
         if (Array.isArray(rows)) {
-          const normalized = normalizeRows(rows as Array<Record<string, unknown>>)
+          const normalizedRows = normalizeMySqlLikeQueryRows(rows)
+          const normalized = normalizeRows(normalizedRows)
+          const columns = Array.isArray(fields)
+            ? fields
+                .map((field) =>
+                  field && typeof field === "object" && "name" in field ? String(field.name ?? "") : ""
+                )
+                .filter(Boolean)
+            : normalized.columns
 
           return {
-            columns: fields.map((field) => String(field.name)),
+            columns,
             rows: normalized.rows,
             rowCount: normalized.rows.length,
             message: `${normalized.rows.length} linha(s) retornada(s).`,
@@ -2672,7 +2886,7 @@ export async function executeQuery(
         const result = await client.query(sqlStatement)
 
         if (Array.isArray(result)) {
-          const normalized = normalizeRows(result as Array<Record<string, unknown>>)
+          const normalized = normalizeRows(normalizeMySqlLikeQueryRows(result))
 
           return {
             columns: normalized.columns,
@@ -4508,6 +4722,54 @@ function ensureSqlTerminator(sqlText: string) {
   }
 
   return normalized.endsWith(";") ? normalized : `${normalized};`
+}
+
+function buildDropRoutineSql(
+  databaseType: DatabaseType,
+  schemaName: string,
+  routineName: string,
+  kind: RoutineKind
+) {
+  if (databaseType === "postgresql") {
+    return `DROP ROUTINE IF EXISTS ${quoteIdentifier("postgresql", schemaName)}.${quoteIdentifier(
+      "postgresql",
+      routineName
+    )} CASCADE`
+  }
+
+  if (databaseType === "sqlserver") {
+    return kind === "procedure"
+      ? `DROP PROCEDURE IF EXISTS ${quoteSqlServerIdentifier(schemaName)}.${quoteSqlServerIdentifier(routineName)}`
+      : `DROP FUNCTION IF EXISTS ${quoteSqlServerIdentifier(schemaName)}.${quoteSqlServerIdentifier(routineName)}`
+  }
+
+  if (databaseType === "mysql" || databaseType === "mariadb") {
+    const routineType = kind === "procedure" ? "PROCEDURE" : "FUNCTION"
+    return `DROP ${routineType} IF EXISTS ${quoteIdentifier(databaseType, schemaName)}.${quoteIdentifier(
+      databaseType,
+      routineName
+    )}`
+  }
+
+  throw new Error("Tipo de banco não suportado para routines.")
+}
+
+function normalizeMySqlLikeQueryRows(rows: unknown[]): Array<Record<string, unknown>> {
+  if (!rows.length) {
+    return []
+  }
+
+  if (rows.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
+    return rows as Array<Record<string, unknown>>
+  }
+
+  const firstRecordSet = rows.find(
+    (row) =>
+      Array.isArray(row) &&
+      row.every((item) => item && typeof item === "object" && !Array.isArray(item))
+  )
+
+  return Array.isArray(firstRecordSet) ? (firstRecordSet as Array<Record<string, unknown>>) : []
 }
 
 export function getConnectionById(id: string): SavedConnection | null {
