@@ -16,50 +16,41 @@ O sistema foi pensado para centralizar tarefas comuns de administração e consu
 
 ### Tela Inicial
 
-![Tela inicial do Forge DB](docs/images/tela-inicial.svg)
+![Tela inicial do Forge DB](docs/images/tela_inicial.png)
 
 Área inicial com estilo de prompt, atalhos para conexão e indicação de status do ambiente.
 
 ### Conexões e Tree View
 
-![Menu lateral com conexões e objetos](docs/images/treeview-conexoes.svg)
+![Menu lateral com conexões e objetos](docs/images/estrutura_conexao.png)
 
 O menu lateral lista as conexões salvas e organiza os objetos do banco por tipo, respeitando a estrutura de cada engine.
 
 ### Editor SQL
 
-![Editor SQL com execução de query](docs/images/sql-editor.svg)
+![Editor SQL com execução de query](docs/images/resultado_consulta.png)
 
 O editor usa Monaco Editor, suporta múltiplas abas, autocomplete para objetos do banco e execução de consultas.
 
 ### Resultado da Consulta
 
-![Tabela de resultado da consulta](docs/images/resultado-consulta.svg)
+![Tabela de resultado da consulta](docs/images/resultado_consulta.png)
 
 Os resultados são exibidos em uma tabela responsiva com paginação, ordenação e redimensionamento de colunas.
 
 ### Criação de View
 
-![Modal para criação de view](docs/images/nova-view.svg)
+![Modal para criação de view](docs/images/nova_view.png)
 
 O modal de view permite selecionar tabelas, identificar relações, ajustar joins, editar SQL e validar o resultado antes da criação.
 
-### Rotinas
+### Criação de Tabela
 
-![Modal para criação de rotina](docs/images/nova-rotina.svg)
+![Modal para criação de rotina](docs/images/nova_tabela.png)
 
 Procedures e funções usam uma modal única, adaptada ao banco conectado e ao tipo de rotina escolhido.
 
-## Funcionalidades
-
-### Conexões
-
-- Cadastro, edição, remoção e teste de conexões.
-- Suporte a logos por banco no cadastro e no tree view.
-- Status de conexão no rodapé da aplicação.
-- Largura do menu lateral ajustável por arrastar e soltar, com persistência local.
-
-### Bancos Suportados
+## Bancos Suportados
 
 - MySQL
 - MariaDB
@@ -69,14 +60,14 @@ Procedures e funções usam uma modal única, adaptada ao banco conectado e ao t
 
 Cada banco é exibido conforme sua estrutura. MySQL e MariaDB organizam objetos diretamente por banco. PostgreSQL e SQL Server exibem bancos, schemas e objetos internos quando aplicável.
 
-### Tree View
+## Tree View
 
 - Listagem de bancos, schemas, tabelas, views, procedures, funções, índices e sequences.
 - Menus de contexto por objeto.
 - Atualização localizada de grupos do tree view após criação, edição ou exclusão.
 - Duplo clique em tabelas e views para abrir ou selecionar a aba SQL correspondente e executar a consulta.
 
-### Editor SQL
+## Editor SQL
 
 - Editor Monaco com sintaxe SQL.
 - Múltiplas abas de consulta.
@@ -85,7 +76,7 @@ Cada banco é exibido conforme sua estrutura. MySQL e MariaDB organizam objetos 
 - Execução de SQL no banco selecionado.
 - Query padrão quando não há consulta aberta.
 
-### Resultados
+## Resultados
 
 - Tabela responsiva para exibição dos dados retornados.
 - Ordenação por coluna.
@@ -94,7 +85,7 @@ Cada banco é exibido conforme sua estrutura. MySQL e MariaDB organizam objetos 
 - Exportação de resultados para Excel.
 - Ações de adicionar, editar e remover exibidas apenas em consultas diretas de tabela.
 
-### Tabelas
+## Tabelas
 
 - Criação e edição de tabelas.
 - Edição de colunas, tipos, tamanhos, PK, unique, identity/auto increment e foreign keys.
@@ -102,7 +93,7 @@ Cada banco é exibido conforme sua estrutura. MySQL e MariaDB organizam objetos 
 - Remoção de tabela com atualização dos grupos relacionados no tree view.
 - No PostgreSQL, sequences associadas a colunas auto increment podem ser criadas e removidas junto da tabela.
 
-### Views
+## Views
 
 - Criação e edição de views.
 - Seleção visual de tabelas e colunas.
@@ -112,7 +103,7 @@ Cada banco é exibido conforme sua estrutura. MySQL e MariaDB organizam objetos 
 - Aba Resultado sempre disponível para pré-visualizar a consulta.
 - Validação para impedir criar view com nome já existente.
 
-### Procedures, Funções e Sequences
+## Procedures, Funções e Sequences
 
 - Criação, edição, execução e exclusão de procedures e funções.
 - Modal única para rotina, com campos dinâmicos por banco e tipo.
@@ -186,18 +177,3 @@ public/
 docs/
   images/              Imagens usadas neste README
 ```
-
-## Sugestão de Capturas
-
-Para deixar o README mais completo, gere capturas com estes nomes:
-
-```text
-docs/images/tela-inicial.svg
-docs/images/treeview-conexoes.svg
-docs/images/sql-editor.svg
-docs/images/resultado-consulta.svg
-docs/images/nova-view.svg
-docs/images/nova-rotina.svg
-```
-
-Use imagens em proporção larga, preferencialmente com 1440px ou 1600px de largura. Evite mostrar senhas, usuários reais, hosts internos ou dados sensíveis.
