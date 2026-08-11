@@ -10,10 +10,6 @@ Forge DB é uma interface web para gerenciar conexões e explorar bancos de dado
 
 O sistema foi pensado para centralizar tarefas comuns de administração e consulta de bancos em uma experiência próxima de um workspace de desenvolvimento: menu lateral com conexões e objetos do banco, editor SQL com abas, resultados em tabela e modais específicos para criar ou editar estruturas.
 
-## Imagens do Sistema
-
-> Os arquivos em `docs/images/` são placeholders versionados. Substitua por capturas reais do sistema quando quiser publicar o README com imagens finais.
-
 ### Tela Inicial
 
 ![Tela inicial do Forge DB](docs/images/tela_inicial.png)
