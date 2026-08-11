@@ -26,16 +26,11 @@ O sistema foi pensado para centralizar tarefas comuns de administração e consu
 
 O menu lateral lista as conexões salvas e organiza os objetos do banco por tipo, respeitando a estrutura de cada engine.
 
-### Editor SQL
+### Editor SQL e Resultado da Consulta
 
 ![Editor SQL com execução de query](docs/images/resultado_consulta.png)
 
 O editor usa Monaco Editor, suporta múltiplas abas, autocomplete para objetos do banco e execução de consultas.
-
-### Resultado da Consulta
-
-![Tabela de resultado da consulta](docs/images/resultado_consulta.png)
-
 Os resultados são exibidos em uma tabela responsiva com paginação, ordenação e redimensionamento de colunas.
 
 ### Criação de View
