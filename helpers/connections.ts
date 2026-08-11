@@ -89,7 +89,55 @@ export function quoteSqlServerIdentifier(value: string) {
 }
 
 export function sanitizeSqlType(value?: string) {
-  return sanitizeText(value).toUpperCase().replace(/[^A-Z0-9_]/g, "")
+  return sanitizeText(value)
+    .toUpperCase()
+    .replace(/[^A-Z0-9_ ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+export function normalizePostgreSqlDataType(value?: string) {
+  const normalized = sanitizeSqlType(value)
+
+  switch (normalized) {
+    case "CHAR":
+    case "CHARACTER":
+      return "CHARACTER"
+    case "VARCHAR":
+    case "CHARACTER VARYING":
+      return "CHARACTER VARYING"
+    case "INT":
+    case "INT4":
+    case "INTEGER":
+      return "INTEGER"
+    case "INT2":
+    case "SMALLINT":
+      return "SMALLINT"
+    case "INT8":
+    case "BIGINT":
+      return "BIGINT"
+    case "BOOL":
+    case "BOOLEAN":
+      return "BOOLEAN"
+    case "FLOAT4":
+    case "REAL":
+      return "REAL"
+    case "FLOAT8":
+    case "DOUBLE PRECISION":
+      return "DOUBLE PRECISION"
+    case "TIMESTAMP WITHOUT TIME ZONE":
+      return "TIMESTAMP"
+    case "TIMESTAMP WITH TIME ZONE":
+      return "TIMESTAMPTZ"
+    case "TIME WITHOUT TIME ZONE":
+      return "TIME"
+    case "TIME WITH TIME ZONE":
+      return "TIMETZ"
+    case "BIT VARYING":
+      return "VARBIT"
+    default:
+      return normalized
+  }
 }
 
 export function sanitizeSqlExpression(value?: string) {

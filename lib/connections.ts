@@ -25,6 +25,8 @@ import type {
   ConnectionInput,
   CreateDatabaseInput,
   CreateDatabaseResult,
+  CreateSequenceInput,
+  CreateSequenceResult,
   CreateUserInput,
   CreateUserResult,
   CreateTableInput,
@@ -64,6 +66,7 @@ import {
   quoteIdentifier,
   quoteSqlLiteral,
   quoteSqlServerIdentifier,
+  normalizePostgreSqlDataType,
   sanitizeCharset,
   sanitizeDatabaseIdentifier,
   sanitizeSqlExpression,
@@ -75,7 +78,7 @@ import {
   buildMySqlLikeDropForeignKeySql,
   buildMySqlLikeCreateTableSql,
 } from "@/helpers/create-table/mysql"
-import { buildPostgreSqlCreateTableSql } from "@/helpers/create-table/postgres"
+import { buildPostgreSqlCreateTableSql, buildPostgreSqlSequenceName } from "@/helpers/create-table/postgres"
 import { buildSqlServerCreateTableSql } from "@/helpers/create-table/sqlserver"
 import { buildSqliteCreateTableSql } from "@/helpers/create-table/sqlite"
 import {
@@ -589,6 +592,49 @@ export async function createUser(
     default:
       throw new Error("Tipo de banco não suportado.")
   }
+}
+
+export async function createSequence(
+  connection: SavedConnection,
+  input: CreateSequenceInput
+): Promise<CreateSequenceResult> {
+  if (connection.databaseType !== "postgresql") {
+    throw new Error("Sequences estão disponíveis apenas em conexões PostgreSQL.")
+  }
+
+  const databaseName = sanitizeDatabaseIdentifier(input.databaseName) || connection.databaseName.trim() || "postgres"
+  const schemaName = sanitizeDatabaseIdentifier(input.schemaName) || getFallbackSchemaName(connection)
+  const sequenceName = sanitizeDatabaseIdentifier(input.sequenceName)
+
+  if (!sequenceName) {
+    throw new Error("Informe um nome válido para a sequence.")
+  }
+
+  return withPostgresClient(connection, databaseName, async (client) => {
+    const qualifiedSequence = `${quoteIdentifier("postgresql", schemaName)}.${quoteIdentifier(
+      "postgresql",
+      sequenceName
+    )}`
+    const options = [
+      `START WITH ${normalizeSequenceInteger(input.startValue, "1")}`,
+      `INCREMENT BY ${normalizeSequenceInteger(input.incrementBy, "1")}`,
+      input.minValue?.trim() ? `MINVALUE ${normalizeSequenceInteger(input.minValue, "1")}` : "NO MINVALUE",
+      input.maxValue?.trim() ? `MAXVALUE ${normalizeSequenceInteger(input.maxValue, "1")}` : "NO MAXVALUE",
+      `CACHE ${normalizeSequenceInteger(input.cacheValue, "1")}`,
+      input.cycle ? "CYCLE" : "NO CYCLE",
+    ]
+
+    await client.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier("postgresql", schemaName)}`)
+    await client.query(`CREATE SEQUENCE IF NOT EXISTS ${qualifiedSequence}\n  ${options.join("\n  ")}`)
+
+    return {
+      message: "Sequence criada com sucesso.",
+      details: `A sequence ${schemaName}.${sequenceName} foi criada no banco ${databaseName}.`,
+      sequenceName,
+      databaseName,
+      schemaName,
+    }
+  })
 }
 
 export async function updateDatabase(
@@ -1164,7 +1210,7 @@ export async function updateTable(
       dataType: sanitizeText(column.dataType).toUpperCase(),
       size: sanitizeText(column.size),
       unsigned: Boolean((column as { unsigned?: boolean }).unsigned),
-      notNull: Boolean(column.notNull),
+      notNull: Boolean(column.notNull || column.primaryKey),
       primaryKey: Boolean(column.primaryKey),
       unique: Boolean((column as { unique?: boolean }).unique),
       autoIncrement: Boolean(column.autoIncrement),
@@ -1211,6 +1257,16 @@ export async function updateTable(
   )
   const normalizedTriggers = normalizeTableTriggersInput(input.triggers)
   const normalizedFunctions = normalizeTableFunctionsInput(input.functions)
+  const removedSequences = (input.removedSequences ?? [])
+    .map((sequenceName) => sanitizeDatabaseIdentifier(sequenceName))
+    .filter(Boolean)
+  const originalPrimaryKey = originalTableDetails.indexes.find((index) => index.primaryKey)
+  const desiredPrimaryKeyColumns = normalizedColumns
+    .filter((column) => column.primaryKey)
+    .map((column) => column.name.trim())
+    .filter(Boolean)
+  const primaryKeyChanged =
+    !sameDbObjectList(originalPrimaryKey?.columns ?? [], desiredPrimaryKeyColumns)
   const originalIndexes = originalTableDetails.indexes.filter((index) => !index.primaryKey)
   const originalIndexMap = new Map(
     originalIndexes.map((index) => [index.name.trim().toLowerCase(), index] as const)
@@ -1244,7 +1300,7 @@ export async function updateTable(
       })
   )
   const originalColumnsByName = new Map(
-    originalTableDetails.columns.map((column) => [column.name.trim(), column] as const)
+    originalTableDetails.columns.map((column) => [normalizeDbObjectKey(column.name), column] as const)
   )
   const seenColumns = new Set<string>()
   const originalForeignKeys = originalTableDetails.foreignKeys
@@ -1258,6 +1314,17 @@ export async function updateTable(
     )
   const originalForeignKeyKeys = buildForeignKeyComparisonKeys(originalForeignKeys, normalizedSchema)
   const nextForeignKeyKeys = buildForeignKeyComparisonKeys(normalizedForeignKeys, normalizedSchema)
+  const originalForeignKeyKeySet = new Set(originalForeignKeyKeys)
+  const nextForeignKeyKeySet = new Set(nextForeignKeyKeys)
+  const foreignKeysToDrop = originalForeignKeys.filter(
+    (foreignKey) => !nextForeignKeyKeySet.has(buildForeignKeyComparisonKey(foreignKey, normalizedSchema))
+  )
+  const foreignKeysToAdd = normalizedForeignKeys
+    .map((foreignKey, index) => ({ foreignKey, index }))
+    .filter(
+      ({ foreignKey }) =>
+        !originalForeignKeyKeySet.has(buildForeignKeyComparisonKey(foreignKey, normalizedSchema))
+    )
   const modifiedColumns = normalizedColumns.filter((column) => {
     const sourceName = (column.sourceName || "").trim()
 
@@ -1265,12 +1332,12 @@ export async function updateTable(
       return false
     }
 
-    const original = originalColumnsByName.get(sourceName)
+    const original = originalColumnsByName.get(normalizeDbObjectKey(sourceName))
     if (!original) {
       return false
     }
 
-    seenColumns.add(sourceName)
+    seenColumns.add(normalizeDbObjectKey(sourceName))
 
     return (
       column.name.trim() !== original.name.trim() ||
@@ -1286,17 +1353,31 @@ export async function updateTable(
     )
   })
   const removedColumns = originalTableDetails.columns.filter(
-    (column) => !seenColumns.has(column.name.trim())
+    (column) => !seenColumns.has(normalizeDbObjectKey(column.name))
   )
   const foreignKeyChanged =
     originalForeignKeyKeys.length !== nextForeignKeyKeys.length ||
     originalForeignKeyKeys.some((key, index) => key !== nextForeignKeyKeys[index])
   const isMySqlLike = connection.databaseType === "mysql" || connection.databaseType === "mariadb"
   const foreignKeyCanAlter = isMySqlLike && removedColumns.length === 0
+  const sqlServerModifiedColumnsRequireRebuild =
+    connection.databaseType === "sqlserver" &&
+    modifiedColumns.some((column) => {
+      const original = originalColumnsByName.get(normalizeDbObjectKey(column.sourceName || ""))
+      return !original || !isSqlServerColumnAlterInPlaceSupported(column, original)
+    })
+  const postgreSqlModifiedColumnsRequireRebuild =
+    connection.databaseType === "postgresql" &&
+    modifiedColumns.some((column) => {
+      const original = originalColumnsByName.get(normalizeDbObjectKey(column.sourceName || ""))
+      return !original || !isPostgreSqlColumnAlterInPlaceSupported(column, original)
+    })
   const requiresRebuild =
     !isMySqlLike &&
+    connection.databaseType !== "sqlserver" &&
     ((connection.databaseType === "sqlite" && removedColumns.length > 0) ||
-      (connection.databaseType !== "sqlite" && modifiedColumns.length > 0) ||
+      postgreSqlModifiedColumnsRequireRebuild ||
+      sqlServerModifiedColumnsRequireRebuild ||
       (foreignKeyChanged && !foreignKeyCanAlter))
 
   const hasTableNameChange = nextTableName !== originalTableName
@@ -1374,6 +1455,28 @@ export async function updateTable(
           for (const index of indexesToDrop) {
             await client.query(
               buildDropTableIndexSql(connection, normalizedSchema, originalTableName, index.name)
+            )
+          }
+
+          for (const sequenceName of removedSequences) {
+            const sequence = originalTableDetails.sequences.find(
+              (item) => item.name.trim().toLowerCase() === sequenceName.trim().toLowerCase()
+            )
+
+            if (sequence?.columnName) {
+              await client.query(
+                `ALTER TABLE ${qualifiedOriginal} ALTER COLUMN ${quoteIdentifier(
+                  "postgresql",
+                  sequence.columnName
+                )} DROP DEFAULT`
+              )
+            }
+
+            await client.query(
+              `DROP SEQUENCE IF EXISTS ${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
+                "postgresql",
+                sequenceName
+              )}`
             )
           }
 
@@ -1462,8 +1565,6 @@ export async function updateTable(
           }
 
           for (const column of modifiedColumns) {
-            const definition = buildCreateTableColumnDefinition(connection, column)
-
             if ((column.sourceName || "").trim() && column.name.trim() !== (column.sourceName || "").trim()) {
               await client.query(
                 `ALTER TABLE ${qualifiedOriginal} RENAME COLUMN ${quoteIdentifier(
@@ -1473,10 +1574,37 @@ export async function updateTable(
               )
             }
 
-            await client.query(`ALTER TABLE ${qualifiedOriginal} ALTER COLUMN ${definition}`)
+            const original = originalColumnsByName.get(normalizeDbObjectKey(column.sourceName || column.name))
+
+            if (!original) {
+              continue
+            }
+
+            for (const statement of buildPostgreSqlAlterColumnStatements(
+              qualifiedOriginal,
+              normalizedSchema,
+              originalTableName,
+              column,
+              original
+            )) {
+              await client.query(statement)
+            }
           }
 
           for (const column of addedColumns) {
+            if (column.autoIncrement) {
+              for (const statement of buildPostgreSqlAddAutoIncrementColumnStatements(
+                connection,
+                qualifiedOriginal,
+                normalizedSchema,
+                originalTableName,
+                column
+              )) {
+                await client.query(statement)
+              }
+              continue
+            }
+
             await client.query(
               `ALTER TABLE ${qualifiedOriginal} ADD COLUMN ${buildCreateTableColumnDefinition(
                 connection,
@@ -1550,6 +1678,65 @@ export async function updateTable(
           const qualifiedOriginal = `${quoteSqlServerIdentifier(normalizedSchema)}.${quoteSqlServerIdentifier(
             originalTableName
           )}`
+          const modifiedColumnNameMap = new Map(
+            modifiedColumns
+              .map((column) => [normalizeDbObjectKey(column.sourceName || ""), column.name.trim()] as const)
+              .filter(([sourceName, nextName]) => Boolean(sourceName && nextName))
+          )
+          const modifiedSourceColumnNames = new Set(modifiedColumnNameMap.keys())
+          const affectedOriginalIndexes = originalTableDetails.indexes.filter((index) =>
+            (!index.primaryKey || !primaryKeyChanged) &&
+            index.columns.some((columnName) => modifiedSourceColumnNames.has(normalizeDbObjectKey(columnName)))
+          )
+          const affectedOriginalIndexNames = new Set(
+            affectedOriginalIndexes.map((index) => index.name.trim().toLowerCase())
+          )
+          const affectedOriginalForeignKeys = originalForeignKeys.filter((foreignKey) =>
+            modifiedSourceColumnNames.has(normalizeDbObjectKey(foreignKey.sourceColumn))
+          )
+          const foreignKeysToDropByKey = new Map<
+            string,
+            CreateTableForeignKeySpec & { constraintName?: string }
+          >()
+
+          for (const foreignKey of [...foreignKeysToDrop, ...affectedOriginalForeignKeys]) {
+            const key =
+              foreignKey.constraintName?.trim() ||
+              buildForeignKeyComparisonKey(foreignKey, normalizedSchema)
+            foreignKeysToDropByKey.set(key, foreignKey)
+          }
+
+          for (const foreignKey of foreignKeysToDropByKey.values()) {
+            const constraintName =
+              foreignKey.constraintName ||
+              buildForeignKeyConstraintName(connection, originalTableName, foreignKey, 0)
+
+            await pool.request().query(
+              `ALTER TABLE ${qualifiedOriginal} DROP CONSTRAINT ${quoteSqlServerConstraintIdentifier(
+                constraintName
+              )}`
+            )
+          }
+
+          if (primaryKeyChanged && originalPrimaryKey) {
+            await pool.request().query(
+              `ALTER TABLE ${qualifiedOriginal} DROP CONSTRAINT ${quoteSqlServerIdentifier(
+                originalPrimaryKey.name
+              )}`
+            )
+          }
+
+          for (const index of affectedOriginalIndexes) {
+            if (index.primaryKey) {
+              await pool.request().query(
+                `ALTER TABLE ${qualifiedOriginal} DROP CONSTRAINT ${quoteSqlServerIdentifier(index.name)}`
+              )
+            } else {
+              await pool.request().query(
+                buildDropTableIndexSql(connection, normalizedSchema, originalTableName, index.name)
+              )
+            }
+          }
 
           if (removedColumns.length) {
             await pool
@@ -1562,8 +1749,22 @@ export async function updateTable(
           }
 
           for (const column of modifiedColumns) {
+            const sourceName = (column.sourceName || "").trim()
+
+            if (sourceName && sourceName !== column.name.trim()) {
+              await pool.request().query(
+                `EXEC sp_rename ${quoteSqlLiteral(
+                  `${normalizedSchema}.${originalTableName}.${sourceName}`
+                )}, ${quoteSqlLiteral(column.name.trim())}, 'COLUMN'`
+              )
+            }
+
             await pool.request().query(
-              `ALTER TABLE ${qualifiedOriginal} ALTER COLUMN ${buildCreateTableColumnDefinition(connection, column)}`
+              buildSqlServerDropDefaultConstraintSql(qualifiedOriginal, sourceName || column.name.trim())
+            )
+
+            await pool.request().query(
+              `ALTER TABLE ${qualifiedOriginal} ALTER COLUMN ${buildSqlServerAlterColumnDefinition(connection, column)}`
             )
           }
 
@@ -1574,8 +1775,132 @@ export async function updateTable(
           }
 
           for (const index of indexesToDrop) {
+            if (affectedOriginalIndexNames.has(index.name.trim().toLowerCase())) {
+              continue
+            }
+
             await pool.request().query(
               buildDropTableIndexSql(connection, normalizedSchema, originalTableName, index.name)
+            )
+          }
+
+          for (const foreignKey of affectedOriginalForeignKeys) {
+            const nextSourceColumn =
+              modifiedColumnNameMap.get(normalizeDbObjectKey(foreignKey.sourceColumn)) ??
+              foreignKey.sourceColumn
+            const nextForeignKey = normalizedForeignKeys.find(
+              (item) =>
+                item.sourceColumn.trim().toLowerCase() === nextSourceColumn.trim().toLowerCase() &&
+                item.referencedSchemaName?.trim().toLowerCase() ===
+                  foreignKey.referencedSchemaName?.trim().toLowerCase() &&
+                item.referencedTableName.trim().toLowerCase() ===
+                  foreignKey.referencedTableName.trim().toLowerCase() &&
+                item.referencedColumnName.trim().toLowerCase() ===
+                  foreignKey.referencedColumnName.trim().toLowerCase()
+            )
+
+            if (nextForeignKey) {
+              await pool.request().query(
+                `ALTER TABLE ${qualifiedOriginal} ADD ${buildCreateTableForeignKeyDefinition(
+                  connection,
+                  originalTableName,
+                  nextForeignKey,
+                  0,
+                  normalizedSchema
+                )}`
+              )
+            }
+          }
+
+          const addedForeignKeyKeys = new Set(
+            affectedOriginalForeignKeys.map((foreignKey) => {
+              const nextSourceColumn =
+                modifiedColumnNameMap.get(normalizeDbObjectKey(foreignKey.sourceColumn)) ??
+                foreignKey.sourceColumn
+              const nextForeignKey = normalizedForeignKeys.find(
+                (item) =>
+                  item.sourceColumn.trim().toLowerCase() === nextSourceColumn.trim().toLowerCase() &&
+                  item.referencedSchemaName?.trim().toLowerCase() ===
+                    foreignKey.referencedSchemaName?.trim().toLowerCase() &&
+                  item.referencedTableName.trim().toLowerCase() ===
+                    foreignKey.referencedTableName.trim().toLowerCase() &&
+                  item.referencedColumnName.trim().toLowerCase() ===
+                    foreignKey.referencedColumnName.trim().toLowerCase()
+              )
+
+              return nextForeignKey ? buildForeignKeyComparisonKey(nextForeignKey, normalizedSchema) : ""
+            })
+          )
+
+          for (const { foreignKey, index } of foreignKeysToAdd) {
+            const key = buildForeignKeyComparisonKey(foreignKey, normalizedSchema)
+
+            if (addedForeignKeyKeys.has(key)) {
+              continue
+            }
+
+            await pool.request().query(
+              `ALTER TABLE ${qualifiedOriginal} ADD ${buildCreateTableForeignKeyDefinition(
+                connection,
+                originalTableName,
+                foreignKey,
+                index,
+                normalizedSchema
+              )}`
+            )
+            addedForeignKeyKeys.add(key)
+          }
+
+          for (const index of affectedOriginalIndexes) {
+            const indexName = index.name.trim().toLowerCase()
+
+            if (indexesToDrop.some((item) => item.name.trim().toLowerCase() === indexName)) {
+              continue
+            }
+
+            if (indexesToAdd.some((item) => item.name.trim().toLowerCase() === indexName)) {
+              continue
+            }
+
+            const nextColumns = index.columns.map(
+              (columnName) => modifiedColumnNameMap.get(normalizeDbObjectKey(columnName)) ?? columnName
+            )
+
+            if (index.primaryKey) {
+              await pool.request().query(
+                buildSqlServerPrimaryKeyConstraintSql(
+                  index.name,
+                  qualifiedOriginal,
+                  nextColumns,
+                  index.sqlServerIndexType
+                )
+              )
+            } else {
+              await pool.request().query(
+                buildCreateTableIndexDefinition(
+                  connection,
+                  originalTableName,
+                  {
+                    name: index.name,
+                    columns: nextColumns,
+                    unique: index.unique,
+                    sqlServerIndexType: index.sqlServerIndexType,
+                  },
+                  0,
+                  normalizedSchema
+                )
+              )
+            }
+          }
+
+          if (primaryKeyChanged && desiredPrimaryKeyColumns.length) {
+            await pool.request().query(
+              buildSqlServerPrimaryKeyConstraintSql(
+                originalPrimaryKey?.name || buildPrimaryKeyConstraintName(originalTableName),
+                qualifiedOriginal,
+                desiredPrimaryKeyColumns,
+                originalPrimaryKey?.sqlServerIndexType || "CLUSTERED"
+              )
             )
           }
 
@@ -1784,6 +2109,7 @@ export async function updateTable(
 
         await createPostgreSqlTable(
           connection,
+          normalizedDatabase || connection.databaseName.trim() || "postgres",
           normalizedSchema,
           tempTableName,
           input.comment,
@@ -1809,6 +2135,16 @@ export async function updateTable(
         }
 
         await client.query(`DROP TABLE ${qualifiedOriginal}`)
+
+        for (const sequenceName of removedSequences) {
+          await client.query(
+            `DROP SEQUENCE IF EXISTS ${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
+              "postgresql",
+              sequenceName
+            )}`
+          )
+        }
+
         await client.query(
           `ALTER TABLE ${qualifiedTemp} RENAME TO ${quoteIdentifier("postgresql", nextTableName)}`
         )
@@ -2008,12 +2344,77 @@ export async function deleteTable(
       await client.connect()
 
       try {
+        const sequenceResult = await client.query(
+          `
+            SELECT DISTINCT sequence_schema AS schema_name, sequence_name AS name
+            FROM (
+              SELECT seq_ns.nspname AS sequence_schema, seq.relname AS sequence_name
+              FROM pg_class tbl
+              INNER JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+              INNER JOIN pg_attribute col ON col.attrelid = tbl.oid
+              INNER JOIN pg_depend dep
+                ON dep.refobjid = tbl.oid
+               AND dep.refobjsubid = col.attnum
+               AND dep.deptype IN ('a', 'i')
+              INNER JOIN pg_class seq
+                ON seq.oid = dep.objid
+               AND seq.relkind = 'S'
+              INNER JOIN pg_namespace seq_ns ON seq_ns.oid = seq.relnamespace
+              WHERE ns.nspname = $1
+                AND tbl.relname = $2
+              UNION
+              SELECT seq_ns.nspname AS sequence_schema, seq.relname AS sequence_name
+              FROM pg_class tbl
+              INNER JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+              INNER JOIN pg_attribute col ON col.attrelid = tbl.oid
+              INNER JOIN pg_attrdef def ON def.adrelid = tbl.oid AND def.adnum = col.attnum
+              INNER JOIN pg_depend dep
+                ON dep.classid = 'pg_attrdef'::regclass
+               AND dep.objid = def.oid
+               AND dep.refclassid = 'pg_class'::regclass
+              INNER JOIN pg_class seq
+                ON seq.oid = dep.refobjid
+               AND seq.relkind = 'S'
+              INNER JOIN pg_namespace seq_ns ON seq_ns.oid = seq.relnamespace
+              WHERE ns.nspname = $1
+                AND tbl.relname = $2
+                AND col.attnum > 0
+                AND NOT col.attisdropped
+              UNION
+              SELECT ns.nspname AS sequence_schema, seq.relname AS sequence_name
+              FROM pg_class seq
+              INNER JOIN pg_namespace ns ON ns.oid = seq.relnamespace
+              WHERE ns.nspname = $1
+                AND seq.relkind = 'S'
+                AND seq.relname LIKE $2 || '\\_%\\_seq' ESCAPE '\\'
+            ) sequences
+            WHERE sequence_name IS NOT NULL
+              AND sequence_name <> ''
+          `,
+          [normalizedSchema, normalizedTable]
+        )
+        const sequences = (sequenceResult.rows as Array<Record<string, unknown>>)
+          .map((row) => ({
+            schemaName: String(row.schema_name ?? "").trim() || normalizedSchema,
+            name: String(row.name ?? "").trim(),
+          }))
+          .filter((sequence) => sequence.name)
+
         await client.query(
           `DROP TABLE IF EXISTS ${quoteIdentifier("postgresql", normalizedSchema)}.${quoteIdentifier(
             "postgresql",
             normalizedTable
           )} CASCADE`
         )
+
+        for (const sequence of sequences) {
+          await client.query(
+            `DROP SEQUENCE IF EXISTS ${quoteIdentifier("postgresql", sequence.schemaName)}.${quoteIdentifier(
+              "postgresql",
+              sequence.name
+            )}`
+          )
+        }
 
         return {
           message: "Tabela excluída com sucesso.",
@@ -2118,7 +2519,7 @@ function normalizeTableIndexesInput(
       .map((columnName) => sanitizeDatabaseIdentifier(columnName))
       .filter(Boolean)
 
-    if (!columns.length) {
+    if (!columns.length || index?.primaryKey) {
       continue
     }
 
@@ -2237,6 +2638,16 @@ function formatColumnTypeForError(column: { dataType: string; size: string; unsi
   return `${size ? `${dataType}(${size})` : dataType}${unsigned ? " UNSIGNED" : ""}`
 }
 
+function normalizeSqlServerReferentialAction(value: unknown) {
+  const action = String(value ?? "").trim().replace(/_/g, " ").toUpperCase()
+
+  if (!action || action === "NO ACTION") {
+    return ""
+  }
+
+  return normalizeForeignKeyAction(action)
+}
+
 async function assertMySqlForeignKeyCompatibility(
   connection: SavedConnection,
   databaseName: string,
@@ -2305,16 +2716,17 @@ function parseForeignKeySummary(
   const actionIndex = referencedWithActions.search(/\s+ON\s+(DELETE|UPDATE)\s+/i)
   const referenced = (actionIndex >= 0 ? referencedWithActions.slice(0, actionIndex) : referencedWithActions).trim()
   const actions = actionIndex >= 0 ? referencedWithActions.slice(actionIndex).trim() : ""
-  const lastDot = referenced.lastIndexOf(".")
-  const referencedTableName = lastDot >= 0 ? referenced.slice(0, lastDot) : referenced
-  const referencedColumnName = lastDot >= 0 ? referenced.slice(lastDot + 1) : ""
+  const referencedParts = referenced.split(".").map((part) => part.trim()).filter(Boolean)
+  const referencedColumnName = referencedParts.pop() ?? ""
+  const referencedTableName = referencedParts.pop() ?? referenced
+  const referencedSchemaName = referencedParts.pop() ?? defaultSchemaName
   const deleteMatch = actions.match(/\bON DELETE\s+(.+?)(?=\s+ON UPDATE\s+|$)/i)
   const updateMatch = actions.match(/\bON UPDATE\s+(.+)$/i)
 
   return {
     constraintName: match[1]?.trim() ?? "",
     sourceColumn: sanitizeDatabaseIdentifier(match[2]),
-    referencedSchemaName: defaultSchemaName,
+    referencedSchemaName: sanitizeDatabaseIdentifier(referencedSchemaName) || defaultSchemaName,
     referencedTableName: sanitizeDatabaseIdentifier(referencedTableName),
     referencedColumnName: sanitizeDatabaseIdentifier(referencedColumnName),
     onDelete: normalizeForeignKeyAction(deleteMatch?.[1]),
@@ -2338,13 +2750,28 @@ function buildForeignKeyComparisonKeys(
   defaultSchemaName: string
 ) {
   return foreignKeys
-    .map((foreignKey) =>
-    normalizeForeignKeyKey({
-      ...foreignKey,
-      referencedSchemaName: foreignKey.referencedSchemaName?.trim() || defaultSchemaName,
-    })
-    )
+    .map((foreignKey) => buildForeignKeyComparisonKey(foreignKey, defaultSchemaName))
     .sort()
+}
+
+function buildForeignKeyComparisonKey(
+  foreignKey: CreateTableForeignKeySpec,
+  defaultSchemaName: string
+) {
+  return normalizeForeignKeyKey({
+    ...foreignKey,
+    referencedSchemaName: foreignKey.referencedSchemaName?.trim() || defaultSchemaName,
+  })
+}
+
+function normalizeSequenceInteger(value: string | undefined, fallback: string) {
+  const normalized = String(value ?? "").trim() || fallback
+
+  if (!/^-?\d+$/.test(normalized)) {
+    throw new Error("Os valores numéricos da sequence devem ser inteiros.")
+  }
+
+  return normalized
 }
 
 export async function createTable(
@@ -2413,6 +2840,7 @@ export async function createTable(
     case "postgresql":
       return createPostgreSqlTable(
         connection,
+        targetDatabaseName || connection.databaseName.trim() || "postgres",
         schemaName,
         tableName,
         comment,
@@ -2490,6 +2918,7 @@ async function createSqlTableLike(
 
 async function createPostgreSqlTable(
   connection: SavedConnection,
+  databaseName: string,
   schemaName: string,
   tableName: string,
   comment: string,
@@ -2499,21 +2928,30 @@ async function createPostgreSqlTable(
   triggers: CreateTableTriggerSpec[] = [],
   functions: CreateTableFunctionSpec[] = []
 ): Promise<CreateTableResult> {
-  return withPostgresClient(connection, connection.databaseName.trim() || "postgres", async (client) => {
-    const { createSchemaSql, createTableSql, commentSql } = buildPostgreSqlCreateTableSql(
+  return withPostgresClient(connection, databaseName || connection.databaseName.trim() || "postgres", async (client) => {
+    const { createSchemaSql, sequenceSql, createTableSql, sequenceOwnedBySql, commentSql } =
+      buildPostgreSqlCreateTableSql(
       connection,
       schemaName,
       tableName,
       comment,
       columns,
       foreignKeys
-    )
+      )
 
     if (createSchemaSql) {
       await client.query(createSchemaSql)
     }
 
+    for (const statement of sequenceSql) {
+      await client.query(statement)
+    }
+
     await client.query(createTableSql)
+
+    for (const statement of sequenceOwnedBySql) {
+      await client.query(statement)
+    }
 
     if (commentSql) {
       await client.query(commentSql)
@@ -2925,10 +3363,12 @@ export async function executeQuery(
 
       try {
         const result = await client.query(sqlStatement)
-        const normalized = normalizeRows(result.rows as Array<Record<string, unknown>>)
+        const rows = Array.isArray(result.rows) ? (result.rows as Array<Record<string, unknown>>) : []
+        const fields = Array.isArray(result.fields) ? result.fields : []
+        const normalized = normalizeRows(rows)
 
         return {
-          columns: result.fields.map((field) => field.name),
+          columns: fields.map((field) => field.name),
           rows: normalized.rows,
           rowCount: result.rowCount ?? normalized.rows.length,
           message:
@@ -2958,13 +3398,21 @@ export async function executeQuery(
 
       try {
         const result = await pool.request().query(sqlStatement)
-        const normalized = normalizeRows(result.recordset as Array<Record<string, unknown>>)
+        const recordset = Array.isArray(result.recordset)
+          ? (result.recordset as Array<Record<string, unknown>>)
+          : []
+        const normalized = normalizeRows(recordset)
+        const columns = normalized.columns.length
+          ? normalized.columns
+          : extractSqlServerRecordsetColumns(result.recordset)
 
         return {
-          columns: normalized.columns,
+          columns,
           rows: normalized.rows,
           rowCount: normalized.rows.length,
-          message: `${normalized.rows.length} linha(s) retornada(s).`,
+          message: normalized.rows.length
+            ? `${normalized.rows.length} linha(s) retornada(s).`
+            : "Consulta executada com sucesso.",
         }
       } finally {
         await pool.close()
@@ -3358,33 +3806,46 @@ async function buildMySqlLikeDatabaseStructure(
 }
 
 async function getPostgreSqlStructure(connection: SavedConnection): Promise<DatabaseStructure> {
-  const host = sanitizeText(connection.host) || "localhost"
-  const user = sanitizeText(connection.user)
-  const password = connection.password ?? ""
   const database = sanitizeText(connection.databaseName)
-  const port = parsePort(connection.port)
-  const useSsl = Boolean(connection.useSsl)
 
-  const client = new PostgresClient({
-    host,
-    port: port ?? 5432,
-    user,
-    password,
-    database: database || undefined,
-    connectionTimeoutMillis: 5000,
-    ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+  return withPostgresClient(connection, database || "postgres", async (client) => {
+    const databaseResult = await client.query(`
+      SELECT datname AS name
+      FROM pg_database
+      WHERE datallowconn = true
+        AND datistemplate = false
+      ORDER BY
+        CASE WHEN datname = current_database() THEN 0 ELSE 1 END,
+        datname
+    `)
+    const databaseNames = extractNames(databaseResult.rows)
+    const normalizedDatabaseNames = databaseNames.length ? databaseNames : [database || "postgres"]
+    const databases: DatabaseStructureDatabase[] = []
+
+    for (const databaseName of normalizedDatabaseNames) {
+      try {
+        databases.push(await getPostgreSqlDatabaseStructure(connection, databaseName))
+      } catch {
+        // A role can see a database in pg_database without being allowed to connect to it.
+      }
+    }
+
+    return {
+      databases,
+      schemas: databases[0]?.schemas ?? [],
+      groups: databases[0]?.groups ?? [],
+      users: await getPostgreSqlUsers(client),
+    }
   })
+}
 
-  await client.connect()
-
-  try {
+async function getPostgreSqlDatabaseStructure(
+  connection: SavedConnection,
+  databaseName: string
+): Promise<DatabaseStructureDatabase> {
+  return withPostgresClient(connection, databaseName, async (client) => {
     const schemaResult = await client.query("SELECT current_schema() AS name")
     const currentSchemaName = String(schemaResult.rows[0]?.name ?? "public")
-    const databaseResult = await client.query("SELECT current_database() AS name")
-    const databaseName =
-      String(databaseResult.rows[0]?.name ?? databaseResult.rows[0]?.NAME ?? "").trim() ||
-      database ||
-      "postgres"
     const schemasResult = await client.query(`
       SELECT schema_name AS name
       FROM information_schema.schemata
@@ -3459,6 +3920,15 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
         `,
         [schemaName]
       )
+      const sequences = await client.query(
+        `
+          SELECT sequence_name AS name
+          FROM information_schema.sequences
+          WHERE sequence_schema = $1
+          ORDER BY sequence_name
+        `,
+        [schemaName]
+      )
       const tableSizes = await client.query(
         `
           SELECT
@@ -3490,6 +3960,7 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
           ),
           createGroup("Views", viewNames, viewColumnsByItem.columnsByItem, viewColumnsByItem.columnsDetailsByItem),
           createGroup("Índices", extractNames(indexes.rows)),
+          createGroup("Sequences", extractNames(sequences.rows)),
           createGroup("Funções", extractNames(functions.rows)),
           createGroup("Procedures", extractNames(procedures.rows)),
         ],
@@ -3497,21 +3968,12 @@ async function getPostgreSqlStructure(connection: SavedConnection): Promise<Data
     }
 
     return {
-      databases: [
-        {
-          name: databaseName,
-          schemas,
-          groups: schemas[0]?.groups ?? [],
-          encoding,
-        },
-      ],
+      name: databaseName,
       schemas,
       groups: schemas[0]?.groups ?? [],
-      users: await getPostgreSqlUsers(client),
+      encoding,
     }
-  } finally {
-    await client.end()
-  }
+  })
 }
 
 async function getPostgreSqlUsers(client: PostgresClient) {
@@ -4033,6 +4495,7 @@ async function getMySqlLikeTableDetails(
         body: String(row.body ?? row.ACTION_STATEMENT ?? "").trim(),
       })),
       functions: extractNames(functions),
+      sequences: [],
     }
   } finally {
     await client.end()
@@ -4067,6 +4530,7 @@ async function getPostgreSqlTableDetails(
           numeric_precision,
           numeric_scale,
           is_nullable,
+          is_identity,
           column_default
         FROM information_schema.columns
         WHERE table_schema = $1
@@ -4164,6 +4628,47 @@ async function getPostgreSqlTableDetails(
       `,
       [schemaName]
     )
+    const sequenceResult = await client.query(
+      `
+        SELECT
+          name,
+          column_name
+        FROM (
+          SELECT seq.relname AS name, col.attname AS column_name
+          FROM pg_class tbl
+          INNER JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+          INNER JOIN pg_attribute col ON col.attrelid = tbl.oid
+          INNER JOIN pg_depend dep
+            ON dep.refobjid = tbl.oid
+           AND dep.refobjsubid = col.attnum
+           AND dep.deptype IN ('a', 'i')
+          INNER JOIN pg_class seq
+            ON seq.oid = dep.objid
+           AND seq.relkind = 'S'
+          WHERE ns.nspname = $1
+            AND tbl.relname = $2
+          UNION
+          SELECT seq.relname AS name, col.attname AS column_name
+          FROM pg_class tbl
+          INNER JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+          INNER JOIN pg_attribute col ON col.attrelid = tbl.oid
+          INNER JOIN pg_attrdef def ON def.adrelid = tbl.oid AND def.adnum = col.attnum
+          INNER JOIN pg_depend dep
+            ON dep.classid = 'pg_attrdef'::regclass
+           AND dep.objid = def.oid
+           AND dep.refclassid = 'pg_class'::regclass
+          INNER JOIN pg_class seq
+            ON seq.oid = dep.refobjid
+           AND seq.relkind = 'S'
+          WHERE ns.nspname = $1
+            AND tbl.relname = $2
+            AND col.attnum > 0
+            AND NOT col.attisdropped
+        ) sequences
+        ORDER BY name
+      `,
+      [schemaName, tableName]
+    )
 
     const primaryKeys = new Set(extractNames(pkResult.rows))
     const indexes = (indexResult.rows as Array<Record<string, unknown>>).map((row) => ({
@@ -4187,14 +4692,16 @@ async function getPostgreSqlTableDetails(
       comment: String(commentResult.rows[0]?.comment ?? commentResult.rows[0]?.COMMENT ?? "").trim(),
       columns: columnsResult.rows.map((row) => ({
         name: String(row.name ?? "").trim(),
-        dataType: String(row.data_type ?? "").trim().toUpperCase(),
+        dataType: normalizePostgreSqlDataType(String(row.data_type ?? "").trim()),
         size: normalizeColumnSize(row.character_maximum_length, row.numeric_precision, row.numeric_scale),
         notNull: String(row.is_nullable ?? "").toUpperCase() === "NO",
         primaryKey: primaryKeys.has(String(row.name ?? "").trim()),
         unique:
           uniqueColumnSet.has(String(row.name ?? "").trim().toLowerCase()) &&
           !primaryKeys.has(String(row.name ?? "").trim()),
-        autoIncrement: String(row.column_default ?? "").toLowerCase().includes("nextval("),
+        autoIncrement:
+          String(row.is_identity ?? "").toUpperCase() === "YES" ||
+          String(row.column_default ?? "").toLowerCase().includes("nextval("),
         defaultValue: String(row.column_default ?? "").trim(),
         comment: "",
       })),
@@ -4220,6 +4727,10 @@ async function getPostgreSqlTableDetails(
         }
       }),
       functions: extractNames(functionResult.rows),
+      sequences: (sequenceResult.rows as Array<Record<string, unknown>>).map((row) => ({
+        name: String(row.name ?? "").trim(),
+        columnName: String(row.column_name ?? "").trim(),
+      })),
     }
   } finally {
     await client.end()
@@ -4290,14 +4801,17 @@ async function getSqlServerTableDetails(
       SELECT
         fk.name AS name,
         pc.name AS column_name,
+        rs.name AS referenced_schema,
         rt.name AS referenced_table,
-        rc.name AS referenced_column
+        rc.name AS referenced_column,
+        fk.delete_referential_action_desc AS delete_rule,
+        fk.update_referential_action_desc AS update_rule
       FROM sys.foreign_keys fk
       INNER JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
       INNER JOIN sys.columns pc ON fkc.parent_object_id = pc.object_id AND fkc.parent_column_id = pc.column_id
-      INNER JOIN sys.tables rtbl ON fkc.referenced_object_id = rtbl.object_id
       INNER JOIN sys.columns rc ON fkc.referenced_object_id = rc.object_id AND fkc.referenced_column_id = rc.column_id
-      INNER JOIN sys.tables rt ON rtbl.object_id = rt.object_id
+      INNER JOIN sys.tables rt ON fkc.referenced_object_id = rt.object_id
+      INNER JOIN sys.schemas rs ON rt.schema_id = rs.schema_id
       WHERE fk.parent_object_id = OBJECT_ID(${quoteSqlLiteral(fullObjectName)})
       ORDER BY fk.name, fkc.constraint_column_id
     `)
@@ -4306,6 +4820,7 @@ async function getSqlServerTableDetails(
         i.name AS name,
         i.is_unique AS is_unique,
         i.is_primary_key AS is_primary_key,
+        i.type_desc AS index_type,
         c.name AS column_name,
         ic.key_ordinal AS key_ordinal
       FROM sys.indexes i
@@ -4349,16 +4864,21 @@ async function getSqlServerTableDetails(
 
       const unique = Boolean(row.is_unique)
       const primaryKey = Boolean(row.is_primary_key)
+      const sqlServerIndexType = String(row.index_type ?? "")
+        .trim()
+        .replace(/_/g, " ")
       const existing = indexMap.get(name) ?? {
         name,
         columns: [],
         unique,
         primaryKey,
+        sqlServerIndexType,
       }
 
       existing.columns.push(columnName)
       existing.unique = existing.primaryKey ? true : unique
       existing.primaryKey = primaryKey
+      existing.sqlServerIndexType = existing.sqlServerIndexType || sqlServerIndexType
       indexMap.set(name, existing)
     }
 
@@ -4393,7 +4913,26 @@ async function getSqlServerTableDetails(
         defaultValue: String(row.default_value ?? "").trim(),
         comment: String(row.comment ?? "").trim(),
       })),
-      foreignKeys: extractNames(fkResult.recordset as Array<Record<string, unknown>>).map((name) => name),
+      foreignKeys: (fkResult.recordset as Array<Record<string, unknown>>).map((row) => {
+        const constraintName = String(row.name ?? "").trim()
+        const columnName = String(row.column_name ?? "").trim()
+        const referencedSchema = String(row.referenced_schema ?? "").trim()
+        const referencedTable = String(row.referenced_table ?? "").trim()
+        const referencedColumn = String(row.referenced_column ?? "").trim()
+        const deleteRule = normalizeSqlServerReferentialAction(row.delete_rule)
+        const updateRule = normalizeSqlServerReferentialAction(row.update_rule)
+        const actions = [
+          deleteRule ? `ON DELETE ${deleteRule}` : "",
+          updateRule ? `ON UPDATE ${updateRule}` : "",
+        ]
+          .filter(Boolean)
+          .join(" ")
+        const referencedTarget = [referencedSchema, referencedTable, referencedColumn]
+          .filter(Boolean)
+          .join(".")
+
+        return `${constraintName}: ${columnName} -> ${referencedTarget}${actions ? ` ${actions}` : ""}`
+      }),
       indexes,
       triggers: (triggerResult.recordset as Array<Record<string, unknown>>).map((row) => {
         const definition = String(row.definition ?? "").trim()
@@ -4408,6 +4947,7 @@ async function getSqlServerTableDetails(
         }
       }),
       functions: extractNames(functionResult.recordset as Array<Record<string, unknown>>),
+      sequences: [],
     }
   } finally {
     await pool.close()
@@ -4520,6 +5060,7 @@ async function getSqliteTableDetails(
         }
       }),
       functions: [],
+      sequences: [],
     }
   } finally {
     db.close()
@@ -4754,6 +5295,295 @@ function buildDropRoutineSql(
   throw new Error("Tipo de banco não suportado para routines.")
 }
 
+function isSqlServerColumnAlterInPlaceSupported(
+  column: {
+    name: string
+    dataType: string
+    size: string
+    unsigned?: boolean
+    notNull: boolean
+    primaryKey: boolean
+    unique?: boolean
+    autoIncrement: boolean
+    defaultValue: string
+    comment: string
+  },
+  original: {
+    name: string
+    dataType: string
+    size: string
+    unsigned?: boolean
+    notNull: boolean
+    primaryKey: boolean
+    unique?: boolean
+    autoIncrement: boolean
+    defaultValue: string
+    comment: string
+  }
+) {
+  return (
+    Boolean(column.unsigned) === Boolean(original.unsigned) &&
+    column.autoIncrement === original.autoIncrement &&
+    column.defaultValue.trim() === original.defaultValue.trim() &&
+    column.comment.trim() === original.comment.trim()
+  )
+}
+
+function normalizeDbObjectKey(value: string) {
+  return value.trim().toLowerCase()
+}
+
+function sameDbObjectList(left: string[], right: string[]) {
+  const normalizedLeft = left.map(normalizeDbObjectKey).filter(Boolean)
+  const normalizedRight = right.map(normalizeDbObjectKey).filter(Boolean)
+
+  return (
+    normalizedLeft.length === normalizedRight.length &&
+    normalizedLeft.every((item, index) => item === normalizedRight[index])
+  )
+}
+
+function buildPrimaryKeyConstraintName(tableName: string) {
+  const suffix = tableName
+    .trim()
+    .replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+
+  return `PK_${suffix || "table"}`
+}
+
+function quoteSqlServerConstraintIdentifier(constraintName: string) {
+  const trimmed = constraintName.trim()
+  const unwrapped =
+    trimmed.startsWith("[") && trimmed.endsWith("]")
+      ? trimmed.slice(1, -1).replace(/]]/g, "]")
+      : trimmed
+
+  return quoteSqlServerIdentifier(unwrapped)
+}
+
+function buildSqlServerAlterColumnDefinition(
+  connection: SavedConnection,
+  column: {
+    name: string
+    dataType: string
+    size: string
+    unsigned?: boolean
+    notNull: boolean
+    primaryKey: boolean
+    autoIncrement: boolean
+    defaultValue: string
+    comment: string
+  }
+) {
+  return buildCreateTableColumnDefinition(connection, {
+    ...column,
+    primaryKey: false,
+    autoIncrement: false,
+    defaultValue: "",
+    comment: "",
+  })
+}
+
+function buildSqlServerPrimaryKeyConstraintSql(
+  constraintName: string,
+  qualifiedTableName: string,
+  columnNames: string[],
+  sqlServerIndexType?: string
+) {
+  const columns = columnNames
+    .map((columnName) => columnName.trim())
+    .filter(Boolean)
+    .map((columnName) => quoteSqlServerIdentifier(columnName))
+
+  if (!columns.length) {
+    throw new Error("Não foi possível recriar a chave primária sem colunas.")
+  }
+
+  const indexType = /^(CLUSTERED|NONCLUSTERED)$/i.test(sqlServerIndexType ?? "")
+    ? ` ${sqlServerIndexType?.trim().toUpperCase()}`
+    : ""
+
+  return `ALTER TABLE ${qualifiedTableName} ADD CONSTRAINT ${quoteSqlServerIdentifier(
+    constraintName
+  )} PRIMARY KEY${indexType} (${columns.join(", ")})`
+}
+
+function buildSqlServerDropDefaultConstraintSql(qualifiedTableName: string, columnName: string) {
+  const escapedQualifiedTableName = qualifiedTableName.replace(/'/g, "''")
+
+  return `
+DECLARE @constraintName sysname;
+DECLARE @sql nvarchar(max);
+SELECT @constraintName = dc.name
+FROM sys.default_constraints dc
+INNER JOIN sys.columns c
+  ON c.default_object_id = dc.object_id
+WHERE dc.parent_object_id = OBJECT_ID(N'${escapedQualifiedTableName}')
+  AND c.name = ${quoteSqlLiteral(columnName)};
+IF @constraintName IS NOT NULL
+BEGIN
+  SET @sql = N'ALTER TABLE ${escapedQualifiedTableName} DROP CONSTRAINT [' + REPLACE(@constraintName, ']', ']]') + N']';
+  EXEC sp_executesql @sql;
+END
+`.trim()
+}
+
+function supportsPostgreSqlIdentity(dataType: string) {
+  return /^(SMALLINT|INTEGER|BIGINT)$/i.test(dataType.trim())
+}
+
+function isPostgreSqlColumnAlterInPlaceSupported(
+  column: {
+    name: string
+    dataType: string
+    size: string
+    unsigned?: boolean
+    notNull: boolean
+    primaryKey: boolean
+    unique?: boolean
+    autoIncrement: boolean
+    defaultValue: string
+    comment: string
+  },
+  original: {
+    name: string
+    dataType: string
+    size: string
+    unsigned?: boolean
+    notNull: boolean
+    primaryKey: boolean
+    unique?: boolean
+    autoIncrement: boolean
+    defaultValue: string
+    comment: string
+  }
+) {
+  if (column.autoIncrement && !supportsPostgreSqlIdentity(column.dataType)) {
+    return false
+  }
+
+  const defaultChanged = column.defaultValue.trim() !== original.defaultValue.trim()
+
+  if (column.autoIncrement && original.autoIncrement && defaultChanged) {
+    return false
+  }
+
+  return (
+    column.dataType.trim().toUpperCase() === original.dataType.trim().toUpperCase() &&
+    column.size.trim() === original.size.trim() &&
+    Boolean(column.unsigned) === Boolean(original.unsigned) &&
+    column.primaryKey === original.primaryKey &&
+    Boolean(column.unique) === Boolean(original.unique) &&
+    column.comment.trim() === original.comment.trim()
+  )
+}
+
+function buildPostgreSqlAlterColumnStatements(
+  qualifiedTableName: string,
+  schemaName: string,
+  tableName: string,
+  column: {
+    name: string
+    dataType: string
+    size: string
+    notNull: boolean
+    autoIncrement: boolean
+    defaultValue: string
+  },
+  original: {
+    name: string
+    notNull: boolean
+    autoIncrement: boolean
+    defaultValue: string
+  }
+) {
+  const statements: string[] = []
+  const columnName = quoteIdentifier("postgresql", column.name)
+  const defaultChanged = column.defaultValue.trim() !== original.defaultValue.trim()
+
+  if (column.autoIncrement && !original.autoIncrement) {
+    const sequenceName = buildPostgreSqlSequenceName(tableName, column.name)
+    const qualifiedSequence = `${quoteIdentifier("postgresql", schemaName)}.${quoteIdentifier(
+      "postgresql",
+      sequenceName
+    )}`
+
+    statements.push(`CREATE SEQUENCE IF NOT EXISTS ${qualifiedSequence}`)
+    statements.push(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} DROP DEFAULT`)
+    statements.push(
+      `ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} SET DEFAULT nextval(${quoteSqlLiteral(
+        qualifiedSequence
+      )}::regclass)`
+    )
+    statements.push(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} SET NOT NULL`)
+    statements.push(`ALTER SEQUENCE ${qualifiedSequence} OWNED BY ${qualifiedTableName}.${columnName}`)
+    statements.push(buildPostgreSqlIdentitySequenceSyncSql(qualifiedTableName, column.name, columnName))
+    return statements
+  }
+
+  if (!column.autoIncrement && original.autoIncrement) {
+    statements.push(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} DROP DEFAULT`)
+  } else if (defaultChanged && !column.autoIncrement) {
+    statements.push(
+      column.defaultValue.trim()
+        ? `ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} SET DEFAULT ${sanitizeSqlExpression(
+            column.defaultValue
+          )}`
+        : `ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} DROP DEFAULT`
+    )
+  }
+
+  if (column.notNull !== original.notNull) {
+    statements.push(
+      `ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} ${
+        column.notNull ? "SET NOT NULL" : "DROP NOT NULL"
+      }`
+    )
+  }
+
+  return statements
+}
+
+function buildPostgreSqlAddAutoIncrementColumnStatements(
+  connection: SavedConnection,
+  qualifiedTableName: string,
+  schemaName: string,
+  tableName: string,
+  column: CreateTableColumnSpec
+) {
+  const sequenceName = buildPostgreSqlSequenceName(tableName, column.name)
+  const qualifiedSequence = `${quoteIdentifier("postgresql", schemaName)}.${quoteIdentifier(
+    "postgresql",
+    sequenceName
+  )}`
+  const qualifiedColumn = `${qualifiedTableName}.${quoteIdentifier("postgresql", column.name)}`
+  const defaultValue = `nextval(${quoteSqlLiteral(qualifiedSequence)}::regclass)`
+  const columnDefinition = buildCreateTableColumnDefinition(connection, {
+    ...column,
+    autoIncrement: false,
+    defaultValue,
+    notNull: true,
+  })
+
+  return [
+    `CREATE SEQUENCE IF NOT EXISTS ${qualifiedSequence}`,
+    `ALTER TABLE ${qualifiedTableName} ADD COLUMN ${columnDefinition}`,
+    `ALTER SEQUENCE ${qualifiedSequence} OWNED BY ${qualifiedColumn}`,
+  ]
+}
+
+function buildPostgreSqlIdentitySequenceSyncSql(
+  qualifiedTableName: string,
+  rawColumnName: string,
+  quotedColumnName: string
+) {
+  return `SELECT setval(pg_get_serial_sequence(${quoteSqlLiteral(qualifiedTableName)}, ${quoteSqlLiteral(
+    rawColumnName
+  )}), GREATEST(COALESCE((SELECT MAX(${quotedColumnName}) FROM ${qualifiedTableName}), 0) + 1, 1), false)`
+}
+
 function normalizeMySqlLikeQueryRows(rows: unknown[]): Array<Record<string, unknown>> {
   if (!rows.length) {
     return []
@@ -4770,6 +5600,28 @@ function normalizeMySqlLikeQueryRows(rows: unknown[]): Array<Record<string, unkn
   )
 
   return Array.isArray(firstRecordSet) ? (firstRecordSet as Array<Record<string, unknown>>) : []
+}
+
+function extractSqlServerRecordsetColumns(recordset: unknown) {
+  if (!recordset || typeof recordset !== "object" || !("columns" in recordset)) {
+    return []
+  }
+
+  const columns = (recordset as { columns?: unknown }).columns
+
+  if (!columns || typeof columns !== "object") {
+    return []
+  }
+
+  return Object.entries(columns)
+    .sort(([, left], [, right]) => {
+      const leftIndex = typeof left === "object" && left && "index" in left ? Number(left.index) : 0
+      const rightIndex = typeof right === "object" && right && "index" in right ? Number(right.index) : 0
+
+      return leftIndex - rightIndex
+    })
+    .map(([name]) => name)
+    .filter(Boolean)
 }
 
 export function getConnectionById(id: string): SavedConnection | null {

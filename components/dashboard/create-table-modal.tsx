@@ -36,18 +36,20 @@ import {
   buildForeignKeyConstraintName,
   buildTableIndexName,
 } from "@/helpers/create-table/shared"
+import { buildPostgreSqlSequenceName } from "@/helpers/create-table/postgres"
 import type {
   CreateTableColumnDraft,
   CreateTableDraft,
   CreateTableForeignKeyDraft,
   CreateTableIndexDraft,
   CreateTableFunctionDraft,
+  CreateTableSequenceDraft,
   CreateTableTriggerDraft,
   CreateTableModalProps,
 } from "@/types/dashboard-modals"
 import type { DatabaseStructureDatabase, SavedConnection, TableDetails } from "@/types/connections"
 
-const typeOptions = [
+const defaultTypeOptions = [
   { value: "INTEGER", label: "integer" },
   { value: "INT", label: "int" },
   { value: "SMALLINT", label: "smallint" },
@@ -66,12 +68,95 @@ const typeOptions = [
   { value: "DATE", label: "date" },
 ]
 
-function getColumnSizeConfig(dataType: string) {
+const postgreSqlTypeOptions = [
+  { value: "SMALLINT", label: "smallint" },
+  { value: "INTEGER", label: "integer" },
+  { value: "BIGINT", label: "bigint" },
+  { value: "NUMERIC", label: "numeric" },
+  { value: "REAL", label: "real" },
+  { value: "DOUBLE PRECISION", label: "double precision" },
+  { value: "CHARACTER", label: "character" },
+  { value: "CHARACTER VARYING", label: "character varying" },
+  { value: "TEXT", label: "text" },
+  { value: "BOOLEAN", label: "boolean" },
+  { value: "DATE", label: "date" },
+  { value: "TIME", label: "time" },
+  { value: "TIMETZ", label: "time with time zone" },
+  { value: "TIMESTAMP", label: "timestamp" },
+  { value: "TIMESTAMPTZ", label: "timestamp with time zone" },
+  { value: "UUID", label: "uuid" },
+  { value: "JSON", label: "json" },
+  { value: "JSONB", label: "jsonb" },
+  { value: "BYTEA", label: "bytea" },
+  { value: "BIT", label: "bit" },
+  { value: "VARBIT", label: "bit varying" },
+  { value: "INET", label: "inet" },
+  { value: "CIDR", label: "cidr" },
+  { value: "MACADDR", label: "macaddr" },
+]
+
+function getTypeOptions(databaseType: SavedConnection["databaseType"]) {
+  if (databaseType === "postgresql") {
+    return postgreSqlTypeOptions
+  }
+
+  return defaultTypeOptions
+}
+
+function supportsAutoIncrement(databaseType: SavedConnection["databaseType"], dataType: string) {
+  const normalizedType = dataType.trim().toUpperCase()
+
+  if (databaseType === "postgresql") {
+    return /^(SMALLINT|INTEGER|BIGINT)$/.test(normalizedType)
+  }
+
+  if (databaseType === "sqlserver") {
+    return /^(TINYINT|SMALLINT|INT|BIGINT|NUMERIC|DECIMAL)$/.test(normalizedType)
+  }
+
+  if (databaseType === "sqlite") {
+    return normalizedType === "INTEGER"
+  }
+
+  return /^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT)$/.test(normalizedType)
+}
+
+function getAutoIncrementLabel(databaseType: SavedConnection["databaseType"]) {
+  return databaseType === "postgresql" ? "Identity" : "Auto increment"
+}
+
+function getColumnSizeConfig(dataType: string, databaseType?: SavedConnection["databaseType"]) {
   switch (dataType.trim().toUpperCase()) {
     case "BIGINT":
+      if (databaseType === "sqlserver" || databaseType === "postgresql") {
+        return {
+          placeholder: "",
+          defaultValue: "",
+          disabled: true,
+        }
+      }
+
       return {
         placeholder: "20",
         defaultValue: "20",
+        disabled: false,
+      }
+    case "TINYINT":
+    case "SMALLINT":
+    case "MEDIUMINT":
+    case "INT":
+    case "INTEGER":
+      if (databaseType === "sqlserver" || databaseType === "postgresql") {
+        return {
+          placeholder: "",
+          defaultValue: "",
+          disabled: true,
+        }
+      }
+
+      return {
+        placeholder: "11",
+        defaultValue: "",
         disabled: false,
       }
     case "ENUM":
@@ -81,14 +166,49 @@ function getColumnSizeConfig(dataType: string) {
         disabled: false,
       }
     case "DECIMAL":
-    case "FLOAT":
-    case "DOUBLE":
+    case "NUMERIC":
       return {
         placeholder: "10,2",
         defaultValue: "10,2",
         disabled: false,
       }
+    case "FLOAT":
+    case "DOUBLE":
+    case "REAL":
+    case "DOUBLE PRECISION":
+      return {
+        placeholder: "",
+        defaultValue: "",
+        disabled: databaseType === "postgresql",
+      }
+    case "CHARACTER":
+    case "CHARACTER VARYING":
+    case "CHAR":
+    case "VARCHAR":
+      return {
+        placeholder: "100",
+        defaultValue: "",
+        disabled: false,
+      }
+    case "BIT":
+    case "BIT VARYING":
+    case "VARBIT":
+      return {
+        placeholder: "8",
+        defaultValue: "",
+        disabled: databaseType !== "postgresql",
+      }
     case "BOOLEAN":
+    case "TEXT":
+    case "JSON":
+    case "JSONB":
+    case "BYTEA":
+    case "UUID":
+    case "DATE":
+    case "TIME":
+    case "TIMETZ":
+    case "TIMESTAMP":
+    case "TIMESTAMPTZ":
       return {
         placeholder: "",
         defaultValue: "",
@@ -284,6 +404,17 @@ function createFunctionDraftFromDefinition(
     body: "RETURN 1;",
     removable: true,
   })
+}
+
+function createSequenceDraftFromDefinition(
+  definition: TableDetails["sequences"][number]
+): CreateTableSequenceDraft {
+  return {
+    id: definition.name,
+    name: definition.name,
+    columnName: definition.columnName,
+    removed: false,
+  }
 }
 
 function createPrimaryIndexDraft(columnName: string, indexName: string) {
@@ -562,16 +693,19 @@ function parseForeignKeySummary(value: string) {
   const actionIndex = referencedWithActions.search(/\s+ON\s+(DELETE|UPDATE)\s+/i)
   const referenced = (actionIndex >= 0 ? referencedWithActions.slice(0, actionIndex) : referencedWithActions).trim()
   const actions = actionIndex >= 0 ? referencedWithActions.slice(actionIndex).trim() : ""
-  const lastDot = referenced.lastIndexOf(".")
+  const referencedParts = referenced.split(".").map((part) => part.trim()).filter(Boolean)
+  const referencedColumnName = referencedParts.pop() ?? ""
+  const referencedTableName = referencedParts.pop() ?? referenced
+  const referencedSchemaName = referencedParts.pop() ?? ""
   const deleteMatch = actions.match(/\bON DELETE\s+(.+?)(?=\s+ON UPDATE\s+|$)/i)
   const updateMatch = actions.match(/\bON UPDATE\s+(.+)$/i)
 
   return {
     constraintName: match[1]?.trim() ?? "",
     sourceColumn: match[2].trim(),
-    referencedSchemaName: "",
-    referencedTableName: lastDot >= 0 ? referenced.slice(0, lastDot).trim() : referenced,
-    referencedColumnName: lastDot >= 0 ? referenced.slice(lastDot + 1).trim() : "",
+    referencedSchemaName,
+    referencedTableName,
+    referencedColumnName,
     onDelete: deleteMatch?.[1]?.trim() ?? "",
     onUpdate: updateMatch?.[1]?.trim() ?? "",
   }
@@ -594,13 +728,14 @@ function getInitialDraft(
       .filter((foreignKey): foreignKey is NonNullable<ReturnType<typeof parseForeignKeySummary>> => Boolean(foreignKey))
       .map((foreignKey) => {
         const matchedReference = referenceTables.find((option) =>
+          option.schemaName === (foreignKey.referencedSchemaName || defaultSchema) &&
           option.tableName === foreignKey.referencedTableName &&
           option.primaryKeyColumns.includes(foreignKey.referencedColumnName)
         )
 
         return createForeignKeyDraft({
           sourceColumn: foreignKey.sourceColumn,
-          referencedSchemaName: matchedReference?.schemaName || defaultSchema,
+          referencedSchemaName: matchedReference?.schemaName || foreignKey.referencedSchemaName || defaultSchema,
           referencedTableName: matchedReference?.tableName || foreignKey.referencedTableName,
           referencedColumnName: matchedReference
             ? foreignKey.referencedColumnName
@@ -633,6 +768,9 @@ function getInitialDraft(
       functions: table.functions.length
         ? table.functions.map((functionName) => createFunctionDraftFromDefinition(functionName))
         : [],
+      sequences: table.sequences?.length
+        ? table.sequences.map((sequence) => createSequenceDraftFromDefinition(sequence))
+        : [],
     }
   }
 
@@ -648,6 +786,7 @@ function getInitialDraft(
     indexes: [createPrimaryIndexDraft("id", "PRIMARY")],
     triggers: [],
     functions: [],
+    sequences: [],
   }
 }
 
@@ -682,6 +821,7 @@ function createEmptyDraft(
     indexes: [createPrimaryIndexDraft("id", "PRIMARY")],
     triggers: [],
     functions: [],
+    sequences: [],
   }
 }
 
@@ -731,19 +871,29 @@ function quotePreviewIdentifier(connection: SavedConnection, value: string) {
   return `"${name.replace(/"/g, '""')}"`
 }
 
+function quotePreviewSqlServerConstraintIdentifier(connection: SavedConnection, value: string) {
+  const name = value.trim()
+  const unwrapped =
+    name.startsWith("[") && name.endsWith("]")
+      ? name.slice(1, -1).replace(/]]/g, "]")
+      : name
+
+  return quotePreviewIdentifier(connection, unwrapped)
+}
+
 function quotePreviewSqlLiteral(value: string) {
   return `'${value.replace(/'/g, "''")}'`
 }
 
-function buildColumnPreview(connection: SavedConnection, column: CreateTableColumnDraft) {
+function buildColumnPreview(
+  connection: SavedConnection,
+  column: CreateTableColumnDraft,
+  defaultOverride?: string
+) {
   const parts = [quotePreviewIdentifier(connection, column.name)]
-  const typeWithSize =
-    column.size &&
-    /^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER|ENUM|FLOAT|DOUBLE)$/.test(
-      column.dataType
-    )
-      ? `${column.dataType}(${column.size})`
-      : column.dataType
+  const typeWithSize = supportsPreviewColumnSize(connection, column.dataType, column.size)
+    ? `${column.dataType}(${column.size})`
+    : column.dataType
 
   if (connection.databaseType === "sqlite" && column.autoIncrement && column.primaryKey) {
     return `${parts[0]} INTEGER PRIMARY KEY AUTOINCREMENT`
@@ -761,11 +911,9 @@ function buildColumnPreview(connection: SavedConnection, column: CreateTableColu
     parts.push("UNSIGNED")
   }
 
-  if (column.autoIncrement) {
+  if (column.autoIncrement && supportsAutoIncrement(connection.databaseType, column.dataType)) {
     if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
       parts.push("AUTO_INCREMENT")
-    } else if (connection.databaseType === "postgresql") {
-      parts.push("GENERATED BY DEFAULT AS IDENTITY")
     } else if (connection.databaseType === "sqlserver") {
       parts.push("IDENTITY(1,1)")
     }
@@ -775,7 +923,9 @@ function buildColumnPreview(connection: SavedConnection, column: CreateTableColu
     parts.push("NOT NULL")
   }
 
-  if (column.defaultValue.trim()) {
+  if (defaultOverride) {
+    parts.push(`DEFAULT ${defaultOverride}`)
+  } else if (column.defaultValue.trim()) {
     parts.push(`DEFAULT ${column.defaultValue}`)
   }
 
@@ -784,6 +934,187 @@ function buildColumnPreview(connection: SavedConnection, column: CreateTableColu
   }
 
   return parts.join(" ")
+}
+
+function supportsPreviewColumnSize(
+  connection: SavedConnection,
+  dataType: string,
+  size: string
+) {
+  if (!size.trim()) {
+    return false
+  }
+
+  const normalizedType = dataType.trim().toUpperCase()
+
+  if (connection.databaseType === "sqlserver") {
+    return /^(CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC)$/.test(normalizedType)
+  }
+
+  if (connection.databaseType === "postgresql") {
+    return /^(CHARACTER|CHARACTER VARYING|BIT|BIT VARYING|VARBIT|DECIMAL|NUMERIC)$/.test(normalizedType)
+  }
+
+  return /^(TINYINT|SMALLINT|MEDIUMINT|INT|INTEGER|BIGINT|CHAR|NCHAR|VARCHAR|NVARCHAR|BINARY|VARBINARY|DECIMAL|NUMERIC|NUMBER|ENUM|FLOAT|DOUBLE)$/.test(normalizedType)
+}
+
+function isSqlServerPreviewColumnAlterInPlaceSupported(
+  column: CreateTableColumnDraft,
+  original: {
+    name: string
+    dataType: string
+    size: string
+    unsigned?: boolean
+    notNull: boolean
+    primaryKey: boolean
+    unique?: boolean
+    autoIncrement: boolean
+    defaultValue: string
+    comment: string
+  }
+) {
+  return (
+    Boolean(column.unsigned) === Boolean(original.unsigned) &&
+    column.autoIncrement === original.autoIncrement &&
+    column.defaultValue.trim() === original.defaultValue.trim() &&
+    column.comment.trim() === original.comment.trim()
+  )
+}
+
+function buildSqlServerAlterColumnPreview(
+  connection: SavedConnection,
+  column: CreateTableColumnDraft
+) {
+  return buildColumnPreview(connection, {
+    ...column,
+    primaryKey: false,
+    autoIncrement: false,
+    defaultValue: "",
+    comment: "",
+  })
+}
+
+function isPostgreSqlPreviewColumnAlterInPlaceSupported(
+  column: CreateTableColumnDraft,
+  original: {
+    name: string
+    dataType: string
+    size: string
+    unsigned?: boolean
+    notNull: boolean
+    primaryKey: boolean
+    unique?: boolean
+    autoIncrement: boolean
+    defaultValue: string
+    comment: string
+  }
+) {
+  if (column.autoIncrement && !supportsAutoIncrement("postgresql", column.dataType)) {
+    return false
+  }
+
+  const defaultChanged = column.defaultValue.trim() !== original.defaultValue.trim()
+
+  if (column.autoIncrement && original.autoIncrement && defaultChanged) {
+    return false
+  }
+
+  return (
+    column.dataType.trim().toUpperCase() === original.dataType.trim().toUpperCase() &&
+    column.size.trim() === original.size.trim() &&
+    Boolean(column.unsigned) === Boolean(original.unsigned) &&
+    column.primaryKey === original.primaryKey &&
+    Boolean(column.unique) === Boolean(original.unique) &&
+    column.comment.trim() === original.comment.trim()
+  )
+}
+
+function buildPostgreSqlAlterColumnPreviewStatements(
+  connection: SavedConnection,
+  qualifiedTableName: string,
+  schemaName: string,
+  tableName: string,
+  column: CreateTableColumnDraft,
+  original: {
+    name: string
+    notNull: boolean
+    autoIncrement: boolean
+    defaultValue: string
+  }
+) {
+  const statements: string[] = []
+  const columnName = quotePreviewIdentifier(connection, column.name)
+  const defaultChanged = column.defaultValue.trim() !== original.defaultValue.trim()
+
+  if (column.autoIncrement && !original.autoIncrement) {
+    const sequencePreview = getPostgreSqlAutoIncrementSequencePreview(
+      connection,
+      schemaName,
+      tableName,
+      column.name
+    )
+
+    statements.push(sequencePreview.createSql)
+    statements.push(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} DROP DEFAULT;`)
+    statements.push(
+      `ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} SET DEFAULT ${sequencePreview.defaultExpression};`
+    )
+    statements.push(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} SET NOT NULL;`)
+    statements.push(sequencePreview.ownedBySql)
+    statements.push(buildPostgreSqlIdentitySequenceSyncPreview(qualifiedTableName, column.name, columnName))
+    return statements
+  }
+
+  if (!column.autoIncrement && original.autoIncrement) {
+    statements.push(`ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} DROP DEFAULT;`)
+  } else if (defaultChanged && !column.autoIncrement) {
+    statements.push(
+      column.defaultValue.trim()
+        ? `ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} SET DEFAULT ${column.defaultValue.trim()};`
+        : `ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} DROP DEFAULT;`
+    )
+  }
+
+  if (column.notNull !== original.notNull) {
+    statements.push(
+      `ALTER TABLE ${qualifiedTableName} ALTER COLUMN ${columnName} ${
+        column.notNull ? "SET NOT NULL" : "DROP NOT NULL"
+      };`
+    )
+  }
+
+  return statements
+}
+
+function buildPostgreSqlIdentitySequenceSyncPreview(
+  qualifiedTableName: string,
+  rawColumnName: string,
+  quotedColumnName: string
+) {
+  return `SELECT setval(pg_get_serial_sequence(${quotePreviewSqlLiteral(
+    qualifiedTableName
+  )}, ${quotePreviewSqlLiteral(rawColumnName)}), GREATEST(COALESCE((SELECT MAX(${quotedColumnName}) FROM ${qualifiedTableName}), 0) + 1, 1), false);`
+}
+
+function getPostgreSqlAutoIncrementSequencePreview(
+  connection: SavedConnection,
+  schemaName: string,
+  tableName: string,
+  columnName: string
+) {
+  const sequenceName = buildPostgreSqlSequenceName(tableName, columnName)
+  const quotedSchema = quotePreviewIdentifier(connection, schemaName)
+  const quotedTable = quotePreviewIdentifier(connection, tableName)
+  const quotedSequence = quotePreviewIdentifier(connection, sequenceName)
+  const quotedColumn = quotePreviewIdentifier(connection, columnName)
+  const qualifiedSequence = `${quotedSchema}.${quotedSequence}`
+  const qualifiedColumn = `${quotedSchema}.${quotedTable}.${quotedColumn}`
+
+  return {
+    defaultExpression: `nextval(${quotePreviewSqlLiteral(qualifiedSequence)}::regclass)`,
+    createSql: `CREATE SEQUENCE IF NOT EXISTS ${qualifiedSequence};`,
+    ownedBySql: `ALTER SEQUENCE ${qualifiedSequence} OWNED BY ${qualifiedColumn};`,
+  }
 }
 
 function buildQualifiedTableName(
@@ -1398,9 +1729,35 @@ function buildCreatePreviewStatements(
     form.tableName,
     databaseName
   )
-  const columns = form.columns
-    .filter((column) => column.name.trim())
-    .map((column) => `  ${buildColumnPreview(connection, column)}`)
+  const targetColumns = form.columns.filter((column) => column.name.trim())
+  const postgreSqlSequencePreviews =
+    connection.databaseType === "postgresql"
+      ? targetColumns
+          .filter((column) => column.autoIncrement && supportsAutoIncrement(connection.databaseType, column.dataType))
+          .map((column) =>
+            getPostgreSqlAutoIncrementSequencePreview(
+              connection,
+              form.schemaName,
+              form.tableName,
+              column.name
+            )
+          )
+      : []
+  const columns = targetColumns.map((column) => {
+    const sequencePreview =
+      connection.databaseType === "postgresql" &&
+      column.autoIncrement &&
+      supportsAutoIncrement(connection.databaseType, column.dataType)
+        ? getPostgreSqlAutoIncrementSequencePreview(
+            connection,
+            form.schemaName,
+            form.tableName,
+            column.name
+          )
+        : null
+
+    return `  ${buildColumnPreview(connection, column, sequencePreview?.defaultExpression)}`
+  })
   const foreignKeys = normalizeForeignKeyDrafts(form)
   const foreignKeyDefinitions = foreignKeys.map((foreignKey, index) =>
     `  ${buildForeignKeyPreviewDefinition(connection, form.tableName, foreignKey, index, form.schemaName)}`
@@ -1439,6 +1796,10 @@ function buildCreatePreviewStatements(
     statements.push(`CREATE SCHEMA IF NOT EXISTS ${quotePreviewIdentifier(connection, form.schemaName)};`)
   }
 
+  for (const sequencePreview of postgreSqlSequencePreviews) {
+    statements.push(sequencePreview.createSql)
+  }
+
   if (form.comment.trim() && (connection.databaseType === "mysql" || connection.databaseType === "mariadb")) {
     statements.push(`CREATE TABLE IF NOT EXISTS ${qualifiedTableName} (`)
     statements.push(...columns, ...foreignKeyDefinitions)
@@ -1451,6 +1812,10 @@ function buildCreatePreviewStatements(
     )
     statements.push(...columns, ...foreignKeyDefinitions)
     statements.push(");")
+  }
+
+  for (const sequencePreview of postgreSqlSequencePreviews) {
+    statements.push(sequencePreview.ownedBySql)
   }
 
   for (const indexDefinition of indexDefinitions) {
@@ -1541,7 +1906,7 @@ function buildEditPreviewStatements(
         )
         .map((foreignKey) => ({
           sourceColumn: foreignKey.sourceColumn,
-          referencedSchemaName: originalSchemaName,
+          referencedSchemaName: foreignKey.referencedSchemaName || originalSchemaName,
           referencedTableName: foreignKey.referencedTableName,
           referencedColumnName: foreignKey.referencedColumnName,
           onDelete: foreignKey.onDelete,
@@ -1562,7 +1927,7 @@ function buildEditPreviewStatements(
     return !originalForeignKeyKeySet.has(normalizedKey)
   })
   const foreignKeyChanged = hasForeignKeyChanges(form, table)
-  const rebuildSensitiveChanges = hasRebuildSensitiveChanges(form, table)
+  const rebuildSensitiveChanges = hasRebuildSensitiveChanges(connection, form, table)
   const isMySqlLike = connection.databaseType === "mysql" || connection.databaseType === "mariadb"
   const foreignKeyCanAlter =
     isMySqlLike && !rebuildSensitiveChanges && removedColumns.length === 0
@@ -1610,8 +1975,10 @@ function buildEditPreviewStatements(
   const functionStatements = functions.map((item) =>
     buildFunctionPreviewDefinition(connection, form.schemaName, item)
   )
+  const removedSequences = form.sequences.filter((sequence) => sequence.removed)
   const requiresRebuild =
     !isMySqlLike &&
+    connection.databaseType !== "sqlserver" &&
     ((connection.databaseType === "sqlite" && removedColumns.length > 0) ||
       rebuildSensitiveChanges ||
       (foreignKeyChanged && !foreignKeyCanAlter))
@@ -1626,6 +1993,30 @@ function buildEditPreviewStatements(
     }
 
     for (const column of addedColumns) {
+      if (
+        connection.databaseType === "postgresql" &&
+        column.autoIncrement &&
+        supportsAutoIncrement(connection.databaseType, column.dataType)
+      ) {
+        const sequencePreview = getPostgreSqlAutoIncrementSequencePreview(
+          connection,
+          form.schemaName,
+          originalTableName,
+          column.name
+        )
+
+        statements.push(sequencePreview.createSql)
+        statements.push(
+          `ALTER TABLE ${statementsTarget} ADD COLUMN ${buildColumnPreview(
+            connection,
+            column,
+            sequencePreview.defaultExpression
+          )};`
+        )
+        statements.push(sequencePreview.ownedBySql)
+        continue
+      }
+
       const addColumnSql =
         connection.databaseType === "sqlserver"
           ? `ALTER TABLE ${statementsTarget} ADD ${buildColumnPreview(connection, column)};`
@@ -1641,11 +2032,77 @@ function buildEditPreviewStatements(
       }
     }
 
+    if (connection.databaseType === "sqlserver") {
+      for (const column of modifiedColumns) {
+        const sourceName = (column.sourceName || "").trim()
+
+        if (sourceName && sourceName !== column.name.trim()) {
+          statements.push(
+            `EXEC sp_rename ${quotePreviewSqlLiteral(
+              `${form.schemaName}.${originalTableName}.${sourceName}`
+            )}, ${quotePreviewSqlLiteral(column.name.trim())}, 'COLUMN';`
+          )
+        }
+
+        statements.push(`ALTER TABLE ${statementsTarget} ALTER COLUMN ${buildSqlServerAlterColumnPreview(connection, column)};`)
+      }
+    }
+
+    if (connection.databaseType === "postgresql") {
+      for (const column of modifiedColumns) {
+        const sourceName = (column.sourceName || "").trim()
+        const originalColumn = table?.columns.find((item) => item.name.trim() === sourceName)
+
+        if (sourceName && sourceName !== column.name.trim()) {
+          statements.push(
+            `ALTER TABLE ${statementsTarget} RENAME COLUMN ${quotePreviewIdentifier(
+              connection,
+              sourceName
+            )} TO ${quotePreviewIdentifier(connection, column.name)};`
+          )
+        }
+
+        if (!originalColumn) {
+          continue
+        }
+
+        statements.push(
+          ...buildPostgreSqlAlterColumnPreviewStatements(
+            connection,
+            statementsTarget,
+            form.schemaName,
+            originalTableName,
+            column,
+            originalColumn
+          )
+        )
+      }
+    }
+
     if (commentChanged) {
       if (connection.databaseType === "mysql" || connection.databaseType === "mariadb") {
         statements.push(`ALTER TABLE ${statementsTarget} COMMENT=${quotePreviewSqlLiteral(form.comment)};`)
       } else if (connection.databaseType === "postgresql") {
         statements.push(`COMMENT ON TABLE ${statementsTarget} IS ${quotePreviewSqlLiteral(form.comment)};`)
+      }
+    }
+
+    if (connection.databaseType === "postgresql") {
+      for (const sequence of removedSequences) {
+        const sequenceName = quotePreviewIdentifier(connection, sequence.name)
+
+        if (sequence.columnName) {
+          statements.push(
+            `ALTER TABLE ${statementsTarget} ALTER COLUMN ${quotePreviewIdentifier(
+              connection,
+              sequence.columnName
+            )} DROP DEFAULT;`
+          )
+        }
+
+        statements.push(
+          `DROP SEQUENCE IF EXISTS ${quotePreviewIdentifier(connection, form.schemaName)}.${sequenceName};`
+        )
       }
     }
 
@@ -1661,17 +2118,18 @@ function buildEditPreviewStatements(
           )};`
         )
       }
-    } else if (foreignKeyCanAlter && foreignKeysToDrop.length) {
+    } else if ((foreignKeyCanAlter || connection.databaseType === "sqlserver") && foreignKeysToDrop.length) {
       for (const foreignKey of foreignKeysToDrop) {
         const constraintName =
           foreignKey.constraintName ||
           buildForeignKeyConstraintName(connection, originalTableName, foreignKey, 0)
-        statements.push(
-          `ALTER TABLE ${statementsTarget} DROP FOREIGN KEY ${quotePreviewIdentifier(
-            connection,
-            constraintName
-          )};`
-        )
+        const dropKeyword = connection.databaseType === "sqlserver" ? "DROP CONSTRAINT" : "DROP FOREIGN KEY"
+        const quotedConstraintName =
+          connection.databaseType === "sqlserver"
+            ? quotePreviewSqlServerConstraintIdentifier(connection, constraintName)
+            : quotePreviewIdentifier(connection, constraintName)
+
+        statements.push(`ALTER TABLE ${statementsTarget} ${dropKeyword} ${quotedConstraintName};`)
       }
     }
 
@@ -1688,7 +2146,7 @@ function buildEditPreviewStatements(
           )};`
         )
       }
-    } else if (foreignKeyCanAlter && foreignKeysToAdd.length) {
+    } else if ((foreignKeyCanAlter || connection.databaseType === "sqlserver") && foreignKeysToAdd.length) {
       for (let index = 0; index < foreignKeysToAdd.length; index += 1) {
         const foreignKey = foreignKeysToAdd[index]
         statements.push(
@@ -1903,7 +2361,11 @@ function buildSqlPreview(
   return statements.join("\n")
 }
 
-function hasRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails | null) {
+function hasRebuildSensitiveChanges(
+  connection: SavedConnection,
+  form: CreateTableDraft,
+  table?: TableDetails | null
+) {
   if (!table) {
     return false
   }
@@ -1927,7 +2389,7 @@ function hasRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails
 
     seenColumns.add(sourceName)
 
-    return (
+    const changed =
       column.name.trim() !== original.name.trim() ||
       column.dataType.trim().toUpperCase() !== original.dataType.trim().toUpperCase() ||
       column.size.trim() !== original.size.trim() ||
@@ -1937,7 +2399,20 @@ function hasRebuildSensitiveChanges(form: CreateTableDraft, table?: TableDetails
       column.autoIncrement !== original.autoIncrement ||
       column.defaultValue.trim() !== original.defaultValue.trim() ||
       column.comment.trim() !== original.comment.trim()
-    )
+
+    if (!changed) {
+      return false
+    }
+
+    if (connection.databaseType === "sqlserver") {
+      return !isSqlServerPreviewColumnAlterInPlaceSupported(column, original)
+    }
+
+    if (connection.databaseType === "postgresql") {
+      return !isPostgreSqlPreviewColumnAlterInPlaceSupported(column, original)
+    }
+
+    return true
   }) || seenColumns.size !== table.columns.length
 }
 
@@ -1984,7 +2459,7 @@ export function CreateTableModal({
         )
         .map((foreignKey) => ({
           sourceColumn: foreignKey.sourceColumn,
-          referencedSchemaName: table.schemaName,
+          referencedSchemaName: foreignKey.referencedSchemaName || table.schemaName,
           referencedTableName: foreignKey.referencedTableName,
           referencedColumnName: foreignKey.referencedColumnName,
           onDelete: foreignKey.onDelete,
@@ -1999,7 +2474,7 @@ export function CreateTableModal({
   const nextForeignKeyKeysForPreview = normalizeForeignKeySet(nextForeignKeysForPreview, form.schemaName)
   const foreignKeyCanAlter =
     (activeConnection.databaseType === "mysql" || activeConnection.databaseType === "mariadb") &&
-    !hasRebuildSensitiveChanges(form, table) &&
+    !hasRebuildSensitiveChanges(activeConnection, form, table) &&
     table &&
     originalForeignKeyKeysForPreview.every((key) => nextForeignKeyKeysForPreview.includes(key))
   const sqlPreview = buildSqlPreview(
@@ -2010,7 +2485,7 @@ export function CreateTableModal({
     databaseName || activeConnection.databaseName
   )
   const rebuildSensitiveChanges =
-    hasRebuildSensitiveChanges(form, table) || (hasForeignKeyChanges(form, table) && !foreignKeyCanAlter)
+    hasRebuildSensitiveChanges(activeConnection, form, table) || (hasForeignKeyChanges(form, table) && !foreignKeyCanAlter)
   const sourceColumnOptions = form.columns
     .filter((column) => column.name.trim())
     .map((column) => column.name.trim())
@@ -2067,17 +2542,37 @@ export function CreateTableModal({
         return current
       }
 
-      const nextColumns = current.columns.map((column, currentIndex) =>
-        currentIndex === index
-          ? {
-              ...column,
-              [field]: value,
-              ...(field === "dataType" && typeof value === "string"
-                ? { size: getColumnSizeConfig(value).defaultValue }
-                : {}),
-            }
-          : column
-      )
+      const nextColumns = current.columns.map((column, currentIndex) => {
+        if (currentIndex !== index) {
+          return column
+        }
+
+        const nextColumn = {
+          ...column,
+          [field]: value,
+          ...(field === "primaryKey" && Boolean(value) ? { notNull: true, unique: false } : {}),
+          ...(field === "dataType" && typeof value === "string"
+            ? { size: getColumnSizeConfig(value, activeConnection.databaseType).defaultValue }
+            : {}),
+        }
+        const nextDataType = field === "dataType" && typeof value === "string" ? value : nextColumn.dataType
+        const canAutoIncrement = supportsAutoIncrement(activeConnection.databaseType, nextDataType)
+
+        if (field === "dataType" && !canAutoIncrement) {
+          nextColumn.autoIncrement = false
+        }
+
+        if (field === "autoIncrement") {
+          nextColumn.autoIncrement = Boolean(value) && canAutoIncrement
+
+          if (nextColumn.autoIncrement) {
+            nextColumn.notNull = true
+            nextColumn.defaultValue = ""
+          }
+        }
+
+        return nextColumn
+      })
       const nextColumn = nextColumns[index]
       const oldColumnName = previousColumn.name.trim()
       const nextColumnName = nextColumn.name.trim()
@@ -2123,6 +2618,16 @@ export function CreateTableModal({
           if (!hasPrimary) {
             nextIndexes = [...nextIndexes, createPrimaryIndexDraft(nextColumnName, "PRIMARY")]
           }
+
+          nextIndexes = nextIndexes.filter(
+            (item) =>
+              item.primaryKey ||
+              !(
+                item.unique &&
+                item.columns.length === 1 &&
+                item.columns[0].trim().toLowerCase() === nextColumnName.toLowerCase()
+              )
+          )
         } else {
           nextIndexes = nextIndexes.filter(
             (item) =>
@@ -2189,7 +2694,9 @@ export function CreateTableModal({
       ...current,
       columns: [
         ...current.columns,
-        createColumnDraft(),
+        createColumnDraft({
+          dataType: activeConnection.databaseType === "postgresql" ? "CHARACTER VARYING" : "VARCHAR",
+        }),
       ],
     }))
   }
@@ -2586,6 +3093,15 @@ export function CreateTableModal({
     }))
   }
 
+  function removeSequence(index: number) {
+    setForm((current) => ({
+      ...current,
+      sequences: current.sequences.map((sequence, currentIndex) =>
+        currentIndex === index ? { ...sequence, removed: true } : sequence
+      ),
+    }))
+  }
+
   function removeTrigger(index: number) {
     setForm((current) => ({
       ...current,
@@ -2676,6 +3192,10 @@ export function CreateTableModal({
     }
 
     const functions = normalizeCompletedFunctionDrafts(form)
+    const removedSequences = form.sequences
+      .filter((sequence) => sequence.removed)
+      .map((sequence) => sequence.name.trim())
+      .filter(Boolean)
     if (
       functions.some(
         (item) => !item.name.trim() || !item.returnType.trim() || !item.body.trim()
@@ -2717,6 +3237,7 @@ export function CreateTableModal({
           indexes,
           triggers,
           functions,
+          removedSequences,
         }),
       })
 
@@ -2724,6 +3245,8 @@ export function CreateTableModal({
         success: boolean
         message: string
         details: string
+        tableName?: string
+        schemaName?: string
       } = await response.json()
 
       if (!response.ok || !payload.success) {
@@ -2736,7 +3259,12 @@ export function CreateTableModal({
       }
 
       onOpenChange(false)
-      await onSaved({ message: payload.message, details: payload.details })
+      await onSaved({
+        message: payload.message,
+        details: payload.details,
+        tableName: payload.tableName,
+        schemaName: payload.schemaName,
+      })
     } catch {
       setErrorMessage(`Falha inesperada ao ${isEditMode ? "atualizar" : "criar"} a tabela.`)
     } finally {
@@ -2846,6 +3374,7 @@ export function CreateTableModal({
                       <TabsTrigger value="foreign-keys">Chaves Estrangeiras</TabsTrigger>
                       <TabsTrigger value="indexes">Índices</TabsTrigger>
                       <TabsTrigger value="triggers">Triggers</TabsTrigger>
+                      <TabsTrigger value="sequences">Sequence</TabsTrigger>
                       <TabsTrigger value="functions">Functions</TabsTrigger>
                       <TabsTrigger value="sql-preview">SQL Preview</TabsTrigger>
                     </TabsList>
@@ -2884,14 +3413,24 @@ export function CreateTableModal({
                               <TableHead>Comentário</TableHead>
                               <TableHead className="w-24 text-center">Not Null</TableHead>
                               <TableHead className="w-40 text-center">Chave primária</TableHead>
-                              <TableHead className="w-36 text-center">Auto increment</TableHead>
+                              <TableHead className="w-36 text-center">
+                                {getAutoIncrementLabel(activeConnection.databaseType)}
+                              </TableHead>
                               <TableHead className="w-28 text-center">Unique</TableHead>
                               <TableHead className="w-14" />
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {form.columns.map((column, index) => {
-                              const sizeConfig = getColumnSizeConfig(column.dataType)
+                              const sizeConfig = getColumnSizeConfig(column.dataType, activeConnection.databaseType)
+                              const canAutoIncrement = supportsAutoIncrement(
+                                activeConnection.databaseType,
+                                column.dataType
+                              )
+                              const defaultDisabled =
+                                activeConnection.databaseType === "postgresql" &&
+                                column.autoIncrement &&
+                                canAutoIncrement
 
                               return (
                                 <TableRow key={column.id ?? column.sourceName ?? `${index}`} className="h-12">
@@ -2916,7 +3455,7 @@ export function CreateTableModal({
                                       </SelectTrigger>
                                       <SelectContent>
                                         <SelectGroup>
-                                          {typeOptions.map((option) => (
+                                          {getTypeOptions(activeConnection.databaseType).map((option) => (
                                             <SelectItem key={option.value} value={option.value}>
                                               {option.label}
                                             </SelectItem>
@@ -2940,7 +3479,8 @@ export function CreateTableModal({
                                       onChange={(event) =>
                                         updateColumn(index, "defaultValue", event.target.value)
                                       }
-                                      placeholder="default"
+                                      placeholder={defaultDisabled ? "identity" : "default"}
+                                      disabled={defaultDisabled}
                                       className="h-9"
                                     />
                                   </TableCell>
@@ -2975,7 +3515,13 @@ export function CreateTableModal({
                                   <TableCell className="text-center">
                                     <div className="flex justify-center">
                                       <Checkbox
-                                        checked={column.autoIncrement}
+                                        checked={column.autoIncrement && canAutoIncrement}
+                                        disabled={!canAutoIncrement}
+                                        title={
+                                          canAutoIncrement
+                                            ? undefined
+                                            : "Disponível apenas para tipos inteiros compatíveis."
+                                        }
                                         onChange={(event) =>
                                           updateColumn(index, "autoIncrement", event.currentTarget.checked)
                                         }
@@ -3432,6 +3978,60 @@ export function CreateTableModal({
                         ) : (
                           <div className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-5 text-sm text-white/45">
                             Nenhuma trigger configurada.
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  <TabsContent value="sequences">
+                    <Card className="border-white/10 bg-white/5">
+                      <CardHeader className="pb-3">
+                        <div className="space-y-1">
+                          <CardTitle className="text-base text-white">Sequences associadas</CardTitle>
+                          <CardDescription>
+                            Sequences vinculadas às colunas desta tabela no PostgreSQL.
+                          </CardDescription>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="pt-0">
+                        {activeConnection.databaseType !== "postgresql" ? (
+                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-5 text-sm text-white/45">
+                            Esta aba é usada apenas em conexões PostgreSQL.
+                          </div>
+                        ) : form.sequences.filter((sequence) => !sequence.removed).length ? (
+                          <Table wrapperClassName="rounded-2xl border border-white/10">
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Sequence</TableHead>
+                                <TableHead className="w-64">Coluna</TableHead>
+                                <TableHead className="w-14" />
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {form.sequences.map((sequence, index) =>
+                                sequence.removed ? null : (
+                                  <TableRow key={sequence.id ?? sequence.name}>
+                                    <TableCell className="font-medium text-white/85">{sequence.name}</TableCell>
+                                    <TableCell className="text-white/55">{sequence.columnName || "-"}</TableCell>
+                                    <TableCell className="text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() => removeSequence(index)}
+                                        className="inline-flex size-8 items-center justify-center rounded-lg text-white/40 transition-colors hover:bg-white/5 hover:text-rose-300"
+                                        aria-label="Remover sequence"
+                                      >
+                                        <Trash2 className="size-4" />
+                                      </button>
+                                    </TableCell>
+                                  </TableRow>
+                                )
+                              )}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-4 py-5 text-sm text-white/45">
+                            Nenhuma sequence associada a esta tabela.
                           </div>
                         )}
                       </CardContent>

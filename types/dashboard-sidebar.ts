@@ -30,11 +30,16 @@ export type DashboardSidebarProps = {
     schemaName: string,
     kind: "procedure" | "function"
   ) => void
+  onCreateSequence: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string
+  ) => void
   onRefreshRoutineGroup: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
     schemaName: string,
-    groupLabel: "Procedures" | "Funções"
+    groupLabel: "Procedures" | "Funções" | "Sequences"
   ) => void | Promise<void>
   onExecuteRoutine: (
     connection: SavedConnection,
@@ -82,13 +87,6 @@ export type DashboardSidebarProps = {
     database: DatabaseStructureDatabase,
     schemaName: string,
     tableName: string
-  ) => void
-  onSelect100Rows: (
-    connection: SavedConnection,
-    database: DatabaseStructureDatabase,
-    schemaName: string,
-    tableName: string,
-    sourceKind?: "table" | "view"
   ) => void
   onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
@@ -128,11 +126,16 @@ export type DashboardSidebarActions = {
     schemaName: string,
     kind: "procedure" | "function"
   ) => void
+  onCreateSequence: (
+    connection: SavedConnection,
+    database: DatabaseStructureDatabase,
+    schemaName: string
+  ) => void
   onRefreshRoutineGroup: (
     connection: SavedConnection,
     database: DatabaseStructureDatabase,
     schemaName: string,
-    groupLabel: "Procedures" | "Funções"
+    groupLabel: "Procedures" | "Funções" | "Sequences"
   ) => void | Promise<void>
   onExecuteRoutine: (
     connection: SavedConnection,
@@ -180,13 +183,6 @@ export type DashboardSidebarActions = {
     database: DatabaseStructureDatabase,
     schemaName: string,
     tableName: string
-  ) => void
-  onSelect100Rows: (
-    connection: SavedConnection,
-    database: DatabaseStructureDatabase,
-    schemaName: string,
-    tableName: string,
-    sourceKind?: "table" | "view"
   ) => void
   onEditDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void
   onDeleteDatabase: (connection: SavedConnection, database: DatabaseStructureDatabase) => void

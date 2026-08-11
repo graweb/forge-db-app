@@ -932,13 +932,18 @@ export function CreateViewModal({
     setErrorMessage(null)
 
     try {
+      const sqlToExecute = normalizeCreateViewSqlForExecution(
+        activeConnection,
+        effectiveSql,
+        databaseName || activeConnection.databaseName
+      )
       const response = await fetch(`/api/connections/${activeConnection.id}/query`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          sql: effectiveSql,
+          sql: sqlToExecute,
           databaseName: databaseName || activeConnection.databaseName,
         }),
       })
@@ -1965,8 +1970,7 @@ function buildViewSql(
   const qualifiedViewName = getViewReference(
     connection,
     schemaName,
-    viewName,
-    databaseName || connection.databaseName
+    viewName
   )
   const createStatement =
     connection.databaseType === "sqlserver"
@@ -2963,12 +2967,10 @@ function getTableReference(
 function getViewReference(
   connection: SavedConnection,
   schemaName: string,
-  viewName: string,
-  databaseName?: string
+  viewName: string
 ) {
   const normalizedSchema = schemaName.trim()
   const normalizedView = viewName.trim() || "nova_view"
-  const normalizedDatabase = databaseName?.trim() ?? ""
 
   if (connection.databaseType === "sqlite") {
     return quoteIdentifier(connection.databaseType, normalizedView)
@@ -2986,10 +2988,7 @@ function getViewReference(
   }
 
   if (connection.databaseType === "sqlserver") {
-    const qualifiedDatabase = normalizedDatabase
-      ? `${quoteIdentifier(connection.databaseType, normalizedDatabase)}.`
-      : ""
-    return `${qualifiedDatabase}${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
+    return `${quoteIdentifier(connection.databaseType, normalizedSchema)}.${quoteIdentifier(
       connection.databaseType,
       normalizedView
     )}`
@@ -2999,6 +2998,35 @@ function getViewReference(
     connection.databaseType,
     normalizedView
   )}`
+}
+
+function normalizeCreateViewSqlForExecution(
+  connection: SavedConnection,
+  sqlText: string,
+  databaseName?: string
+) {
+  if (connection.databaseType !== "sqlserver") {
+    return sqlText
+  }
+
+  const normalizedDatabase = databaseName?.trim()
+
+  if (!normalizedDatabase) {
+    return sqlText
+  }
+
+  const escapedDatabase = escapeRegExp(normalizedDatabase).replace(/\s+/g, String.raw`\s+`)
+  const createViewPrefix = String.raw`\b((?:CREATE\s+OR\s+ALTER|CREATE|ALTER)\s+VIEW\s+)`
+  const bracketedDatabasePrefix = String.raw`\[\s*${escapedDatabase}\s*\]\s*\.`
+  const plainDatabasePrefix = String.raw`${escapedDatabase}\s*\.`
+  const databasePrefix = String.raw`(?:${bracketedDatabasePrefix}|${plainDatabasePrefix})`
+  const expression = new RegExp(`${createViewPrefix}${databasePrefix}`, "i")
+
+  return sqlText.replace(expression, "$1")
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function getFallbackSchemaName(connection: SavedConnection) {

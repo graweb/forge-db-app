@@ -1,5 +1,5 @@
 import type { DatabaseStructure, DatabaseStructureDatabase, SavedConnection } from "@/types/connections"
-import type { TableIndexDefinition, TableTriggerDefinition } from "@/types/connections"
+import type { TableDetails, TableIndexDefinition, TableTriggerDefinition } from "@/types/connections"
 
 export type DashboardShellProps = {
   connection: SavedConnection | null
@@ -35,4 +35,5 @@ export type TableTarget = {
   indexes: TableIndexDefinition[]
   triggers: TableTriggerDefinition[]
   functions: string[]
+  sequences: TableDetails["sequences"]
 }

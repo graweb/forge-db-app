@@ -16,6 +16,7 @@ import type { DashboardShellProps, ShellNotice, TableTarget } from "@/types/dash
 import { ConnectionModal } from "@/components/connections/connection-modal"
 import { CreateDatabaseModal } from "./create-database-modal"
 import { CreateRoutineModal } from "./create-routine-modal"
+import { CreateSequenceModal } from "./create-sequence-modal"
 import { CreateViewModal } from "./create-view-modal"
 import { CreateUserModal } from "./create-user-modal"
 import { CreateTableModal } from "./create-table-modal"
@@ -93,6 +94,10 @@ const DEFAULT_SIDEBAR_WIDTH = 320
 const MIN_SIDEBAR_WIDTH = 272
 const MAX_SIDEBAR_WIDTH = 520
 
+type RoutineGroupLabel = "Procedures" | "Funções"
+type ObjectGroupLabel = "Tabelas" | "Views" | "Índices" | "Sequences" | RoutineGroupLabel
+type ReplaceableGroupLabel = ObjectGroupLabel
+
 function clampSidebarWidth(width: number) {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)))
 }
@@ -132,6 +137,8 @@ export function DashboardShell({
   const [routineModalKey, setRoutineModalKey] = useState(0)
   const [routineInitialKind, setRoutineInitialKind] = useState<RoutineKind>("procedure")
   const [routineTarget, setRoutineTarget] = useState<RoutineDetails | null>(null)
+  const [isSequenceModalOpen, setIsSequenceModalOpen] = useState(false)
+  const [sequenceModalKey, setSequenceModalKey] = useState(0)
   const [isUserModalOpen, setIsUserModalOpen] = useState(false)
   const [userModalKey, setUserModalKey] = useState(0)
   const [tableTargetConnection, setTableTargetConnection] = useState<SavedConnection | null>(null)
@@ -150,6 +157,9 @@ export function DashboardShell({
   const [routineTargetConnection, setRoutineTargetConnection] = useState<SavedConnection | null>(null)
   const [routineTargetDatabase, setRoutineTargetDatabase] = useState<DatabaseStructureDatabase | null>(null)
   const [routineTargetSchema, setRoutineTargetSchema] = useState<string>("")
+  const [sequenceTargetConnection, setSequenceTargetConnection] = useState<SavedConnection | null>(null)
+  const [sequenceTargetDatabase, setSequenceTargetDatabase] = useState<DatabaseStructureDatabase | null>(null)
+  const [sequenceTargetSchema, setSequenceTargetSchema] = useState<string>("")
   const [deleteViewTarget, setDeleteViewTarget] = useState<{
     connection: SavedConnection
     database: DatabaseStructureDatabase
@@ -191,13 +201,13 @@ export function DashboardShell({
       Array<{
         databaseName: string
         schemaName: string
-        groupLabel: "Procedures" | "Funções"
+        groupLabel: RoutineGroupLabel
         routineName: string
       }>
     >
   >({})
   const [localObjectRemovals, setLocalObjectRemovals] = useState<
-    Record<string, Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções"; objectName: string }>>
+    Record<string, Array<{ databaseName: string; schemaName: string; groupLabel: ObjectGroupLabel; objectName: string }>>
   >({})
   const [localGroupReplacements, setLocalGroupReplacements] = useState<
     Record<
@@ -205,7 +215,7 @@ export function DashboardShell({
       Array<{
         databaseName: string
         schemaName: string
-        groupLabel: "Procedures" | "Funções"
+        groupLabel: ReplaceableGroupLabel
         group: DatabaseStructure["groups"][number]
       }>
     >
@@ -376,7 +386,7 @@ export function DashboardShell({
     connectionId: string
     databaseName: string
     schemaName: string
-    groupLabel: "Procedures" | "Funções"
+    groupLabel: RoutineGroupLabel
     routineName: string
   }) {
     const normalizedRoutineName = routineName.trim()
@@ -419,7 +429,7 @@ export function DashboardShell({
     connectionId: string
     databaseName: string
     schemaName: string
-    groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções"
+    groupLabel: ObjectGroupLabel
     objectName: string
   }) {
     const normalizedObjectName = objectName.trim()
@@ -500,11 +510,13 @@ export function DashboardShell({
     databaseToUse,
     schemaName,
     groupLabel,
+    silent = false,
   }: {
     connectionToUse: SavedConnection
     databaseToUse: DatabaseStructureDatabase
     schemaName: string
-    groupLabel: "Procedures" | "Funções"
+    groupLabel: ReplaceableGroupLabel
+    silent?: boolean
   }) {
     try {
       const response = await fetch(`/api/connections/${connectionToUse.id}/databases`)
@@ -516,10 +528,12 @@ export function DashboardShell({
       } = await response.json()
 
       if (!response.ok || !payload.success || !payload.databaseStructure) {
-        showNotice({
-          title: "Não foi possível atualizar",
-          message: payload.details || payload.message || "Tente novamente em instantes.",
-        })
+        if (!silent) {
+          showNotice({
+            title: "Não foi possível atualizar",
+            message: payload.details || payload.message || "Tente novamente em instantes.",
+          })
+        }
         return
       }
 
@@ -531,10 +545,12 @@ export function DashboardShell({
       )
 
       if (!updatedGroup) {
-        showNotice({
-          title: "Grupo não encontrado",
-          message: `Não foi possível encontrar ${groupLabel.toLowerCase()} neste schema.`,
-        })
+        if (!silent) {
+          showNotice({
+            title: "Grupo não encontrado",
+            message: `Não foi possível encontrar ${groupLabel.toLowerCase()} neste schema.`,
+          })
+        }
         return
       }
 
@@ -561,14 +577,40 @@ export function DashboardShell({
         }
       })
 
-      showNotice({
-        title: `${groupLabel} atualizadas`,
-        message: `A lista de ${groupLabel.toLowerCase()} foi recarregada sem fechar o treeview.`,
-      })
+      if (!silent) {
+        showNotice({
+          title: `${groupLabel} atualizadas`,
+          message: `A lista de ${groupLabel.toLowerCase()} foi recarregada sem fechar o treeview.`,
+        })
+      }
     } catch {
-      showNotice({
-        title: "Erro ao atualizar",
-        message: `Não foi possível atualizar ${groupLabel.toLowerCase()}.`,
+      if (!silent) {
+        showNotice({
+          title: "Erro ao atualizar",
+          message: `Não foi possível atualizar ${groupLabel.toLowerCase()}.`,
+        })
+      }
+    }
+  }
+
+  async function refreshTreeGroups({
+    connectionToUse,
+    databaseToUse,
+    schemaName,
+    groupLabels,
+  }: {
+    connectionToUse: SavedConnection
+    databaseToUse: DatabaseStructureDatabase
+    schemaName: string
+    groupLabels: ReplaceableGroupLabel[]
+  }) {
+    for (const groupLabel of groupLabels) {
+      await refreshRoutineGroup({
+        connectionToUse,
+        databaseToUse,
+        schemaName,
+        groupLabel,
+        silent: true,
       })
     }
   }
@@ -672,6 +714,13 @@ export function DashboardShell({
                 setRoutineInitialKind(kind)
                 setRoutineModalKey((current) => current + 1)
                 setIsRoutineModalOpen(true)
+              }}
+              onCreateSequence={(connectionToUse, databaseToUse, schemaName) => {
+                setSequenceTargetConnection(connectionToUse)
+                setSequenceTargetDatabase(databaseToUse)
+                setSequenceTargetSchema(schemaName)
+                setSequenceModalKey((current) => current + 1)
+                setIsSequenceModalOpen(true)
               }}
               onRefreshRoutineGroup={(connectionToUse, databaseToUse, schemaName, groupLabel) =>
                 refreshRoutineGroup({
@@ -877,6 +926,10 @@ export function DashboardShell({
                       body: string
                     }>
                     functions?: string[]
+                    sequences?: Array<{
+                      name: string
+                      columnName: string
+                    }>
                   } = await response.json()
 
                   if (!response.ok || !payload.success) {
@@ -898,6 +951,7 @@ export function DashboardShell({
                     indexes: payload.indexes ?? [],
                     triggers: payload.triggers ?? [],
                     functions: payload.functions ?? [],
+                    sequences: payload.sequences ?? [],
                   })
                   setTableTargetConnection(connectionToUse)
                   setTableTargetDatabase(databaseToUse)
@@ -922,27 +976,10 @@ export function DashboardShell({
                   foreignKeys: [],
                   indexes: [],
                   triggers: [],
-                  functions: [],
+                functions: [],
+                sequences: [],
                 })
                 setIsDeleteTableModalOpen(true)
-              }}
-              onSelect100Rows={(connectionToUse, databaseToUse, schemaName, tableName, sourceKind = "table") => {
-                const databaseName = getEffectiveTableDatabaseName(connectionToUse, databaseToUse)
-
-                const tablePath =
-                  connectionToUse.databaseType === "sqlserver"
-                    ? `[${databaseName}].[${schemaName}].[${tableName}]`
-                    : connectionToUse.databaseType === "postgresql"
-                      ? `"${schemaName}"."${tableName}"`
-                      : tableName
-
-                setActivePane("editor")
-                editorWorkspaceRef.current?.executeSqlText(`SELECT *\nFROM ${tablePath}\nLIMIT 100;`, {
-                  title: `Selecionar 100 linhas: ${tableName}`,
-                  databaseName,
-                  insertIntoEditor: true,
-                  sourceKind,
-                })
               }}
               onEditDatabase={(connectionToUse, databaseToEdit) => {
                 setDatabaseModalMode("edit")
@@ -1150,7 +1187,7 @@ export function DashboardShell({
       />
 
       <CreateDatabaseModal
-        key={`${databaseTargetConnection?.id ?? "none"}-${databaseTarget?.name ?? "new"}-${databaseModalMode}-${databaseModalKey}`}
+        key={`database-${databaseTargetConnection?.id ?? "none"}-${databaseTarget?.name ?? "new"}-${databaseModalMode}-${databaseModalKey}`}
         open={isDatabaseModalOpen}
         mode={databaseModalMode}
         connection={databaseTargetConnection}
@@ -1182,7 +1219,7 @@ export function DashboardShell({
       />
 
       <CreateTableModal
-        key={`${tableModalMode}-${tableTargetConnection?.id ?? "none"}-${tableTargetDatabase?.name ?? "none"}-${tableTargetSchema}-${tableTarget?.tableName ?? "new"}-${tableModalKey}`}
+        key={`table-${tableModalMode}-${tableTargetConnection?.id ?? "none"}-${tableTargetDatabase?.name ?? "none"}-${tableTargetSchema}-${tableTarget?.tableName ?? "new"}-${tableModalKey}`}
         open={isTableModalOpen}
         connection={tableTargetConnection}
         databaseName={tableTargetDatabase?.name}
@@ -1202,6 +1239,7 @@ export function DashboardShell({
                 indexes: tableTarget.indexes,
                 triggers: tableTarget.triggers,
                 functions: tableTarget.functions,
+                sequences: tableTarget.sequences,
               }
             : null
         }
@@ -1214,13 +1252,30 @@ export function DashboardShell({
             setTableTarget(null)
           }
         }}
-        onSaved={async () => {
+        onSaved={async ({ schemaName }) => {
+          const savedTableConnection = tableTargetConnection
+          const savedTableDatabase = tableTargetDatabase
+          const savedTableSchema = schemaName || tableTargetSchema
+
           setIsTableModalOpen(false)
           setTableTargetConnection(null)
           setTableTargetDatabase(null)
           setTableTargetSchema("")
           setTableTarget(null)
-          router.refresh()
+          if (savedTableConnection && savedTableDatabase && savedTableSchema) {
+            await refreshTreeGroups({
+              connectionToUse: savedTableConnection,
+              databaseToUse: savedTableDatabase,
+              schemaName: savedTableSchema,
+              groupLabels:
+                savedTableConnection.databaseType === "postgresql"
+                  ? ["Tabelas", "Índices", "Sequences"]
+                  : ["Tabelas", "Índices"],
+            })
+            router.refresh()
+          } else {
+            router.refresh()
+          }
           showNotice({
             title: tableModalMode === "edit" ? "Tabela atualizada" : "Tabela criada",
             message:
@@ -1232,7 +1287,7 @@ export function DashboardShell({
       />
 
       <CreateViewModal
-        key={`${viewTargetConnection?.id ?? "none"}-${viewTargetDatabase?.name ?? "none"}-${viewTargetSchema}-${viewModalKey}`}
+        key={`view-${viewTargetConnection?.id ?? "none"}-${viewTargetDatabase?.name ?? "none"}-${viewTargetSchema}-${viewModalKey}`}
         open={isViewModalOpen}
         connection={viewTargetConnection}
         mode={viewModalMode}
@@ -1251,6 +1306,10 @@ export function DashboardShell({
           }
         }}
         onSaved={async ({ message, details, viewName }) => {
+          const savedViewConnection = viewTargetConnection
+          const savedViewDatabase = viewTargetDatabase
+          const savedViewSchema = viewTargetSchema
+
           if (viewModalMode === "create" && viewTargetConnection && viewTargetDatabase) {
             addViewToLocalStructure({
               connectionId: viewTargetConnection.id,
@@ -1260,6 +1319,15 @@ export function DashboardShell({
             })
           } else {
             router.refresh()
+          }
+
+          if (savedViewConnection && savedViewDatabase && savedViewSchema) {
+            await refreshTreeGroups({
+              connectionToUse: savedViewConnection,
+              databaseToUse: savedViewDatabase,
+              schemaName: savedViewSchema,
+              groupLabels: ["Views"],
+            })
           }
 
           setIsViewModalOpen(false)
@@ -1276,7 +1344,7 @@ export function DashboardShell({
       />
 
       <CreateRoutineModal
-        key={`${routineTargetConnection?.id ?? "none"}-${routineTargetDatabase?.name ?? "none"}-${routineTargetSchema}-${routineInitialKind}-${routineModalKey}`}
+        key={`routine-${routineTargetConnection?.id ?? "none"}-${routineTargetDatabase?.name ?? "none"}-${routineTargetSchema}-${routineInitialKind}-${routineModalKey}`}
         open={isRoutineModalOpen}
         connection={routineTargetConnection}
         mode={routineModalMode}
@@ -1296,22 +1364,25 @@ export function DashboardShell({
           }
         }}
         onSaved={async ({ message, details, routineName, schemaName, kind }) => {
-          if (routineTargetConnection && routineTargetDatabase) {
+          const savedRoutineConnection = routineTargetConnection
+          const savedRoutineDatabase = routineTargetDatabase
+
+          if (savedRoutineConnection && savedRoutineDatabase) {
             const groupLabel = kind === "procedure" ? "Procedures" : "Funções"
 
             addRoutineToLocalStructure({
-              connectionId: routineTargetConnection.id,
-              databaseName: routineTargetDatabase.name,
+              connectionId: savedRoutineConnection.id,
+              databaseName: savedRoutineDatabase.name,
               schemaName,
               groupLabel,
               routineName,
             })
 
-            await refreshRoutineGroup({
-              connectionToUse: routineTargetConnection,
-              databaseToUse: routineTargetDatabase,
+            await refreshTreeGroups({
+              connectionToUse: savedRoutineConnection,
+              databaseToUse: savedRoutineDatabase,
               schemaName,
-              groupLabel,
+              groupLabels: [groupLabel],
             })
           }
 
@@ -1329,8 +1400,48 @@ export function DashboardShell({
         }}
       />
 
+      <CreateSequenceModal
+        key={`sequence-${sequenceTargetConnection?.id ?? "none"}-${sequenceTargetDatabase?.name ?? "none"}-${sequenceTargetSchema}-${sequenceModalKey}`}
+        open={isSequenceModalOpen}
+        connection={sequenceTargetConnection}
+        database={sequenceTargetDatabase}
+        databaseName={sequenceTargetDatabase?.name}
+        schemaName={sequenceTargetSchema}
+        onOpenChange={(open) => {
+          setIsSequenceModalOpen(open)
+          if (!open) {
+            setSequenceTargetConnection(null)
+            setSequenceTargetDatabase(null)
+            setSequenceTargetSchema("")
+          }
+        }}
+        onSaved={async ({ message, details, schemaName }) => {
+          const savedSequenceConnection = sequenceTargetConnection
+          const savedSequenceDatabase = sequenceTargetDatabase
+
+          if (savedSequenceConnection && savedSequenceDatabase) {
+            await refreshTreeGroups({
+              connectionToUse: savedSequenceConnection,
+              databaseToUse: savedSequenceDatabase,
+              schemaName,
+              groupLabels: ["Sequences"],
+            })
+          }
+
+          setIsSequenceModalOpen(false)
+          setSequenceTargetConnection(null)
+          setSequenceTargetDatabase(null)
+          setSequenceTargetSchema("")
+
+          showNotice({
+            title: message,
+            message: details,
+          })
+        }}
+      />
+
       <CreateUserModal
-        key={`${userTargetConnection?.id ?? "none"}-${userTargetDatabaseName}-${userTargetSchemaName}-${userModalKey}`}
+        key={`user-${userTargetConnection?.id ?? "none"}-${userTargetDatabaseName}-${userTargetSchemaName}-${userModalKey}`}
         open={isUserModalOpen}
         connection={userTargetConnection}
         databaseName={userTargetDatabaseName}
@@ -1380,6 +1491,22 @@ export function DashboardShell({
               groupLabel: "Tabelas",
               objectName: tableTarget.tableName,
             })
+            await refreshRoutineGroup({
+              connectionToUse: tableTarget.connection,
+              databaseToUse: tableTarget.database,
+              schemaName: tableTarget.schemaName,
+              groupLabel: "Índices",
+              silent: true,
+            })
+            if (tableTarget.connection.databaseType === "postgresql") {
+              await refreshRoutineGroup({
+                connectionToUse: tableTarget.connection,
+                databaseToUse: tableTarget.database,
+                schemaName: tableTarget.schemaName,
+                groupLabel: "Sequences",
+                silent: true,
+              })
+            }
           }
 
           setIsDeleteTableModalOpen(false)
@@ -1546,7 +1673,7 @@ function applyLocalObjectRemovals(
   structuresById: Record<string, DatabaseStructure>,
   removalsByConnectionId: Record<
     string,
-    Array<{ databaseName: string; schemaName: string; groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções"; objectName: string }>
+    Array<{ databaseName: string; schemaName: string; groupLabel: ObjectGroupLabel; objectName: string }>
   >
 ) {
   return Object.entries(removalsByConnectionId).reduce((structures, [connectionId, removals]) => {
@@ -1580,7 +1707,7 @@ function applyLocalRoutineAdditions(
     Array<{
       databaseName: string
       schemaName: string
-      groupLabel: "Procedures" | "Funções"
+      groupLabel: RoutineGroupLabel
       routineName: string
     }>
   >
@@ -1616,7 +1743,7 @@ function applyLocalGroupReplacements(
     Array<{
       databaseName: string
       schemaName: string
-      groupLabel: "Procedures" | "Funções"
+      groupLabel: ReplaceableGroupLabel
       group: DatabaseStructure["groups"][number]
     }>
   >
@@ -1649,7 +1776,7 @@ function removeObjectFromDatabaseStructure(
   structure: DatabaseStructure,
   databaseName: string,
   schemaName: string,
-  groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções",
+  groupLabel: ObjectGroupLabel,
   objectName: string
 ): DatabaseStructure {
   return {
@@ -1692,7 +1819,7 @@ function addRoutineToDatabaseStructure(
   structure: DatabaseStructure,
   databaseName: string,
   schemaName: string,
-  groupLabel: "Procedures" | "Funções",
+  groupLabel: RoutineGroupLabel,
   routineName: string
 ): DatabaseStructure {
   return {
@@ -1735,7 +1862,7 @@ function replaceGroupInDatabaseStructure(
   structure: DatabaseStructure,
   databaseName: string,
   schemaName: string,
-  groupLabel: "Procedures" | "Funções",
+  groupLabel: ReplaceableGroupLabel,
   group: DatabaseStructure["groups"][number]
 ): DatabaseStructure {
   return {
@@ -1776,7 +1903,7 @@ function replaceGroupInDatabaseStructure(
 
 function replaceGroup(
   groups: DatabaseStructure["groups"],
-  groupLabel: "Procedures" | "Funções",
+  groupLabel: ReplaceableGroupLabel,
   group: DatabaseStructure["groups"][number]
 ) {
   const nextGroup = { ...group, label: groupLabel }
@@ -1793,7 +1920,7 @@ function findGroupInStructure(
   structure: DatabaseStructure,
   databaseName: string,
   schemaName: string,
-  groupLabel: "Procedures" | "Funções"
+  groupLabel: ReplaceableGroupLabel
 ) {
   const database = structure.databases.find((item) => item.name === databaseName) ?? structure.databases[0]
   const schema = database?.schemas.find((item) => item.name === schemaName) ?? structure.schemas.find((item) => item.name === schemaName)
@@ -1804,7 +1931,7 @@ function findGroupInStructure(
 
 function removeObjectFromGroups(
   groups: DatabaseStructure["groups"],
-  groupLabel: "Tabelas" | "Views" | "Procedures" | "Funções",
+  groupLabel: ObjectGroupLabel,
   objectName: string
 ): DatabaseStructure["groups"] {
   return groups.map((group) => {
@@ -1833,7 +1960,7 @@ function removeRecordKey<T>(record: Record<string, T> | undefined, key: string) 
 
 function addRoutineToGroups(
   groups: DatabaseStructure["groups"],
-  groupLabel: "Procedures" | "Funções",
+  groupLabel: RoutineGroupLabel,
   routineName: string
 ): DatabaseStructure["groups"] {
   const normalizedRoutineName = routineName.trim()

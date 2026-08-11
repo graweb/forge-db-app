@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Nova rotina</title>
+  <desc id="desc">Placeholder para captura da modal de criacao de procedure ou funcao.</desc>
+  <rect width="1440" height="900" fill="#050913"/>
+  <rect x="120" y="55" width="1200" height="790" rx="28" fill="#07111d" stroke="#1f2a3a" stroke-width="2"/>
+  <text x="170" y="120" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="700">Nova rotina</text>
+  <text x="170" y="160" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="20">Procedure ou funcao com campos dinamicos por banco.</text>
+  <rect x="170" y="205" width="530" height="56" rx="14" fill="#0f2537" stroke="#0ea5e9"/>
+  <text x="435" y="242" text-anchor="middle" fill="#bae6fd" font-family="Arial, Helvetica, sans-serif" font-size="20">Procedure</text>
+  <rect x="710" y="205" width="560" height="56" rx="14" fill="#0b1221" stroke="#1f2a3a"/>
+  <text x="990" y="242" text-anchor="middle" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="20">Funcao</text>
+  <rect x="170" y="300" width="1100" height="160" rx="18" fill="#0b1221" stroke="#1f2a3a"/>
+  <text x="200" y="350" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="22">Geral</text>
+  <rect x="170" y="490" width="530" height="190" rx="18" fill="#0b1221" stroke="#1f2a3a"/>
+  <text x="200" y="540" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="22">Parametros e retorno</text>
+  <rect x="730" y="490" width="540" height="190" rx="18" fill="#0b1221" stroke="#1f2a3a"/>
+  <text x="760" y="540" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="22">Opcoes avancadas</text>
+  <rect x="170" y="710" width="1100" height="85" rx="18" fill="#0b1221" stroke="#1f2a3a"/>
+  <text x="200" y="762" fill="#38bdf8" font-family="monospace" font-size="22">CREATE PROCEDURE nome_rotina()</text>
+</svg>

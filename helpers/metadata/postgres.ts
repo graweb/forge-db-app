@@ -1,4 +1,5 @@
 import { buildColumnsDetailsMap, buildColumnsMap } from "./shared"
+import { normalizePostgreSqlDataType } from "@/helpers/connections"
 
 export async function getPostgreSqlColumnsByItem(
   client: {
@@ -26,7 +27,7 @@ export async function getPostgreSqlColumnsByItem(
       SELECT
         table_name AS object_name,
         column_name AS column_name,
-        UPPER(data_type) AS data_type,
+        data_type,
         CASE
           WHEN character_maximum_length IS NOT NULL AND character_maximum_length >= 0 THEN character_maximum_length::text
           WHEN numeric_precision IS NOT NULL AND numeric_scale IS NOT NULL THEN numeric_precision::text || ',' || numeric_scale::text
@@ -65,6 +66,7 @@ export async function getPostgreSqlColumnsByItem(
   )
   const detailsRowsWithPrimaryKey = detailsResult.rows.map((row) => ({
     ...row,
+    data_type: normalizePostgreSqlDataType(String(row.data_type ?? "").trim()),
     primary_key: primaryKeySet.has(
       `${String(row.object_name ?? row.TABLE_NAME ?? "").trim()}::${String(
         row.column_name ?? row.COLUMN_NAME ?? ""

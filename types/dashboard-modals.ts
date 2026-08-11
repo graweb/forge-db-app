@@ -64,6 +64,13 @@ export type CreateTableFunctionDraft = {
   removable: boolean
 }
 
+export type CreateTableSequenceDraft = {
+  id?: string
+  name: string
+  columnName: string
+  removed: boolean
+}
+
 export type CreateUserPermissionDraft = {
   key: string
   label: string
@@ -87,6 +94,7 @@ export type CreateTableDraft = {
   indexes: CreateTableIndexDraft[]
   triggers: CreateTableTriggerDraft[]
   functions: CreateTableFunctionDraft[]
+  sequences: CreateTableSequenceDraft[]
 }
 
 export type CreateTableModalProps = {
@@ -99,7 +107,7 @@ export type CreateTableModalProps = {
   database?: DatabaseStructureDatabase | null
   table?: TableDetails | null
   onOpenChange: (open: boolean) => void
-  onSaved: (details: { message: string; details: string }) => void | Promise<void>
+  onSaved: (details: { message: string; details: string; tableName?: string; schemaName?: string }) => void | Promise<void>
 }
 
 export type CreateViewModalProps = {

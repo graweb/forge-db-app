@@ -33,9 +33,10 @@ export function DeleteTableModal({
   const activeTableName = tableName
   const resolvedSchemaName = schemaName || "public"
   const resolvedDatabaseName =
-    activeConnection.databaseType === "mysql" || activeConnection.databaseType === "mariadb"
-      ? activeDatabase.name
-      : activeConnection.databaseType === "sqlserver"
+    activeConnection.databaseType === "mysql" ||
+    activeConnection.databaseType === "mariadb" ||
+    activeConnection.databaseType === "postgresql" ||
+    activeConnection.databaseType === "sqlserver"
         ? activeDatabase.name
         : activeConnection.databaseName
 

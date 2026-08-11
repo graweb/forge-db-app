@@ -24,6 +24,7 @@ export type CreateTableIndexInput = {
   name?: string
   columns: string[]
   unique?: boolean
+  primaryKey?: boolean
 }
 
 export type CreateTableTriggerInput = {
@@ -79,6 +80,7 @@ export type TableIndexDefinition = {
   columns: string[]
   unique: boolean
   primaryKey: boolean
+  sqlServerIndexType?: string
 }
 
 export type TableTriggerDefinition = {
@@ -97,6 +99,11 @@ export type TableFunctionDefinition = {
   body: string
 }
 
+export type TableSequenceDefinition = {
+  name: string
+  columnName: string
+}
+
 export type TableDetails = {
   databaseName: string
   schemaName: string
@@ -107,6 +114,7 @@ export type TableDetails = {
   indexes: TableIndexDefinition[]
   triggers: TableTriggerDefinition[]
   functions: string[]
+  sequences: TableSequenceDefinition[]
 }
 
 export type ViewDetails = {
@@ -137,6 +145,7 @@ export type UpdateTableInput = {
   indexes?: CreateTableIndexInput[]
   triggers?: CreateTableTriggerInput[]
   functions?: CreateTableFunctionInput[]
+  removedSequences?: string[]
 }
 
 export type UpdateTableResult = {

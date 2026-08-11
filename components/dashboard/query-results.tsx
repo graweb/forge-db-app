@@ -31,7 +31,7 @@ type ResultColumn = {
   name: string
 }
 
-export function QueryResults({ result, showActions = true }: QueryResultsProps) {
+export function QueryResults({ result, showActions = true, sourceKind = "query" }: QueryResultsProps) {
   const [sort, setSort] = useState<SortState | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
@@ -299,7 +299,11 @@ export function QueryResults({ result, showActions = true }: QueryResultsProps) 
                   colSpan={resultColumns.length + 1}
                   className="h-28 text-center text-sm text-white/50"
                 >
-                  Não há registros nesta tabela.
+                  {sourceKind === "view"
+                    ? "Não há registros nesta view."
+                    : sourceKind === "table"
+                      ? "Não há registros nesta tabela."
+                      : "A consulta não retornou registros."}
                 </TableCell>
               </TableRow>
             )}

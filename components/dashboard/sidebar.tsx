@@ -47,6 +47,7 @@ const sectionIcons = {
   Índices: FileCode,
   Procedures: Wrench,
   Funções: Sigma,
+  Sequences: Hash,
 }
 
 export function DashboardSidebar({
@@ -61,13 +62,13 @@ export function DashboardSidebar({
   onCreateTable,
   onCreateView,
   onCreateRoutine,
+  onCreateSequence,
   onRefreshRoutineGroup,
   onExecuteRoutine,
   onEditRoutine,
   onDeleteRoutine,
   onEditTable,
   onDeleteTable,
-  onSelect100Rows,
   onEditDatabase,
   onDeleteDatabase,
   onEditView,
@@ -91,13 +92,13 @@ export function DashboardSidebar({
     onCreateTable,
     onCreateView,
     onCreateRoutine,
+    onCreateSequence,
     onRefreshRoutineGroup,
     onExecuteRoutine,
     onEditRoutine,
     onDeleteRoutine,
     onEditTable,
     onDeleteTable,
-    onSelect100Rows,
     onEditDatabase,
     onDeleteDatabase,
     onEditView,
@@ -201,13 +202,14 @@ function buildTreeNodes(
 
     const childNodes =
       (connection.databaseType === "sqlserver" ||
+        connection.databaseType === "postgresql" ||
         connection.databaseType === "mysql" ||
         connection.databaseType === "mariadb") &&
       databaseStructure.databases.length > 0
         ? [
             {
               id: `databases-${connection.id}`,
-              label: "Banco de dados",
+              label: "Banco de Dados",
               icon: FolderGit2,
               defaultExpanded: false,
               contextActions: isAvailable ? (
@@ -494,6 +496,7 @@ function buildGroupNode(
   const isViewGroup = group.label === "Views"
   const isProcedureGroup = group.label === "Procedures"
   const isFunctionGroup = group.label === "Funções"
+  const isSequenceGroup = group.label === "Sequences"
 
   return {
     id: `${connection.id}-${schemaName}-${group.label}`,
@@ -526,6 +529,13 @@ function buildGroupNode(
           onCreate={() => actions.onCreateRoutine(connection, database, schemaName, "function")}
           onRefresh={() => void actions.onRefreshRoutineGroup(connection, database, schemaName, "Funções")}
         />
+      ) : isAvailable && isSequenceGroup ? (
+        <RoutineGroupContextMenu
+          createLabel="Criar sequencial"
+          supported={connection.databaseType === "postgresql"}
+          onCreate={() => actions.onCreateSequence(connection, database, schemaName)}
+          onRefresh={() => void actions.onRefreshRoutineGroup(connection, database, schemaName, "Sequences")}
+        />
       ) : null,
     children: group.items.map((item) => {
       const tableReference = getTableReference(
@@ -546,9 +556,6 @@ function buildGroupNode(
           onEditTable={() => actions.onEditTable(connection, database, tableSchemaName, tableName)}
           onDeleteTable={() =>
             actions.onDeleteTable(connection, database, tableSchemaName, tableName)
-          }
-          onSelect100Rows={() =>
-            actions.onSelect100Rows(connection, database, tableSchemaName, tableName, "table")
           }
           onGenerateSelectSql={() =>
             actions.onOpenSqlInNewTab(
@@ -578,7 +585,6 @@ function buildGroupNode(
       )
       const renderViewItemContextMenu = () => (
         <ViewItemContextMenu
-          onSelect100Rows={() => actions.onSelect100Rows(connection, database, schemaName, item, "view")}
           onEditView={() => actions.onEditView(connection, database, schemaName, tableReference, item)}
           onDeleteView={() => actions.onDeleteView(connection, database, schemaName, tableReference, item)}
         />
@@ -696,17 +702,14 @@ function ViewGroupContextMenu({
 }
 
 function ViewItemContextMenu({
-  onSelect100Rows,
   onEditView,
   onDeleteView,
 }: {
-  onSelect100Rows: () => void
   onEditView: () => void
   onDeleteView: () => void
 }) {
   return (
     <div className="min-w-52 p-1">
-      <ContextMenuItem onSelect={onSelect100Rows}>Selecionar 100 linhas</ContextMenuItem>
       <ContextMenuItem onSelect={onEditView}>Editar</ContextMenuItem>
       <ContextMenuItem onSelect={onDeleteView}>Excluir</ContextMenuItem>
     </div>
@@ -743,7 +746,6 @@ function TableItemContextMenu({
   onCreateTable,
   onEditTable,
   onDeleteTable,
-  onSelect100Rows,
   onGenerateSelectSql,
   onGenerateInsertSql,
   onGenerateUpdateSql,
@@ -752,7 +754,6 @@ function TableItemContextMenu({
   onCreateTable: () => void
   onEditTable: () => void
   onDeleteTable: () => void
-  onSelect100Rows: () => void
   onGenerateSelectSql: () => void
   onGenerateInsertSql: () => void
   onGenerateUpdateSql: () => void
@@ -764,7 +765,6 @@ function TableItemContextMenu({
       <ContextMenuItem onSelect={onEditTable}>Editar tabela</ContextMenuItem>
       <ContextMenuItem onSelect={onDeleteTable}>Excluir tabela</ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem onSelect={onSelect100Rows}>Selecionar 100 linhas</ContextMenuItem>
       <ContextMenuSub>
         <ContextMenuSubTrigger>Gerar SQL</ContextMenuSubTrigger>
         <ContextMenuSubContent>

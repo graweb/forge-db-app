@@ -1,36 +1,201 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Forge DB
 
-## Getting Started
+Forge DB é uma interface web para gerenciar conexões e explorar bancos de dados em um fluxo visual, com editor SQL integrado, tree view de objetos, criação de tabelas, views, rotinas e execução de consultas.
 
-First, run the development server:
+![Forge DB](public/logo_escuro.png)
+
+## Visão Geral
+
+O sistema foi pensado para centralizar tarefas comuns de administração e consulta de bancos em uma experiência próxima de um workspace de desenvolvimento: menu lateral com conexões e objetos do banco, editor SQL com abas, resultados em tabela e modais específicos para criar ou editar estruturas.
+
+## Imagens do Sistema
+
+> Os arquivos em `docs/images/` são placeholders versionados. Substitua por capturas reais do sistema quando quiser publicar o README com imagens finais.
+
+### Tela Inicial
+
+![Tela inicial do Forge DB](docs/images/tela-inicial.svg)
+
+Área inicial com estilo de prompt, atalhos para conexão e indicação de status do ambiente.
+
+### Conexões e Tree View
+
+![Menu lateral com conexões e objetos](docs/images/treeview-conexoes.svg)
+
+O menu lateral lista as conexões salvas e organiza os objetos do banco por tipo, respeitando a estrutura de cada engine.
+
+### Editor SQL
+
+![Editor SQL com execução de query](docs/images/sql-editor.svg)
+
+O editor usa Monaco Editor, suporta múltiplas abas, autocomplete para objetos do banco e execução de consultas.
+
+### Resultado da Consulta
+
+![Tabela de resultado da consulta](docs/images/resultado-consulta.svg)
+
+Os resultados são exibidos em uma tabela responsiva com paginação, ordenação e redimensionamento de colunas.
+
+### Criação de View
+
+![Modal para criação de view](docs/images/nova-view.svg)
+
+O modal de view permite selecionar tabelas, identificar relações, ajustar joins, editar SQL e validar o resultado antes da criação.
+
+### Rotinas
+
+![Modal para criação de rotina](docs/images/nova-rotina.svg)
+
+Procedures e funções usam uma modal única, adaptada ao banco conectado e ao tipo de rotina escolhido.
+
+## Funcionalidades
+
+### Conexões
+
+- Cadastro, edição, remoção e teste de conexões.
+- Suporte a logos por banco no cadastro e no tree view.
+- Status de conexão no rodapé da aplicação.
+- Largura do menu lateral ajustável por arrastar e soltar, com persistência local.
+
+### Bancos Suportados
+
+- MySQL
+- MariaDB
+- PostgreSQL
+- SQL Server
+- SQLite
+
+Cada banco é exibido conforme sua estrutura. MySQL e MariaDB organizam objetos diretamente por banco. PostgreSQL e SQL Server exibem bancos, schemas e objetos internos quando aplicável.
+
+### Tree View
+
+- Listagem de bancos, schemas, tabelas, views, procedures, funções, índices e sequences.
+- Menus de contexto por objeto.
+- Atualização localizada de grupos do tree view após criação, edição ou exclusão.
+- Duplo clique em tabelas e views para abrir ou selecionar a aba SQL correspondente e executar a consulta.
+
+### Editor SQL
+
+- Editor Monaco com sintaxe SQL.
+- Múltiplas abas de consulta.
+- Aba de resultado vinculada à consulta executada.
+- Autocomplete para tabelas, views, procedures, funções e colunas.
+- Execução de SQL no banco selecionado.
+- Query padrão quando não há consulta aberta.
+
+### Resultados
+
+- Tabela responsiva para exibição dos dados retornados.
+- Ordenação por coluna.
+- Paginação.
+- Redimensionamento de colunas.
+- Exportação de resultados para Excel.
+- Ações de adicionar, editar e remover exibidas apenas em consultas diretas de tabela.
+
+### Tabelas
+
+- Criação e edição de tabelas.
+- Edição de colunas, tipos, tamanhos, PK, unique, identity/auto increment e foreign keys.
+- Tratamento específico por banco para tipos de dados e auto incremento.
+- Remoção de tabela com atualização dos grupos relacionados no tree view.
+- No PostgreSQL, sequences associadas a colunas auto increment podem ser criadas e removidas junto da tabela.
+
+### Views
+
+- Criação e edição de views.
+- Seleção visual de tabelas e colunas.
+- Identificação automática de foreign keys entre tabelas selecionadas.
+- Configuração de joins.
+- Aba SQL Editor com Monaco.
+- Aba Resultado sempre disponível para pré-visualizar a consulta.
+- Validação para impedir criar view com nome já existente.
+
+### Procedures, Funções e Sequences
+
+- Criação, edição, execução e exclusão de procedures e funções.
+- Modal única para rotina, com campos dinâmicos por banco e tipo.
+- Atualização localizada das listas de procedures e funções.
+- Criação de sequences no PostgreSQL.
+- Menu de contexto para criar e atualizar sequences.
+
+## Tecnologias
+
+- Next.js
+- React
+- TypeScript
+- Tailwind CSS
+- Monaco Editor
+- Radix UI
+- MySQL2
+- MariaDB
+- PostgreSQL `pg`
+- Microsoft SQL Server `mssql`
+- Better SQLite3
+- XLSX
+
+## Como Rodar
+
+Instale as dependências:
+
+```bash
+npm install
+```
+
+Inicie o ambiente de desenvolvimento:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Acesse:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Scripts Disponíveis
 
-## Learn More
+```bash
+npm run dev
+npm run lint
+npm run build
+npm run start
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Estrutura Principal
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```text
+app/
+  api/                 Rotas da API para conexões, bancos, tabelas, views e rotinas
+  dashboard/           Página do dashboard por conexão
+components/
+  connections/         Modal e componentes de conexão
+  dashboard/           Shell, sidebar, editor, resultados e modais do sistema
+  ui/                  Componentes reutilizáveis de interface
+helpers/
+  create-table/        Geração de SQL por banco
+  metadata/            Leitura de metadados por engine
+lib/
+  connections.ts       Operações principais com os bancos
+types/
+  *.ts                 Tipos compartilhados do domínio
+public/
+  logos/               Logos dos bancos suportados
+docs/
+  images/              Imagens usadas neste README
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Sugestão de Capturas
 
-## Deploy on Vercel
+Para deixar o README mais completo, gere capturas com estes nomes:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```text
+docs/images/tela-inicial.svg
+docs/images/treeview-conexoes.svg
+docs/images/sql-editor.svg
+docs/images/resultado-consulta.svg
+docs/images/nova-view.svg
+docs/images/nova-rotina.svg
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Use imagens em proporção larga, preferencialmente com 1440px ou 1600px de largura. Evite mostrar senhas, usuários reais, hosts internos ou dados sensíveis.

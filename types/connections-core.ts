@@ -35,6 +35,26 @@ export type CreateUserResult = {
   schemaName?: string
 }
 
+export type CreateSequenceInput = {
+  databaseName?: string
+  schemaName?: string
+  sequenceName: string
+  startValue?: string
+  incrementBy?: string
+  minValue?: string
+  maxValue?: string
+  cacheValue?: string
+  cycle?: boolean
+}
+
+export type CreateSequenceResult = {
+  message: string
+  details: string
+  sequenceName: string
+  databaseName: string
+  schemaName: string
+}
+
 export type SerializedValue = string | number | boolean | null
 
 export type QueryExecutionResult = {

@@ -1481,7 +1481,12 @@ function QueryTabPanel({ tab }: { tab: QueryExecutionTab }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <QueryResults key={tab.id} result={tab.result} showActions={tab.sourceKind === "table"} />
+      <QueryResults
+        key={tab.id}
+        result={tab.result}
+        showActions={tab.sourceKind === "table"}
+        sourceKind={tab.sourceKind}
+      />
     </div>
   )
 }

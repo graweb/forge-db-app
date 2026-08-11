@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Menu lateral com conexoes e objetos</title>
+  <desc id="desc">Placeholder para captura do tree view de conexoes.</desc>
+  <rect width="1440" height="900" fill="#050913"/>
+  <rect x="40" y="40" width="360" height="820" rx="24" fill="#07111d" stroke="#1f2a3a" stroke-width="2"/>
+  <text x="90" y="110" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="32" font-weight="700">Forge DB</text>
+  <rect x="72" y="160" width="132" height="40" rx="20" fill="#0f2537" stroke="#0ea5e9"/>
+  <text x="138" y="186" text-anchor="middle" fill="#bae6fd" font-family="Arial, Helvetica, sans-serif" font-size="16">PostgreSQL</text>
+  <text x="72" y="250" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="20">Banco de Dados</text>
+  <text x="95" y="300" fill="#e2e8f0" font-family="Arial, Helvetica, sans-serif" font-size="22">teste</text>
+  <text x="120" y="350" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">public</text>
+  <text x="145" y="400" fill="#e2e8f0" font-family="Arial, Helvetica, sans-serif" font-size="20">Tabelas</text>
+  <text x="170" y="445" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="18">clientes</text>
+  <text x="170" y="485" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="18">pedidos</text>
+  <text x="145" y="545" fill="#e2e8f0" font-family="Arial, Helvetica, sans-serif" font-size="20">Views</text>
+  <text x="145" y="600" fill="#e2e8f0" font-family="Arial, Helvetica, sans-serif" font-size="20">Procedures</text>
+  <rect x="440" y="120" width="880" height="620" rx="24" fill="#07111d" stroke="#1f2a3a"/>
+  <text x="880" y="430" text-anchor="middle" fill="#64748b" font-family="Arial, Helvetica, sans-serif" font-size="28">Area principal do dashboard</text>
+</svg>

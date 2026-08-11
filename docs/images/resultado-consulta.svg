@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">Resultado da consulta</title>
+  <desc id="desc">Placeholder para captura da tabela de resultados.</desc>
+  <rect width="1440" height="900" fill="#050913"/>
+  <rect x="80" y="110" width="1280" height="650" rx="24" fill="#07111d" stroke="#1f2a3a"/>
+  <text x="120" y="170" fill="#f8fafc" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">Resultado</text>
+  <line x1="80" y1="220" x2="1360" y2="220" stroke="#1f2a3a"/>
+  <text x="120" y="270" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="20">#</text>
+  <text x="220" y="270" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="20">id</text>
+  <text x="420" y="270" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="20">nome</text>
+  <text x="720" y="270" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="20">email</text>
+  <text x="1080" y="270" fill="#94a3b8" font-family="Arial, Helvetica, sans-serif" font-size="20">status</text>
+  <line x1="80" y1="300" x2="1360" y2="300" stroke="#1f2a3a"/>
+  <text x="120" y="355" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">1</text>
+  <text x="220" y="355" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">101</text>
+  <text x="420" y="355" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Maria Souza</text>
+  <text x="720" y="355" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">maria@email.com</text>
+  <text x="1080" y="355" fill="#22c55e" font-family="Arial, Helvetica, sans-serif" font-size="20">ativo</text>
+  <line x1="80" y1="395" x2="1360" y2="395" stroke="#1f2a3a"/>
+  <text x="120" y="450" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">2</text>
+  <text x="220" y="450" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">102</text>
+  <text x="420" y="450" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">Joao Lima</text>
+  <text x="720" y="450" fill="#cbd5e1" font-family="Arial, Helvetica, sans-serif" font-size="20">joao@email.com</text>
+  <text x="1080" y="450" fill="#22c55e" font-family="Arial, Helvetica, sans-serif" font-size="20">ativo</text>
+</svg>

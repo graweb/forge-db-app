@@ -120,6 +120,7 @@ export async function PUT(
         returnType: string
         body: string
       }>
+      removedSequences?: string[]
     }
     const result = await updateTable(connection, {
       databaseName,
@@ -132,6 +133,7 @@ export async function PUT(
       indexes: body.indexes ?? [],
       triggers: body.triggers ?? [],
       functions: body.functions ?? [],
+      removedSequences: body.removedSequences ?? [],
     })
 
     return NextResponse.json({

@@ -102,6 +102,7 @@ export type SqlStatementBlock = {
 export type QueryResultsProps = {
   result: QueryExecutionResult | null
   showActions?: boolean
+  sourceKind?: "table" | "view" | "query"
 }
 
 export type SortDirection = "asc" | "desc"
