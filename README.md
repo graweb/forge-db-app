@@ -29,17 +29,17 @@ O menu lateral lista as conexões salvas e organiza os objetos do banco por tipo
 O editor usa Monaco Editor, suporta múltiplas abas, autocomplete para objetos do banco e execução de consultas.
 Os resultados são exibidos em uma tabela responsiva com paginação, ordenação e redimensionamento de colunas.
 
-### Criação de View
-
-![Modal para criação de view](docs/images/nova_view.png)
-
-O modal de view permite selecionar tabelas, identificar relações, ajustar joins, editar SQL e validar o resultado antes da criação.
-
 ### Criação de Tabela
 
 ![Modal para criação de rotina](docs/images/nova_tabela.png)
 
 Procedures e funções usam uma modal única, adaptada ao banco conectado e ao tipo de rotina escolhido.
+
+### Criação de View
+
+![Modal para criação de view](docs/images/nova_view.png)
+
+O modal de view permite selecionar tabelas, identificar relações, ajustar joins, editar SQL e validar o resultado antes da criação.
 
 ## Bancos Suportados
 
