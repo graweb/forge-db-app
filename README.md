@@ -16,6 +16,12 @@ O sistema foi pensado para centralizar tarefas comuns de administração e consu
 
 Área inicial com estilo de prompt, atalhos para conexão e indicação de status do ambiente.
 
+### Nova Conexão
+
+![Nova conexão](docs/images/nova_conexao.png)
+
+Escolha o tipo de conexão e informe os dados, faça o teste e veja se a conexão está funcionando.
+
 ### Conexões e Tree View
 
 ![Menu lateral com conexões e objetos](docs/images/estrutura_conexao.png)
