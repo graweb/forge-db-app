@@ -1,6 +1,6 @@
 # Forge DB
 
-Forge DB é uma interface web para gerenciar conexões e explorar bancos de dados em um fluxo visual, com editor SQL integrado, tree view de objetos, criação de tabelas, views, rotinas e execução de consultas.
+Forge DB é uma interface web para gerenciar conexões e explorar bancos de dados em um fluxo visual, com editor SQL integrado, tree view de objetos, criação de tabelas, views, rotinas e execução de consultas. 
 
 <p align="center">
   <img src="public/logo_branco.png" alt="Forge DB" width="220" />
