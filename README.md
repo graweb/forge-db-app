@@ -168,4 +168,3 @@ public/
 docs/
   images/              Imagens usadas neste README
 ```
-
